@@ -1,0 +1,13 @@
+[Interface]
+PrivateKey = ВАШ_ПРИВАТНЫЙ_КЛЮЧ_BASE64
+# Адрес из конфига вашего WireGuard-клиента. Для wireproxy используйте /32 (и /128 для IPv6)
+Address = 10.66.66.2/32
+DNS = 1.1.1.1,1.0.0.1
+
+[Peer]
+PublicKey = ПУБЛИЧНЫЙ_КЛЮЧ_СЕРВЕРА
+# PresharedKey = ОПЦИОНАЛЬНЫЙ_PSK
+Endpoint = vpn.example.com:51820
+AllowedIPs = 0.0.0.0/0
+# IPv6 в туннеле: если на сервере нет рабочего v6, оставьте только v4 (см. README)
+PersistentKeepalive = 25

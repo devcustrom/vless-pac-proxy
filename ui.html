@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wireproxy — панель управления</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", system-ui, sans-serif;
+    max-width: 680px; margin: 24px auto; padding: 0 16px;
+    background: #f5f6f8; color: #1c1e21;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #16181d; color: #e6e6e6; }
+    .card { background: #1f232b !important; border-color: #2c313a !important; }
+    input, button { background: #262b34 !important; color: #e6e6e6 !important; border-color: #3a4150 !important; }
+  }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { opacity: .6; font-size: 13px; margin-bottom: 16px; }
+  .card {
+    background: #fff; border: 1px solid #e2e5ea; border-radius: 10px;
+    padding: 14px 16px; margin-bottom: 12px;
+  }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; background: #999; }
+  .dot.ok { background: #2fb344; } .dot.bad { background: #d64545; } .dot.warn { background: #e6a23c; }
+  b.ok { color: #2fb344; } b.bad { color: #d64545; }
+  input[type=text] {
+    flex: 1; min-width: 200px; padding: 8px 10px; border: 1px solid #ccd0d6;
+    border-radius: 8px; font-size: 14px;
+  }
+  button {
+    padding: 8px 14px; border: 1px solid #ccd0d6; border-radius: 8px;
+    background: #fff; cursor: pointer; font-size: 14px;
+  }
+  button:hover { background: #eef1f5; }
+  button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+  button.primary:hover { background: #1d4fd7; }
+  button:disabled { opacity: .5; cursor: default; }
+  b.warn { color: #e6a23c; }
+  ul { list-style: none; margin: 10px 0 0; padding: 0; }
+  li {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 6px 4px; border-bottom: 1px solid #eceef2; font-size: 14px;
+  }
+  li:last-child { border-bottom: none; }
+  li button { padding: 2px 10px; font-size: 13px; }
+  .muted { opacity: .6; font-size: 13px; }
+  label.syspac { cursor: pointer; }
+  #msg { font-size: 13px; margin-left: 8px; }
+  .err { color: #d64545; }
+</style>
+</head>
+<body>
+<h1>VPN-прокси (wireproxy)</h1>
+<div class="sub">PAC: <code>http://127.0.0.1:8080/proxy.pac</code> · SOCKS5: <code>127.0.0.1:25344</code> · HTTP: <code>127.0.0.1:25345</code></div>
+
+<div class="card">
+  <div class="row">
+    <span class="dot" id="dot"></span><b id="vpn">проверяю…</b>
+    <span>Выходной IP: <b id="ip">—</b></span>
+  </div>
+  <div class="row" style="margin-top:6px">
+    <span class="dot" id="xdot"></span><b id="vless">VLESS: …</b>
+    <span>Выходной IP: <b id="xip">—</b></span>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <label class="syspac"><input type="checkbox" id="syspac"> Системный прокси для всей Windows (браузер → менеджер → VPN/напрямую)</label>
+  </div>
+</div>
+
+<div class="card">
+  <b>VLESS (Xray) — второй канал</b>
+  <div class="muted">Вставьте vless:// ссылку от вашего хостера/провайдера (поддерживаются Reality, TLS, ws, grpc). Сохранится локально в xray-config.json.</div>
+  <form id="vform" class="row" style="margin-top:10px">
+    <input type="text" id="vlink" placeholder="vless://uuid@host:443?security=reality&sni=...&pbk=...#имя" autocomplete="off">
+    <button type="submit" class="primary">Сохранить</button>
+  </form>
+  <div class="row" style="margin-top:10px">
+    <span>VPN-домены (списки + свои) идут через:</span>
+    <label><input type="radio" name="defchan" value="wireguard"> WireGuard</label>
+    <label><input type="radio" name="defchan" value="vless"> VLESS</label>
+  </div>
+  <div class="muted" id="vnote"></div>
+  <div style="margin-top:8px">
+    <b>Домены только через VLESS</b>
+    <div class="muted">Отдельный список: эти домены пойдут через VLESS даже если основной канал — WireGuard.</div>
+    <form id="vdf" class="row" style="margin-top:6px">
+      <input type="text" id="vd" placeholder="example.com" autocomplete="off">
+      <button type="submit">Добавить</button>
+    </form>
+    <ul id="vlist"></ul>
+    <div class="muted" id="novlessd" hidden>Список пуст.</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <span>Заблокированных в списке: <b id="proxied">—</b></span>
+    <span class="muted">обновлено: <span id="upd">—</span></span>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <button id="refresh" class="primary">Обновить списки</button>
+    <button id="restart">Перезапустить VPN-прокси</button>
+    <span id="msg" class="muted"></span>
+  </div>
+</div>
+
+<div class="card">
+  <b>Проверка сайта</b>
+  <div class="muted">Сайт не открывается? Проверим напрямую и через VPN — и добавим одной кнопкой.</div>
+  <form id="check" class="row" style="margin-top:10px">
+    <input type="text" id="cd" placeholder="example.com" autocomplete="off">
+    <button type="submit" class="primary" id="checkbtn">Проверить</button>
+  </form>
+  <div id="cresult" hidden>
+    <div class="row" style="margin-top:10px">
+      <span>Напрямую: <span id="cdirect">—</span></span>
+      <span>Через VPN: <span id="cvpn">—</span></span>
+      <span id="cverdict"></span>
+      <button id="cadd" class="primary" hidden>Добавить в VPN-список</button>
+    </div>
+  </div>
+  <div id="chistory"></div>
+</div>
+
+<div class="card">
+  <b>Недавние сайты (мимо VPN)</b>
+  <div class="muted">Домены, которые ваш браузер открывал напрямую. Если сайту нужен VPN — добавьте.</div>
+  <ul id="visited"></ul>
+  <div class="muted" id="novisited" hidden>Пока пусто — список наполнится, когда включён системный прокси и вы сёрфируете.</div>
+</div>
+
+<div class="card">
+  <b>Свои домены через VPN</b>
+  <div class="muted">Поддомены учитываются автоматически: example.com покрывает a.example.com</div>
+  <form id="add" class="row" style="margin-top:10px">
+    <input type="text" id="d" placeholder="example.com" autocomplete="off">
+    <button type="submit" class="primary">Добавить</button>
+  </form>
+  <ul id="list"></ul>
+  <div class="muted" id="empty" hidden>Список пуст — домены также можно вписать прямо в файл extra-domains.txt</div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const msg = (t, err) => { $('msg').textContent = t; $('msg').className = err ? 'err' : 'muted'; };
+
+const VERDICTS = {
+  'vpn-helps': ['ok', 'через VPN открывается — добавляйте'],
+  'direct-only': ['bad', 'через VPN хуже — не добавляйте'],
+  'both-ok': ['ok', 'работает и напрямую — VPN не нужен'],
+  'challenge': ['warn', '403 на обоих путях — анти-бот; в браузере через VPN часто работает, можно добавить'],
+  'blocked-everywhere': ['bad', 'не отвечает даже через VPN (сайт лежит или блокирует всех)'],
+};
+const codeBadge = (code) => {
+  const good = code !== '000' && code !== '403' && code !== '451';
+  return `<b class="${good ? 'ok' : 'bad'}">${code === '000' ? 'нет ответа' : code}</b>`;
+};
+
+async function post(path, body) {
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+
+async function status() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    $('dot').className = 'dot ' + (s.vpnUp ? 'ok' : 'bad');
+    $('vpn').innerHTML = s.vpnUp ? '<b class="ok">WireGuard работает</b>' : '<b class="bad">WireGuard не работает</b>' + (s.proxyRunning ? '' : ' (процесс отсутствует)');
+    $('ip').textContent = s.exitIp || '—';
+    $('xdot').className = 'dot ' + (s.vlessConfigured ? (s.xrayRunning ? 'ok' : 'bad') : '');
+    $('vless').innerHTML = !s.vlessConfigured
+      ? 'VLESS: не настроен'
+      : (s.xrayRunning ? '<b class="ok">VLESS работает</b>' : '<b class="bad">VLESS не работает</b>');
+    $('xip').textContent = s.exitIpVless || '—';
+    document.querySelectorAll('input[name=defchan]').forEach((r) => { r.checked = r.value === s.vpnDefault; });
+    $('vnote').textContent = s.vpnDefault === 'vless' && !s.vlessConfigured
+      ? 'Внимание: выбран VLESS, но ссылка не задана — VPN-домены временно идут через WireGuard.'
+      : '';
+    renderVlessList(s.vlessDomains);
+    $('proxied').textContent = s.proxied == null ? '—' : s.proxied.toLocaleString('ru-RU');
+    $('upd').textContent = s.lastUpdate ? new Date(s.lastUpdate).toLocaleString('ru-RU') : (s.updateError ? 'ошибка' : '—');
+    $('refresh').disabled = !!s.refreshing;
+    if (s.updateError) msg('Ошибка обновления: ' + s.updateError, true);
+    if ($('syspac').checked !== s.systemProxy.enabled) $('syspac').checked = s.systemProxy.enabled;
+    renderList(s.extra);
+    renderChecks(s.checks, s.extra);
+    renderVisited(s.visited, s.extra);
+  } catch (e) { $('dot').className = 'dot bad'; $('vpn').innerHTML = '<b class="bad">панель недоступна</b>'; }
+}
+
+function renderVlessList(domains) {
+  const el = $('vlist');
+  el.innerHTML = '';
+  $('novlessd').hidden = !!(domains && domains.length);
+  (domains || []).forEach((d) => {
+    const li = document.createElement('li');
+    const span = document.createElement('span'); span.textContent = d;
+    const btn = document.createElement('button'); btn.textContent = 'убрать';
+    btn.onclick = async () => { try { await post('/api/vless', { action: 'remove-domain', domain: d }); status(); } catch (e) { msg(e.message, true); } };
+    li.append(span, btn); el.append(li);
+  });
+}
+
+function renderList(extra) {
+  const ul = $('list');
+  ul.innerHTML = '';
+  $('empty').hidden = !!(extra && extra.length);
+  (extra || []).forEach((d) => {
+    const li = document.createElement('li');
+    const span = document.createElement('span'); span.textContent = d;
+    const btn = document.createElement('button'); btn.textContent = 'убрать';
+    btn.onclick = async () => { try { await post('/api/extra', { action: 'remove', domain: d }); status(); msg('Домен убран'); } catch (e) { msg(e.message, true); } };
+    li.append(span, btn); ul.append(li);
+  });
+}
+
+function renderVisited(visited, extra) {
+  const el = $('visited');
+  el.innerHTML = '';
+  const items = (visited || []).slice(0, 25);
+  $('novisited').hidden = !!(items && items.length);
+  items.forEach((v) => {
+    const li = document.createElement('li');
+    const span = document.createElement('span');
+    span.innerHTML = `${v.domain} <span class="muted">×${v.count}</span>`;
+    const btn = document.createElement('button'); btn.textContent = 'через VPN';
+    btn.onclick = async () => { try { await post('/api/extra', { action: 'add', domain: v.domain }); status(); msg(v.domain + ' добавлен'); } catch (e) { msg(e.message, true); } };
+    li.append(span, btn); el.append(li);
+  });
+}
+
+function showCheck(r) {
+  $('cresult').hidden = false;
+  $('cdirect').innerHTML = codeBadge(r.direct);
+  $('cvpn').innerHTML = codeBadge(r.vpn);
+  const [cls, text] = VERDICTS[r.verdict] || ['', r.verdict];
+  $('cverdict').innerHTML = `<b class="${cls}">${text}</b>`;
+  $('cadd').hidden = !(r.verdict === 'vpn-helps' || r.verdict === 'challenge');
+  $('cadd').onclick = async () => { try { await post('/api/extra', { action: 'add', domain: r.domain }); status(); msg(r.domain + ' добавлен в VPN-список'); } catch (e) { msg(e.message, true); } };
+}
+
+function renderChecks(checks, extra) {
+  const el = $('chistory');
+  el.innerHTML = '';
+  if (!checks || !checks.length) return;
+  const title = document.createElement('div');
+  title.className = 'muted'; title.style.marginTop = '10px';
+  title.textContent = 'Последние проверки:';
+  el.append(title);
+  checks.forEach((c) => {
+    if (c.verdict === 'both-ok') return;
+    const li = document.createElement('li');
+    const [cls, text] = VERDICTS[c.verdict] || ['', c.verdict];
+    li.innerHTML = `<span>${c.domain} — напрямую ${codeBadge(c.direct)}, VPN ${codeBadge(c.vpn)} · <b class="${cls}">${text}</b></span>`;
+    if ((c.verdict === 'vpn-helps' || c.verdict === 'challenge') && !(extra || []).includes(c.domain)) {
+      const btn = document.createElement('button'); btn.textContent = 'добавить';
+      btn.onclick = async () => { try { await post('/api/extra', { action: 'add', domain: c.domain }); status(); msg(c.domain + ' добавлен'); } catch (e) { msg(e.message, true); } };
+      li.append(btn);
+    }
+    el.append(li);
+  });
+}
+
+$('add').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const d = $('d').value.trim();
+  if (!d) return;
+  try { await post('/api/extra', { action: 'add', domain: d }); $('d').value = ''; status(); msg('Добавлено, список перегенерируется'); }
+  catch (e) { msg(e.message, true); }
+};
+$('check').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const d = $('cd').value.trim();
+  if (!d) return;
+  $('checkbtn').disabled = true; msg('Проверяю ' + d + '…');
+  try { showCheck(await post('/api/check', { domain: d })); msg('Готово'); }
+  catch (e) { msg(e.message, true); }
+  finally { $('checkbtn').disabled = false; }
+};
+$('vform').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const link = $('vlink').value.trim();
+  if (!link) return;
+  try {
+    const r = await post('/api/vless', { action: 'set-link', link });
+    $('vlink').value = '';
+    msg('VLESS сохранён: ' + (r.info.name || r.info.address) + ' (' + r.info.security + '/' + r.info.network + ')');
+    status();
+  } catch (e) { msg(e.message, true); }
+};
+document.querySelectorAll('input[name=defchan]').forEach((r) => {
+  r.onchange = async () => {
+    if (!r.checked) return;
+    try { await post('/api/vless', { action: 'set-default', value: r.value }); msg('Основной канал: ' + r.value); }
+    catch (e) { msg(e.message, true); status(); }
+  };
+});
+$('vdf').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const d = $('vd').value.trim();
+  if (!d) return;
+  try { await post('/api/vless', { action: 'add-domain', domain: d }); $('vd').value = ''; status(); msg('Домен добавлен в VLESS-список'); }
+  catch (e) { msg(e.message, true); }
+};
+$('syspac').onchange = async (ev) => {
+  try { await post('/api/system-proxy', { enabled: ev.target.checked }); msg(ev.target.checked ? 'Системный прокси включён' : 'Системный прокси выключен'); }
+  catch (e) { msg(e.message, true); status(); }
+};
+$('refresh').onclick = async () => { try { await post('/api/refresh'); msg('Обновление запущено…'); } catch (e) { msg(e.message, true); } };
+$('restart').onclick = async () => { try { await post('/api/restart-proxy'); msg('Перезапуск…'); } catch (e) { msg(e.message, true); } };
+
+status();
+setInterval(status, 5000);
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+# Конфиг wireproxy: WireGuard в userspace -> SOCKS5/HTTP-прокси.
+# Этот файл читает wireproxy.exe -c wireproxy.conf
+WGConfig = wg.conf
+
+[Socks5]
+BindAddress = 127.0.0.1:25344
+
+[http]
+BindAddress = 127.0.0.1:25345
