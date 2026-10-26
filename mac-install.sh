@@ -40,6 +40,18 @@ if [ ! -x ./xray ]; then
 fi
 xattr -d com.apple.quarantine ./xray 2>/dev/null || true
 
+# 2c. Иконка в строке меню (нужны Xcode Command Line Tools: xcode-select --install)
+HAVE_TRAY=0
+if [ ! -x ./WireproxyTray ] && command -v swiftc >/dev/null 2>&1; then
+  echo "Собираю иконку меню-бара ..."
+  if swiftc -O tray.swift -o WireproxyTray 2>/dev/null; then
+    HAVE_TRAY=1
+  else
+    echo "Не удалось собрать трей — панель всё равно будет работать."
+  fi
+fi
+[ -x ./WireproxyTray ] && HAVE_TRAY=1
+
 # 3. Конфиги
 if [ ! -f ./wg.conf ]; then
   echo ""
@@ -72,6 +84,18 @@ sed -e "s|__DIR__|$DIR|g" -e "s|__NODE__|$NODE_BIN|g" \
   > "$HOME/Library/LaunchAgents/com.wireproxy.manager.plist"
 launchctl unload "$HOME/Library/LaunchAgents/com.wireproxy.manager.plist" 2>/dev/null || true
 launchctl load "$HOME/Library/LaunchAgents/com.wireproxy.manager.plist"
+
+# 4b. Иконка в меню-баре
+if [ "$HAVE_TRAY" = "1" ]; then
+  sed -e "s|__DIR__|$DIR|g" "$DIR/com.wireproxy.tray.plist.template" \
+    > "$HOME/Library/LaunchAgents/com.wireproxy.tray.plist"
+  launchctl unload "$HOME/Library/LaunchAgents/com.wireproxy.tray.plist" 2>/dev/null || true
+  launchctl load "$HOME/Library/LaunchAgents/com.wireproxy.tray.plist"
+  echo "Иконка в строке меню установлена."
+else
+  echo "Иконки в меню-баре не будет: нет swiftc (Xcode Command Line Tools)."
+  echo "Поставьте их командой 'xcode-select --install' и запустите установщик снова."
+fi
 
 sleep 4
 echo ""

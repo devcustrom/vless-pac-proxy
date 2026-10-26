@@ -7,11 +7,12 @@ settings.json
 # Генерируется менеджером автоматически
 proxy.pac
 
-# Бинарники и архивы (скачиваются install.ps1 / mac-install.sh)
+# Бинарники и архивы (скачиваются/собираются установщиками)
 wireproxy.exe
 wireproxy
 xray.exe
 xray
+WireproxyTray
 *.tar.gz
 *.zip
 

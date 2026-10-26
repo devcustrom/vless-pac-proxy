@@ -51,8 +51,9 @@ cd ~/wireproxy
 ```
 
 Скрипт скачает бинарники под вашу архитектуру и установит LaunchAgent:
-автозапуск при входе и автоматический перезапуск при падении. Подробности —
-в [README-MAC.md](README-MAC.md).
+автозапуск при входе и автоматический перезапуск при падении. Если установлены
+Xcode Command Line Tools, он же соберёт иконку в строке меню (Swift) — аналог
+трея Windows. Подробности — в [README-MAC.md](README-MAC.md).
 
 > **Важно:** каждому устройству — свой клиентский конфиг/ключ на сервере.
 > Два устройства с одним ключом одновременно работать не будут: сервер видит
@@ -169,6 +170,11 @@ wireproxy `:25344`, HTTP wireproxy `:25345`, HTTP xray `:25346`.
 Автозапуск: Windows — ярлык в «Автозагрузке», macOS — LaunchAgent. Оба
 запускают стек без окон и перезапускают его при падении.
 
+Иконка управления: Windows — в системном трее (`tray.ps1`), macOS — в строке
+меню (Swift-приложение `WireproxyTray`, собирается установщиком при наличии
+Xcode Command Line Tools). Меню: открыть панель, обновить списки,
+перезапустить VPN-прокси, остановить стек и выйти.
+
 ## Частые проблемы
 
 - **«Ни один VPN-канал не настроен»** — положите `wg.conf` и/или вставьте
@@ -207,13 +213,15 @@ update-domains.js загрузка списков доменов (itdog inside/o
                   генерация PAC
 vless-to-xray.js  парсер vless:// ссылок -> конфиг Xray
 ui.html           веб-панель (без внешних зависимостей)
-tray.ps1          иконка в трее (Windows)
+tray.ps1          иконка в трее Windows
+tray.swift        иконка в строке меню macOS (swiftc -O tray.swift -o WireproxyTray)
 start-hidden.vbs  скрытый запуск стека (используется ярлыком автозапуска)
 start.bat         запуск с окнами (отладка)
 stop.bat          остановка всего
 install.ps1       установщик для Windows (бинарники, конфиги, автозапуск)
 mac-install.sh    установщик для macOS; mac-start.sh / mac-stop.sh
-com.wireproxy.manager.plist.template  шаблон LaunchAgent
+com.wireproxy.manager.plist.template  шаблон LaunchAgent менеджера
+com.wireproxy.tray.plist.template     шаблон LaunchAgent иконки в меню-баре
 ```
 
 Приватные и генерируемые файлы (в git не попадают): `wg.conf`,
