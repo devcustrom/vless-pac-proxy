@@ -1,4 +1,4 @@
-# Установка стека на Windows: скачивает wireproxy.exe и xray.exe, создаёт конфиги из примеров.
+﻿# Установка стека на Windows: скачивает wireproxy.exe и xray.exe, создаёт конфиги из примеров.
 # Запуск: powershell -ExecutionPolicy Bypass -File install.ps1 [-Autostart]
 param([switch]$Autostart)
 $ErrorActionPreference = 'Stop'
