@@ -43,11 +43,11 @@ xattr -d com.apple.quarantine ./xray 2>/dev/null || true
 # 3. Конфиги
 if [ ! -f ./wg.conf ]; then
   echo ""
-  echo "ВНИМАНИЕ: рядом нет wg.conf."
-  echo "Создай в панели WireGuard-сервера ОТДЕЛЬНОГО клиента для мака (не копируй"
-  echo "ключ с Windows или телефона — один ключ = одна активная сессия!)."
-  echo "Скачанный конфиг положи сюда: $DIR/wg.conf и запусти скрипт снова."
-  exit 1
+  echo "ВНИМАНИЕ: нет wg.conf — канал WireGuard будет отключён."
+  echo "Стек всё равно запустится; можно работать только через VLESS —"
+  echo "вставьте vless:// ссылку в панели. Либо положите сюда конфиг"
+  echo "ОТДЕЛЬНОГО клиента (не копируйте ключ с других устройств!)."
+  echo ""
 fi
 if [ ! -f ./wireproxy.conf ]; then
   cat > wireproxy.conf <<EOF

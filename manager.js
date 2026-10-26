@@ -65,8 +65,30 @@ function log(...a) {
 }
 
 // ---------------- wireproxy ----------------
+// Считаем WireGuard настроенным, только если wg.conf есть и в нём не заглушки
+// из wg.conf.example. Иначе канал отключён (например, режим «только VLESS»).
+const WG_CONF = path.join(DIR, 'wg.conf');
+let wgCache = { mtime: 0, ok: false };
+
+function isWgConfigured() {
+  try {
+    const st = fs.statSync(WG_CONF);
+    if (st.mtimeMs !== wgCache.mtime) {
+      const t = fs.readFileSync(WG_CONF, 'utf8');
+      const ok =
+        /^\s*PrivateKey\s*=\s*\S+/m.test(t) &&
+        /^\s*Endpoint\s*=\s*\S+/m.test(t) &&
+        !/ВАШ_|ПУБЛИЧНЫЙ_КЛЮЧ_СЕРВЕРА|vpn\.example\.com/i.test(t);
+      wgCache = { mtime: st.mtimeMs, ok };
+    }
+    return wgCache.ok;
+  } catch {
+    return false;
+  }
+}
+
 function startWireproxy() {
-  if (state.stopping || state.wp) return;
+  if (state.stopping || state.wp || !isWgConfigured()) return;
   const child = spawn(path.join(DIR, IS_WIN ? 'wireproxy.exe' : 'wireproxy'), ['-c', 'wireproxy.conf'], {
     cwd: DIR,
     windowsHide: true,
@@ -200,20 +222,35 @@ function checkExitIpVless() {
 }
 
 // ---------------- маршрутизация ----------------
-// Возвращает false (напрямую) | 'wireguard' | 'vless'
+// Возвращает false (напрямую) | 'wireguard' | 'vless'.
+// Если предпочтительный канал не настроен — используется доступный.
+function availableChannel(pref) {
+  const wg = isWgConfigured();
+  const xr = vlessXray.hasConfig();
+  if (pref === 'vless') return xr ? 'vless' : (wg ? 'wireguard' : false);
+  return wg ? 'wireguard' : (xr ? 'vless' : false);
+}
+
 function routeFor(hostRaw) {
-  if (MODE === 'all') return state.vpnDefault;
+  if (MODE === 'all') return availableChannel(state.vpnDefault);
   const host = String(hostRaw || '').toLowerCase().replace(/^\[|\]$/g, '');
   if (!host || !host.includes('.') || net.isIP(host)) return false;
   for (let h = host; h; ) {
     if (state.directSet.has(h)) return false;
-    if (state.vlessSet.has(h)) return vlessXray.hasConfig() ? 'vless' : state.vpnDefault;
-    if (state.proxiedSet.has(h)) return state.vpnDefault;
+    if (state.vlessSet.has(h)) return availableChannel('vless');
+    if (state.proxiedSet.has(h)) return availableChannel(state.vpnDefault);
     const i = h.indexOf('.');
     if (i < 0) break;
     h = h.slice(i + 1);
   }
   return false;
+}
+
+// Канал по умолчанию, но с учётом того, какой процесс реально запущен
+function activeChannel(route) {
+  if (!route) return false;
+  if (route === 'vless') return state.xr ? 'vless' : (state.wp ? 'wireguard' : 'vless');
+  return state.wp ? 'wireguard' : (state.xr ? 'vless' : 'wireguard');
 }
 
 function shouldProxy(hostRaw) {
@@ -368,8 +405,9 @@ function httpStatus(domain, viaProxy) {
   return new Promise((resolve) => {
     const args = ['--http1.1', '-s', '-o', os.devNull, '-m', '12', '-w', '%{http_code}', 'https://' + domain + '/'];
     if (viaProxy) {
-      // проверяем тот канал, который сейчас основной для VPN-доменов
-      const port = state.vpnDefault === 'vless' && state.xr ? UPSTREAM_VLESS.port : UPSTREAM_WG.port;
+      // проверяем тот канал, который сейчас реально обслуживает VPN-домены
+      const chan = activeChannel(state.vpnDefault) || 'wireguard';
+      const port = chan === 'vless' ? UPSTREAM_VLESS.port : UPSTREAM_WG.port;
       args.unshift('--proxy', `http://${HOST}:${port}`);
     }
     run('curl', args, (e, stdout) => {
@@ -461,15 +499,14 @@ const proxyServer = http.createServer((req, res) => {
   try { u = new URL(req.url); } catch { res.writeHead(400); return res.end(); }
   noteVisited(u.hostname);
   const route = routeFor(u.hostname);
-  log(`${req.method} ${u.hostname}${route ? ' [VPN:' + route + ']' : ' [direct]'}`);
+  const chan = activeChannel(route);
+  log(`${req.method} ${u.hostname}${chan ? ' [VPN:' + chan + ']' : ' [direct]'}`);
   const headers = { ...req.headers };
   delete headers.proxy_connection;
   delete headers['proxy-connection'];
-  // канал VLESS выбирается, только если xray реально запущен, иначе фолбэк на WireGuard
-  const viaVless = route === 'vless' && !!state.xr;
-  const up = route
+  const up = chan
     ? (() => {
-        const target = viaVless ? UPSTREAM_VLESS : UPSTREAM_WG;
+        const target = chan === 'vless' ? UPSTREAM_VLESS : UPSTREAM_WG;
         return http.request({ host: target.host, port: target.port, method: req.method, path: req.url, headers }); // прокси сам делает CONNECT
       })()
     : http.request({ host: u.hostname, port: u.port || 80, method: req.method, path: u.pathname + u.search, headers });
@@ -482,13 +519,12 @@ proxyServer.on('connect', (req, clientSocket, head) => {
   const { host, port } = parseHostPort(req.url, 443);
   noteVisited(host);
   const route = routeFor(host);
-  const viaVless = route === 'vless' && !!state.xr;
-  const target = viaVless ? UPSTREAM_VLESS : UPSTREAM_WG;
-  const label = route ? (viaVless ? ' [VPN:vless]' : ' [VPN:' + route + ']') : ' [direct]';
-  log(`CONNECT ${host}:${port}${label}`);
+  const chan = activeChannel(route);
+  const target = chan === 'vless' ? UPSTREAM_VLESS : UPSTREAM_WG;
+  log(`CONNECT ${host}:${port}${chan ? ' [VPN:' + chan + ']' : ' [direct]'}`);
   clientSocket.on('error', () => {});
 
-  if (route) {
+  if (chan) {
     // Цепочка: браузер -> менеджер -> (wireproxy | xray) -> туннель
     const up = http.request({ host: target.host, port: target.port, method: 'CONNECT', path: req.url });
     up.on('connect', (ures, upSocket) => {
@@ -557,6 +593,7 @@ const panel = http.createServer(async (req, res) => {
       ]);
       return sendJson(res, 200, {
         vpnUp,
+        wgConfigured: isWgConfigured(),
         proxyRunning: !!state.wp,
         exitIp,
         xrayRunning: !!state.xr,
@@ -674,6 +711,8 @@ panel.listen(PANEL_PORT, HOST, () => {
   log(`панель: http://${HOST}:${PANEL_PORT}/  |  PAC: ${PAC_URL}`);
   loadSettings();
   state.vlessSet = new Set(readVlessDomains());
+  if (!isWgConfigured()) log('WireGuard не настроен (нет корректного wg.conf) — канал отключён');
+  if (!vlessXray.hasConfig()) log('VLESS не настроен (нет vless:// ссылки) — канал отключён');
   startWireproxy();
   startXray();
   doRefresh();

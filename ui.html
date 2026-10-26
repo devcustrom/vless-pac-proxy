@@ -170,8 +170,10 @@ async function post(path, body) {
 async function status() {
   try {
     const s = await (await fetch('/api/status')).json();
-    $('dot').className = 'dot ' + (s.vpnUp ? 'ok' : 'bad');
-    $('vpn').innerHTML = s.vpnUp ? '<b class="ok">WireGuard работает</b>' : '<b class="bad">WireGuard не работает</b>' + (s.proxyRunning ? '' : ' (процесс отсутствует)');
+    $('dot').className = 'dot ' + (s.wgConfigured ? (s.vpnUp ? 'ok' : 'bad') : '');
+    $('vpn').innerHTML = !s.wgConfigured
+      ? 'WireGuard: не настроен'
+      : (s.vpnUp ? '<b class="ok">WireGuard работает</b>' : '<b class="bad">WireGuard не работает</b>' + (s.proxyRunning ? '' : ' (процесс отсутствует)'));
     $('ip').textContent = s.exitIp || '—';
     $('xdot').className = 'dot ' + (s.vlessConfigured ? (s.xrayRunning ? 'ok' : 'bad') : '');
     $('vless').innerHTML = !s.vlessConfigured
@@ -179,9 +181,11 @@ async function status() {
       : (s.xrayRunning ? '<b class="ok">VLESS работает</b>' : '<b class="bad">VLESS не работает</b>');
     $('xip').textContent = s.exitIpVless || '—';
     document.querySelectorAll('input[name=defchan]').forEach((r) => { r.checked = r.value === s.vpnDefault; });
-    $('vnote').textContent = s.vpnDefault === 'vless' && !s.vlessConfigured
-      ? 'Внимание: выбран VLESS, но ссылка не задана — VPN-домены временно идут через WireGuard.'
-      : '';
+    const notes = [];
+    if (s.vpnDefault === 'vless' && !s.vlessConfigured && s.wgConfigured) notes.push('VLESS не задан — VPN-домены временно идут через WireGuard.');
+    if (s.vpnDefault === 'wireguard' && !s.wgConfigured && s.vlessConfigured) notes.push('WireGuard не настроен — VPN-домены автоматически идут через VLESS.');
+    if (!s.wgConfigured && !s.vlessConfigured) notes.push('Ни один VPN-канал не настроен: положите wg.conf или вставьте vless:// ссылку.');
+    $('vnote').textContent = notes.join(' ');
     renderVlessList(s.vlessDomains);
     $('proxied').textContent = s.proxied == null ? '—' : s.proxied.toLocaleString('ru-RU');
     $('upd').textContent = s.lastUpdate ? new Date(s.lastUpdate).toLocaleString('ru-RU') : (s.updateError ? 'ошибка' : '—');

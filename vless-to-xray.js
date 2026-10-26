@@ -106,8 +106,12 @@ function generateXrayConfig(raw) {
 }
 
 // Записывает конфиг, если ссылка валидна. Возвращает краткое описание.
+// Прежний конфиг сохраняется рядом (xray-config.json.bak) — на случай ошибки.
 function saveLink(raw) {
   const { config, parsed } = generateXrayConfig(raw);
+  if (fs.existsSync(XRAY_CONFIG)) {
+    try { fs.copyFileSync(XRAY_CONFIG, XRAY_CONFIG + '.bak'); } catch { /* ignore */ }
+  }
   const tmp = XRAY_CONFIG + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(config, null, 2));
   fs.renameSync(tmp, XRAY_CONFIG);
