@@ -541,6 +541,8 @@ proxyServer.on('connect', (req, clientSocket, head) => {
     up.end();
   } else {
     const up = net.connect(port, host, () => {
+      // реальный IP сервера, к которому ушло прямое соединение (в DevTools он не виден)
+      log(`  -> ${host}:${port} = ${up.remoteAddress} [direct]`);
       clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       pipeSockets(clientSocket, up, head);
     });
