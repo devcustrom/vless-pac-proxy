@@ -2,6 +2,7 @@
 # Строки с # — комментарии. Поддомены учитываются автоматически.
 # Файл редактируется и вручную, и через веб-панель http://127.0.0.1:8080/
 
+api.ipify.org
 block.xyz
 cdn.usefathom.com
 chatgpt.site
@@ -9,4 +10,7 @@ claude.ai
 claude.com
 crl3.digicert.com
 herdr.dev
+ifconfig.me
 nfsu2.xyz
+secure.globalsign.com
+ssp.al-adtech.com
