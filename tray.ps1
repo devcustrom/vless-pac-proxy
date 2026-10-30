@@ -48,9 +48,11 @@ $mi3.add_Click({
 
 $mi4 = $menu.Items.Add('Выход (остановить всё)')
 $mi4.add_Click({
+    Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -Name ProxyEnable -Value 0 -ErrorAction SilentlyContinue
     Stop-Process -Name wireproxy -Force -ErrorAction SilentlyContinue
+    Stop-Process -Name xray -Force -ErrorAction SilentlyContinue
     Get-CimInstance Win32_Process |
-        Where-Object { $_.CommandLine -match 'manager\.js' } |
+        Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -match 'manager\.js' } |
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     $script:ni.Visible = $false
     $script:ni.Dispose()

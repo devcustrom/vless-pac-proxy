@@ -11,7 +11,7 @@ const net = require('net');
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
-const { spawn, execFile } = require('child_process');
+const { spawn, execFile, execFileSync } = require('child_process');
 const { updateDomains, normalizeDomain } = require('./update-domains');
 const vlessXray = require('./vless-to-xray');
 
@@ -398,6 +398,18 @@ async function setSystemProxy(enable) {
   return getSystemProxy();
 }
 
+// Синхронно выключает системный прокси — вызывается при выходе менеджера,
+// чтобы остановленный стек не оставлял браузер с ERR_PROXY_CONNECTION_FAILED.
+function disableSystemProxySync() {
+  if (!IS_WIN) return;
+  try {
+    execFileSync('reg', ['add', REG_KEY, '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '0', '/f'], {
+      windowsHide: true,
+      timeout: 5000,
+    });
+  } catch { /* ignore */ }
+}
+
 // ---------------- проверка домена: напрямую vs через VPN ----------------
 // Статусы HTTPS-ответов внутри TLS не видны, поэтому «автосбор 403»
 // невозможен без MITM. Вместо этого панель проверяет домен по запросу.
@@ -733,6 +745,6 @@ proxyServer.listen(PROXY_PORT, HOST, () => {
   log(`умный прокси: ${HOST}:${PROXY_PORT} (режим ${MODE})`);
 });
 
-process.on('exit', () => { state.stopping = true; stopWireproxy(); stopXray(); });
+process.on('exit', () => { state.stopping = true; stopWireproxy(); stopXray(); disableSystemProxySync(); });
 process.on('SIGINT', () => process.exit(0));
 process.on('SIGTERM', () => process.exit(0));
