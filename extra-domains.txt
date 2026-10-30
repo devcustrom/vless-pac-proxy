@@ -13,5 +13,6 @@ herdr.dev
 https
 ifconfig.me
 nfsu2.xyz
+opencode.ai
 secure.globalsign.com
 ssp.al-adtech.com
