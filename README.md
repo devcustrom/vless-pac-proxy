@@ -126,6 +126,27 @@ Chromium-браузеры (Chrome, Edge, Яндекс) следуют систе
 Отдельно существует PAC-файл `http://127.0.0.1:8080/proxy.pac` — он крошечный
 и просто направляет весь трафик в менеджер; нужен для нестандартных сценариев.
 
+### Приложения со своим HTTP-клиентом (CLI, Electron-приложения)
+
+Браузеры следуют системным настройкам, но многие приложения (opencode desktop,
+CLI-утилиты на Node/Bun/Rust) читают только переменные окружения. Для них:
+
+```powershell
+[Environment]::SetEnvironmentVariable('HTTPS_PROXY','http://127.0.0.1:8081','User')
+[Environment]::SetEnvironmentVariable('HTTP_PROXY','http://127.0.0.1:8081','User')
+[Environment]::SetEnvironmentVariable('NO_PROXY','localhost,127.0.0.1,::1,.local,.z.ai','User')
+[Environment]::SetEnvironmentVariable('NODE_USE_ENV_PROXY','1','User')
+```
+
+Затем полностью перезапустите приложение (новые процессы наследуют переменные).
+Их трафик пойдёт через менеджер с той же маршрутизацией по доменам.
+Учтите: пока стек остановлен, такие приложения будут получать ошибки
+соединения — либо держите стек запущенным, либо удалите переменные:
+
+```powershell
+[Environment]::SetEnvironmentVariable('HTTPS_PROXY','','User')
+```
+
 ## Маршрутизация
 
 | Что | Куда идёт |
