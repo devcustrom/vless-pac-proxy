@@ -11,6 +11,7 @@ crl3.digicert.com
 herdr.dev
 https
 nfsu2.xyz
+primevue.dev
 secure.globalsign.com
 ssp.al-adtech.com
 static.figma.com
