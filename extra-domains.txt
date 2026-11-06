@@ -9,8 +9,8 @@ claude.ai
 claude.com
 crl3.digicert.com
 herdr.dev
-https
 nfsu2.xyz
+opencode.ai
 primevue.dev
 secure.globalsign.com
 ssp.al-adtech.com

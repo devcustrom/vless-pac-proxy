@@ -53,8 +53,10 @@ const state = {
   lastUpdate: null,
   updateError: null,
   exitIp: null,
+  exitIpOk: false,
   exitIpAt: 0,
   exitIpVless: null,
+  exitIpVlessOk: false,
   exitIpVlessAt: 0,
   checks: [],
   visited: new Map(), // domain -> { count, last } — сайты, прошедшие мимо VPN
@@ -121,11 +123,12 @@ function startXray() {
   });
   state.xr = child;
   log('xray (VLESS) запущен, pid', child.pid);
-  child.stdout.on('data', () => {});
-  child.stderr.on('data', (d) => {
+  const relay = (d) => {
     const t = String(d).trim();
-    if (t) log('xray:', t.slice(0, 200));
-  });
+    if (t) log('xray:', t.slice(0, 240));
+  };
+  child.stdout.on('data', relay); // xray пишет диагностику в stdout
+  child.stderr.on('data', relay);
   child.on('exit', (code, signal) => {
     state.xr = null;
     if (state.stopping || !vlessXray.hasConfig()) return;
@@ -195,30 +198,38 @@ function checkExitIpVia(port) {
   });
 }
 
-function checkExitIp() {
-  return new Promise((resolve) => {
-    if (Date.now() - state.exitIpAt < 60000) return resolve(state.exitIp);
-    checkExitIpVia(UPSTREAM_WG.port).then((ip) => {
-      if (ip) {
-        state.exitIp = ip;
-        state.exitIpAt = Date.now();
-      }
-      resolve(state.exitIp);
-    });
-  });
-}
+// Проверка «канал реально ходит» — фактический запрос IP через прокси канала.
+// Запускается в фоне (при старте и раз в минуту), статус отдаёт кэш, чтобы
+// панель не подвисала на мёртвом канале.
+let probing = false;
 
-function checkExitIpVless() {
-  return new Promise((resolve) => {
-    if (Date.now() - state.exitIpVlessAt < 60000) return resolve(state.exitIpVless);
-    checkExitIpVia(UPSTREAM_VLESS.port).then((ip) => {
-      if (ip) {
-        state.exitIpVless = ip;
-        state.exitIpVlessAt = Date.now();
-      }
-      resolve(state.exitIpVless || null);
-    });
-  });
+async function probeChannels() {
+  if (probing) return;
+  probing = true;
+  try {
+    if (isWgConfigured()) {
+      const ip = await checkExitIpVia(UPSTREAM_WG.port);
+      state.exitIp = ip;
+      state.exitIpOk = !!ip;
+      state.exitIpAt = Date.now();
+    } else {
+      state.exitIp = null;
+      state.exitIpOk = false;
+      state.exitIpAt = 0;
+    }
+    if (vlessXray.hasConfig()) {
+      const ip = await checkExitIpVia(UPSTREAM_VLESS.port);
+      state.exitIpVless = ip;
+      state.exitIpVlessOk = !!ip;
+      state.exitIpVlessAt = Date.now();
+    } else {
+      state.exitIpVless = null;
+      state.exitIpVlessOk = false;
+      state.exitIpVlessAt = 0;
+    }
+  } finally {
+    probing = false;
+  }
 }
 
 // ---------------- маршрутизация ----------------
@@ -598,22 +609,22 @@ const panel = http.createServer(async (req, res) => {
       return res.end(pac);
     }
     if (req.method === 'GET' && url === '/api/status') {
-      const [vpnUp, sysProxy, exitIp, xrayPortUp, exitIpVless] = await Promise.all([
+      const [vpnUp, sysProxy, xrayPortUp] = await Promise.all([
         portUp(UPSTREAM_WG.port),
         getSystemProxy(),
-        checkExitIp(),
         portUp(UPSTREAM_VLESS.port),
-        checkExitIpVless(),
       ]);
       return sendJson(res, 200, {
         vpnUp,
         wgConfigured: isWgConfigured(),
         proxyRunning: !!state.wp,
-        exitIp,
+        wgUp: state.exitIpOk, // канал реально проходит трафик (по последней пробе)
+        exitIp: state.exitIpOk ? state.exitIp : null,
         xrayRunning: !!state.xr,
         vlessPortUp: xrayPortUp,
         vlessConfigured: vlessXray.hasConfig(),
-        exitIpVless: state.xr ? exitIpVless : null,
+        vlessUp: state.exitIpVlessOk,
+        exitIpVless: state.exitIpVlessOk ? state.exitIpVless : null,
         vpnDefault: state.vpnDefault,
         vlessDomains: readVlessDomains(),
         proxied: state.proxied,
@@ -654,6 +665,7 @@ const panel = http.createServer(async (req, res) => {
           const info = vlessXray.saveLink(String(body.link || ''));
           log('VLESS-конфиг сохранён:', JSON.stringify(info));
           restartXray();
+          setTimeout(probeChannels, 6000);
           return sendJson(res, 200, { ok: true, info });
         } catch (e) {
           return sendJson(res, 400, { error: e.message });
@@ -688,6 +700,7 @@ const panel = http.createServer(async (req, res) => {
       }
       if (body.action === 'restart') {
         restartXray();
+        setTimeout(probeChannels, 6000);
         return sendJson(res, 200, { ok: true });
       }
       return sendJson(res, 400, { error: 'неизвестное действие' });
@@ -707,6 +720,7 @@ const panel = http.createServer(async (req, res) => {
       log('перезапуск wireproxy по запросу из панели');
       stopWireproxy();
       setTimeout(startWireproxy, 1000);
+      setTimeout(probeChannels, 6000);
       return sendJson(res, 200, { ok: true });
     }
     if (req.method === 'POST' && url === '/api/system-proxy') {
@@ -731,7 +745,8 @@ panel.listen(PANEL_PORT, HOST, () => {
   startXray();
   doRefresh();
   setInterval(doRefresh, 12 * 60 * 60 * 1000);
-  setInterval(() => checkExitIp(), 60 * 1000);
+  setTimeout(probeChannels, 3000);
+  setInterval(probeChannels, 60 * 1000);
   // миграция: если раньше был включён системный PAC — переключаем на статический прокси
   getSystemProxy().then((st) => {
     if (st.mode === 'pac' && st.value === PAC_URL) {

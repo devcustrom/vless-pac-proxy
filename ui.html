@@ -170,15 +170,19 @@ async function post(path, body) {
 async function status() {
   try {
     const s = await (await fetch('/api/status')).json();
-    $('dot').className = 'dot ' + (s.wgConfigured ? (s.vpnUp ? 'ok' : 'bad') : '');
+    $('dot').className = 'dot ' + (s.wgConfigured ? (s.wgUp ? 'ok' : 'bad') : '');
     $('vpn').innerHTML = !s.wgConfigured
       ? 'WireGuard: не настроен'
-      : (s.vpnUp ? '<b class="ok">WireGuard работает</b>' : '<b class="bad">WireGuard не работает</b>' + (s.proxyRunning ? '' : ' (процесс отсутствует)'));
+      : (s.wgUp
+          ? '<b class="ok">WireGuard работает</b>'
+          : '<b class="bad">WireGuard не работает</b>' + (s.proxyRunning ? ' (канал не проходит трафик)' : ' (процесс отсутствует)'));
     $('ip').textContent = s.exitIp || '—';
-    $('xdot').className = 'dot ' + (s.vlessConfigured ? (s.xrayRunning ? 'ok' : 'bad') : '');
+    $('xdot').className = 'dot ' + (s.vlessConfigured ? (s.vlessUp ? 'ok' : 'bad') : '');
     $('vless').innerHTML = !s.vlessConfigured
       ? 'VLESS: не настроен'
-      : (s.xrayRunning ? '<b class="ok">VLESS работает</b>' : '<b class="bad">VLESS не работает</b>');
+      : (s.vlessUp
+          ? '<b class="ok">VLESS работает</b>'
+          : '<b class="bad">VLESS не работает</b>' + (s.xrayRunning ? ' (канал не проходит трафик)' : ' (процесс отсутствует)'));
     $('xip').textContent = s.exitIpVless || '—';
     document.querySelectorAll('input[name=defchan]').forEach((r) => { r.checked = r.value === s.vpnDefault; });
     const notes = [];
