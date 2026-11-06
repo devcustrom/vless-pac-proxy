@@ -258,10 +258,17 @@ function routeFor(hostRaw) {
 }
 
 // Канал по умолчанию, но с учётом того, какой процесс реально запущен
+// и здоровье канала по последней пробе (мёртвый не должен блокировать трафик)
 function activeChannel(route) {
   if (!route) return false;
-  if (route === 'vless') return state.xr ? 'vless' : (state.wp ? 'wireguard' : 'vless');
-  return state.wp ? 'wireguard' : (state.xr ? 'vless' : 'wireguard');
+  const wgOk = state.exitIpOk;
+  const vlessOk = state.exitIpVlessOk;
+  if (route === 'vless') {
+    if (state.xr && (vlessOk || !wgOk)) return 'vless';
+    return state.wp ? 'wireguard' : 'vless';
+  }
+  if (state.wp && (wgOk || !vlessOk)) return 'wireguard';
+  return state.xr ? 'vless' : 'wireguard';
 }
 
 function shouldProxy(hostRaw) {
