@@ -1,8 +1,12 @@
 // Плагин локальных доменов: реверс-прокси по Host на локальные порты.
-// Слушает только loopback; цели — фиксированный 127.0.0.1 + порт из конфига,
-// поэтому наружу/в произвольные адреса не ходит. Поддерживает WebSocket-upgrade.
+// Слушает только loopback (127.0.0.1:80 и, при наличии CA, 127.0.0.1:443);
+// цели — фиксированный 127.0.0.1 + порт из конфига, поэтому наружу/в
+// произвольные адреса не ходит. Поддерживает WebSocket-upgrade.
+// HTTP и HTTPS используют один и тот же обработчик.
 'use strict';
+const fs = require('fs');
 const http = require('http');
+const https = require('https');
 const net = require('net');
 
 // Формат строки: "domain = 8080" или "domain 8080"
@@ -43,9 +47,8 @@ function findTarget(domains, hostHeader) {
   return domains.find((d) => d.domain === host) || null;
 }
 
-// ports: { port, getDomains, log }
-function createLocalProxy({ port, getDomains, log }) {
-  const server = http.createServer((req, res) => {
+function makeRequestHandler(getDomains, log) {
+  return (req, res) => {
     const entry = findTarget(getDomains(), req.headers.host);
     // Host и путь не отражаем как есть: только безопасные символы
     const safeHost = hostOnly(req.headers.host).replace(/[^a-z0-9.:-]/g, '').slice(0, 128);
@@ -58,6 +61,7 @@ function createLocalProxy({ port, getDomains, log }) {
       return res.end(`локальный домен не настроен\nнастроены: ${names}`);
     }
     log(`local: ${safeHost}${safePath} -> 127.0.0.1:${entry.port}`);
+
     // Нормализуем путь через парсер (без сырой строки запроса) и фильтруем
     // hop-by-hop заголовки: наружу уходят только валидные данные.
     let targetPath = '/';
@@ -84,10 +88,12 @@ function createLocalProxy({ port, getDomains, log }) {
       try { res.writeHead(502); res.end('upstream error'); } catch { /* ignore */ }
     });
     req.pipe(up);
-  });
+  };
+}
 
-  // WebSocket и прочие Upgrade — прозрачно, с сохранением исходных заголовков
-  server.on('upgrade', (req, socket, head) => {
+// WebSocket и прочие Upgrade — прозрачно, с сохранением исходных заголовков
+function makeUpgradeHandler(getDomains, log) {
+  return (req, socket, head) => {
     const entry = findTarget(getDomains(), req.headers.host);
     const safeHost = hostOnly(req.headers.host).replace(/[^a-z0-9.:-]/g, '').slice(0, 128);
     const safePath = String(req.url || '').replace(/[^A-Za-z0-9/?&=._~%-]/g, '').slice(0, 512);
@@ -111,10 +117,38 @@ function createLocalProxy({ port, getDomains, log }) {
     socket.on('error', () => up.destroy());
     up.on('close', () => socket.destroy());
     socket.on('close', () => up.destroy());
-  });
+  };
+}
 
+function createLocalProxy({ port, getDomains, log }) {
+  const server = http.createServer(makeRequestHandler(getDomains, log));
+  server.on('upgrade', makeUpgradeHandler(getDomains, log));
   server.listen(port, '127.0.0.1');
   return server;
 }
 
-module.exports = { parseConfig, parseLine, createLocalProxy, hostOnly };
+// HTTPS: SNICallback выбирает контекст по домену; defaultKey/Cert — для
+// клиентов без SNI (например, запрос по IP).
+function createLocalTlsProxy({ port, getDomains, log, getContext, defaultKeyPath, defaultCertPath }) {
+  const options = {
+    SNICallback: (servername, cb) => {
+      try {
+        const ctx = getContext(String(servername || '').toLowerCase());
+        if (ctx) return cb(null, ctx);
+        cb(new Error('нет сертификата для ' + servername));
+      } catch (e) {
+        cb(e);
+      }
+    },
+  };
+  if (defaultKeyPath && defaultCertPath) {
+    options.key = fs.readFileSync(defaultKeyPath);
+    options.cert = fs.readFileSync(defaultCertPath);
+  }
+  const server = https.createServer(options, makeRequestHandler(getDomains, log));
+  server.on('upgrade', makeUpgradeHandler(getDomains, log));
+  server.listen(port, '127.0.0.1');
+  return server;
+}
+
+module.exports = { parseConfig, parseLine, createLocalProxy, createLocalTlsProxy, hostOnly };

@@ -16,6 +16,8 @@ const { updateDomains, normalizeDomain } = require('./update-domains');
 const vlessXray = require('./vless-to-xray');
 const vlessPool = require('./vless-pool');
 const localDomains = require('./local-domains');
+const localTls = require('./local-tls');
+const tls = require('tls');
 
 const IS_WIN = process.platform === 'win32';
 
@@ -77,6 +79,10 @@ const state = {
   wgDeadNotified: false,
   localProxyPort: 80,  // плагин локальных доменов: порт реверс-прокси (loopback)
   localProxyError: null,
+  localHttpsPort: 443, // HTTPS-порт плагина (локальный CA)
+  localHttpsError: null,
+  tlsContexts: new Map(), // домен -> tls.SecureContext
+  tlsDefault: null,       // { key, crt } для клиентов без SNI
   proxied: null,
   direct: null,
   lastUpdate: null,
@@ -190,6 +196,9 @@ function loadSettings() {
     if (Number.isFinite(s.localProxyPort) && s.localProxyPort >= 1 && s.localProxyPort <= 65535) {
       state.localProxyPort = s.localProxyPort;
     }
+    if (Number.isFinite(s.localHttpsPort) && s.localHttpsPort >= 1 && s.localHttpsPort <= 65535) {
+      state.localHttpsPort = s.localHttpsPort;
+    }
   } catch { /* нет файла — значения по умолчанию */ }
 }
 
@@ -199,6 +208,7 @@ function saveSettings() {
     autoRotate: state.autoRotate,
     autoPoolRefreshHours: state.autoPoolRefreshHours,
     localProxyPort: state.localProxyPort,
+    localHttpsPort: state.localHttpsPort,
   }, null, 2));
 }
 
@@ -257,6 +267,73 @@ function startLocalProxy() {
   } catch (e) {
     state.localProxyError = e.message;
     log('плагин локальных доменов не запустился:', e.message);
+  }
+}
+
+// Локальные сертификаты для HTTPS: CA создаётся один раз в ./certs,
+// затем на каждый домен подписывается отдельный сертификат (SAN=DNS:домен).
+async function prepareLocalTls() {
+  state.tlsContexts.clear();
+  state.tlsDefault = null;
+  const domains = getLocalDomains();
+  if (!domains.length) {
+    state.localHttpsError = 'нет доменов для HTTPS';
+    return;
+  }
+  const openssl = localTls.findOpenssl();
+  if (!openssl) {
+    state.localHttpsError = 'openssl не найден (нужен Git for Windows или openssl в PATH)';
+    log('HTTPS-плагин: openssl не найден — HTTPS не будет запущен');
+    return;
+  }
+  try {
+    const ca = await localTls.ensureCa(openssl);
+    for (const d of domains) {
+      try {
+        const cert = await localTls.ensureDomainCert(openssl, ca, d.domain);
+        state.tlsContexts.set(
+          d.domain,
+          tls.createSecureContext({ key: fs.readFileSync(cert.key), cert: fs.readFileSync(cert.crt) })
+        );
+        if (!state.tlsDefault) state.tlsDefault = cert;
+      } catch (e) {
+        log(`HTTPS: сертификат для ${d.domain} — ${e.message}`);
+      }
+    }
+    state.localHttpsError = state.tlsContexts.size ? null : 'сертификаты не созданы';
+  } catch (e) {
+    state.localHttpsError = e.message;
+    log('HTTPS: локальный CA не создан —', e.message);
+  }
+}
+
+function startLocalHttpsProxy() {
+  if (!state.tlsContexts.size) {
+    log('HTTPS-плагин не запущен:', state.localHttpsError || 'нет сертификатов');
+    return;
+  }
+  try {
+    const srv = localDomains.createLocalTlsProxy({
+      port: state.localHttpsPort,
+      getDomains: getLocalDomains,
+      log,
+      getContext: (name) => state.tlsContexts.get(name) || null,
+      defaultKeyPath: state.tlsDefault ? state.tlsDefault.key : null,
+      defaultCertPath: state.tlsDefault ? state.tlsDefault.crt : null,
+    });
+    srv.on('error', (e) => {
+      state.localHttpsError = e.code === 'EADDRINUSE'
+        ? `порт ${state.localHttpsPort} занят другим приложением`
+        : e.message;
+      log('HTTPS-плагин: ошибка —', state.localHttpsError);
+    });
+    srv.on('listening', () => {
+      state.localHttpsError = null;
+      log(`плагин локальных доменов: https://127.0.0.1:${state.localHttpsPort} (${state.tlsContexts.size} серт.)`);
+    });
+  } catch (e) {
+    state.localHttpsError = e.message;
+    log('HTTPS-плагин не запустился:', e.message);
   }
 }
 
@@ -960,6 +1037,9 @@ const panel = http.createServer(async (req, res) => {
         localProxy: {
           port: state.localProxyPort,
           error: state.localProxyError,
+          httpsPort: state.localHttpsPort,
+          httpsError: state.localHttpsError,
+          caPath: 'certs/ca.crt',
           domains: getLocalDomains(),
         },
         vpnDefault: state.vpnDefault,
@@ -1117,11 +1197,15 @@ const panel = http.createServer(async (req, res) => {
         }
         const list = readLocalDomains().filter((d) => d.domain !== domain);
         list.push({ domain, port });
-        return sendJson(res, 200, { ok: true, domains: writeLocalDomains(list) });
+        const domains = writeLocalDomains(list);
+        prepareLocalTls().then(() => log('HTTPS: сертификаты обновлены'));
+        return sendJson(res, 200, { ok: true, domains });
       }
       if (body.action === 'remove') {
         const list = readLocalDomains().filter((d) => d.domain !== domain);
-        return sendJson(res, 200, { ok: true, domains: writeLocalDomains(list) });
+        const domains = writeLocalDomains(list);
+        prepareLocalTls().then(() => log('HTTPS: сертификаты обновлены'));
+        return sendJson(res, 200, { ok: true, domains });
       }
       return sendJson(res, 400, { error: 'action должен быть add|remove' });
     }
@@ -1170,6 +1254,7 @@ panel.listen(PANEL_PORT, HOST, () => {
   setInterval(probeChannels, 60 * 1000);
   startAutoPoolScheduler();
   startLocalProxy();
+  prepareLocalTls().then(startLocalHttpsProxy);
   // миграция: если раньше был включён системный PAC — переключаем на статический прокси
   getSystemProxy().then((st) => {
     if (st.mode === 'pac' && st.value === PAC_URL) {

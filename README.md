@@ -255,8 +255,20 @@ wireproxy `:25344`, HTTP wireproxy `:25345`, HTTP xray `:25346`.
   hosts. Для «настоящих» имён (например `app.test`) запустите
   `local-domains-hosts.bat` от имени администратора — он синхронизирует блок
   записей в hosts между маркерами и сбрасывает DNS-кэш.
-- HTTPS для локальных доменов не поднимается (нужен собственный CA и
-  сертификаты) — используйте `http://`.
+- **HTTPS**: у плагина свой локальный CA. При старте создаются `certs/ca.key`
+  и `certs/ca.crt` (10 лет), на каждый домен выпускается сертификат с
+  `SAN=DNS:домен`; HTTPS слушает `127.0.0.1:443` (`localHttpsPort` в
+  `settings.json`), сертификат выбирается по SNI.
+  Доверие CA: `local-domains-trust.bat` — **запросит UAC** и добавит CA в
+  `LocalMachine\Root` (Chrome/Edge на Windows не доверяют CA из
+  пользовательского хранилища), плюс продублирует в `CurrentUser\Root` для
+  curl и прочих клиентов. Firefox — включить
+  `security.enterprise_roots.enabled=true` в `about:config`.
+  `curl` (schannel) может ругаться на проверку отзыва локального цепочки —
+  используйте `--ssl-no-revoke`.
+  Удалить CA: `certutil -delstore Root "wireproxy-control local CA"` и
+  `certutil -delstore -user Root "wireproxy-control local CA"`.
+  Ключи и сертификаты лежат в `certs/` и в git не попадают.
 - Неизвестный домен получает 404 со списком настроенных.
 
 ## Повседневное использование

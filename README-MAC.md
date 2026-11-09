@@ -87,6 +87,19 @@ xcode-select --install   # один раз
 
 Если `swiftc` нет — панель работает как обычно, просто без иконки в меню-баре.
 
+## HTTPS для локальных доменов
+
+Плагин умеет HTTPS со своим локальным CA (`certs/ca.crt`). На macOS доверять
+CA нужно в системный keychain:
+
+```bash
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain ~/wireproxy/certs/ca.crt
+```
+
+Firefox: `security.enterprise_roots.enabled=true` в `about:config`.
+Удалить: `sudo security delete-certificate -c "wireproxy-control local CA" /Library/Keychains/System.keychain`.
+
 ## Отличия от Windows
 
 - Иконка живёт в строке меню (см. выше), а не в системном трее; запуск и

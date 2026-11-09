@@ -125,7 +125,7 @@
 
 <div class="card">
   <b>Локальные домены (плагин)</b>
-  <div class="muted">Домен → локальный порт. Реверс-прокси на <code>127.0.0.1:<span id="lport">80</span></code>, только loopback, WebSocket поддерживается. Домены <code>*.localhost</code> браузеры открывают без правки hosts; для остальных имён запустите <code>local-domains-hosts.bat</code> от администратора.</div>
+  <div class="muted">Домен → локальный порт. Реверс-прокси на <code>http://127.0.0.1:<span id="lport">80</span></code> и <code>https://127.0.0.1:<span id="lhttpsport">443</span></code> (свой локальный CA: <code>local-domains-trust.bat</code> один раз, без прав админа; Firefox — <code>security.enterprise_roots.enabled=true</code>), только loopback, WebSocket поддерживается. Домены <code>*.localhost</code> браузеры открывают без правки hosts; для остальных имён запустите <code>local-domains-hosts.bat</code> от администратора.</div>
   <div id="ldlist"></div>
   <form id="ldadd" class="row" style="margin-top:6px">
     <input type="text" id="lddomain" placeholder="app.localhost" autocomplete="off">
@@ -304,13 +304,17 @@ function renderPool(s) {
 function renderLocalDomains(lp) {
   if (!lp) return;
   $('lport').textContent = lp.port;
-  $('ldinfo').textContent = lp.error ? 'ошибка реверс-прокси: ' + lp.error : '';
+  if ($('lhttpsport')) $('lhttpsport').textContent = lp.httpsPort || '—';
+  const problems = [];
+  if (lp.error) problems.push('http: ' + lp.error);
+  if (lp.httpsError) problems.push('https: ' + lp.httpsError);
+  $('ldinfo').textContent = problems.length ? problems.join(' · ') : '';
   const el = $('ldlist');
   el.innerHTML = '';
   (lp.domains || []).forEach((d) => {
     const li = document.createElement('li');
     const span = document.createElement('span');
-    span.innerHTML = `<code>http://${d.domain}</code> <span class="muted">→ 127.0.0.1:${d.port}</span>`;
+    span.innerHTML = `<code>http://${d.domain}</code> · <code>https://${d.domain}</code> <span class="muted">→ 127.0.0.1:${d.port}</span>`;
     const btn = document.createElement('button'); btn.textContent = 'убрать';
     btn.onclick = async () => { try { await post('/api/local-domains', { action: 'remove', domain: d.domain }); status(); } catch (e) { msg(e.message, true); } };
     li.append(span, btn); el.append(li);

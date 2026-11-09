@@ -8,6 +8,7 @@ settings.json
 # Генерируется менеджером автоматически
 proxy.pac
 xray-pool-*.json
+certs/
 
 # Бинарники и архивы (скачиваются/собираются установщиками)
 wireproxy.exe
