@@ -67,6 +67,12 @@ const state = {
   poolError: null,
   activeLink: null,    // ссылка текущего применённого VLESS-конфига
   lastRotateAt: 0,     // антидребезг авто-ротации
+  lastPoolAttempt: 0,  // время последней попытки обновить пул
+  poolTried: new Set(),// испробованные в текущем цикле восстановления ссылки
+  rotateCycleAt: 0,    // начало цикла восстановления
+  autoRotate: true,    // автопереключение на рабочий конфиг
+  autoPoolRefreshHours: 6, // автообновление подписок, часов (0 — выключено)
+  wgDeadNotified: false,
   proxied: null,
   direct: null,
   lastUpdate: null,
@@ -173,11 +179,19 @@ function loadSettings() {
   try {
     const s = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'));
     if (s.vpnDefault === 'wireguard' || s.vpnDefault === 'vless') state.vpnDefault = s.vpnDefault;
+    if (typeof s.autoRotate === 'boolean') state.autoRotate = s.autoRotate;
+    if (Number.isFinite(s.autoPoolRefreshHours) && s.autoPoolRefreshHours >= 0) {
+      state.autoPoolRefreshHours = s.autoPoolRefreshHours;
+    }
   } catch { /* нет файла — значения по умолчанию */ }
 }
 
 function saveSettings() {
-  fs.writeFileSync(SETTINGS_FILE, JSON.stringify({ vpnDefault: state.vpnDefault }, null, 2));
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify({
+    vpnDefault: state.vpnDefault,
+    autoRotate: state.autoRotate,
+    autoPoolRefreshHours: state.autoPoolRefreshHours,
+  }, null, 2));
 }
 
 function readVlessDomains() {
@@ -239,6 +253,7 @@ async function refreshPool() {
   if (state.poolTesting) return;
   state.poolTesting = true;
   state.poolError = null;
+  state.lastPoolAttempt = Date.now();
   try {
     const subs = readSubscriptions();
     if (!subs.length) throw new Error('нет подписок: добавьте URL в панели');
@@ -271,8 +286,8 @@ async function refreshPool() {
     savePoolState();
     const okCount = results.filter((r) => r.ok).length;
     log(`пул обновлён: рабочих ${okCount} из ${results.length}`);
-    // если текущий VLESS мёртв — сразу переключаемся на рабочий
-    if (!state.exitIpVlessOk) maybeRotate(true);
+    // VLESS всё ещё мёртв — попробуем применить рабочий конфиг
+    if (!state.exitIpVlessOk) autoRecover('после обновления пула');
   } catch (e) {
     state.poolError = e.message;
     log('ошибка обновления пула:', e.message);
@@ -281,18 +296,44 @@ async function refreshPool() {
   }
 }
 
-// Переключение VLESS на рабочий конфиг из пула
-function maybeRotate(force) {
-  if (!state.pool.length || state.poolTesting) return false;
-  if (!force && Date.now() - state.lastRotateAt < 5 * 60 * 1000) return false;
-  const cand = state.pool.find((p) => p.ok && p.link !== state.activeLink);
-  if (!cand) return false;
+// ---------------- автовосстановление ----------------
+const ROTATE_MIN_GAP_MS = 60 * 1000;        // пауза между переключениями
+const POOL_MIN_GAP_MS = 90 * 1000;          // пауза между обновлениями пула
+const ROTATE_CYCLE_RESET_MS = 15 * 60 * 1000; // сброс «испробованных» через 15 мин
+
+// Находит рабочий конфиг в пуле и применяет его. Если пул устарел/пуст —
+// сначала обновляет подписки. Не более одного переключения в минуту.
+async function autoRecover(reason) {
+  if (!state.autoRotate || state.poolTesting) return false;
+  const now = Date.now();
+  if (now - state.lastRotateAt < ROTATE_MIN_GAP_MS) return false;
+
+  const stale = !state.poolUpdatedAt ||
+    now - Date.parse(state.poolUpdatedAt) > state.autoPoolRefreshHours * 3600 * 1000;
+  if ((!state.pool.some((p) => p.ok) || stale) && now - state.lastPoolAttempt > POOL_MIN_GAP_MS) {
+    log(`автовосстановление (${reason}): пул устарел/пуст — обновляю подписки`);
+    await refreshPool();
+  }
+
+  if (now - state.rotateCycleAt > ROTATE_CYCLE_RESET_MS) {
+    state.poolTried.clear();
+    state.rotateCycleAt = now;
+  }
+  const cand = state.pool.find((p) => p.ok && p.link !== state.activeLink && !state.poolTried.has(p.link));
+  if (!cand) {
+    if (state.poolTried.size) {
+      state.poolTried.clear();
+      log('автовосстановление: все рабочие кандидаты испробованы, цикл сброшен');
+    }
+    return false;
+  }
   try {
-    const info = vlessXray.saveLink(cand.link);
+    vlessXray.saveLink(cand.link);
     state.activeLink = cand.link;
+    state.poolTried.add(cand.link);
     state.lastRotateAt = Date.now();
     savePoolState();
-    log(`VLESS переключён на рабочий конфиг: ${cand.name} (${cand.protocol} ${cand.address}:${cand.port}, ${cand.ms} мс)`);
+    log(`автовосстановление (${reason}): VLESS → ${cand.name} (${cand.protocol} ${cand.address}:${cand.port}, ${cand.ms} мс)`);
     restartXray();
     setTimeout(probeChannels, 8000);
     return true;
@@ -300,6 +341,18 @@ function maybeRotate(force) {
     log('не удалось применить конфиг из пула:', e.message);
     return false;
   }
+}
+
+// Плановое автообновление подписок: при старте и далее по расписанию
+function startAutoPoolScheduler() {
+  const tick = () => {
+    if (state.poolTesting || !(state.autoPoolRefreshHours > 0)) return;
+    const due = !state.lastPoolAttempt ||
+      Date.now() - state.lastPoolAttempt > state.autoPoolRefreshHours * 3600 * 1000;
+    if (due) refreshPool();
+  };
+  setTimeout(tick, 40 * 1000);       // после старта (чтобы не мешать первым пробам)
+  setInterval(tick, 10 * 60 * 1000); // проверка расписания раз в 10 минут
 }
 
 // ---------------- вспомогательные ----------------
@@ -353,8 +406,19 @@ async function probeChannels() {
       state.exitIpVlessOk = false;
       state.exitIpVlessAt = 0;
     }
-    // VLESS лежит, а в пуле есть рабочий конфиг — ротируем (не чаще раза в 5 мин)
-    if (vlessXray.hasConfig() && !state.exitIpVlessOk) maybeRotate(false);
+    // VLESS лежит — восстанавливаем из пула; если и WG мёртв — тем более
+    if (vlessXray.hasConfig() && !state.exitIpVlessOk) {
+      autoRecover(state.exitIpOk ? 'VLESS мёртв' : 'WireGuard и VLESS мертвы');
+    } else if (state.exitIpVlessOk && state.poolTried.size) {
+      state.poolTried.clear(); // канал восстановился — начинаем цикл с чистого листа
+      log('VLESS-канал восстановлен');
+    }
+    // WG мёртв, но VLESS жив — маршрутизация уже уйдёт в VLESS (activeChannel)
+    if (!state.exitIpOk && state.exitIpVlessOk && !state.wgDeadNotified) {
+      state.wgDeadNotified = true;
+      log('WireGuard не проходит трафик — VPN-домены автоматически идут через VLESS');
+    }
+    if (state.exitIpOk) state.wgDeadNotified = false;
   } finally {
     probing = false;
   }
@@ -784,6 +848,11 @@ const panel = http.createServer(async (req, res) => {
         poolTesting: state.poolTesting,
         poolUpdatedAt: state.poolUpdatedAt,
         poolError: state.poolError,
+        autoRotate: state.autoRotate,
+        autoPoolRefreshHours: state.autoPoolRefreshHours,
+        nextPoolRefreshAt: state.autoPoolRefreshHours > 0 && state.lastPoolAttempt
+          ? new Date(state.lastPoolAttempt + state.autoPoolRefreshHours * 3600 * 1000).toISOString()
+          : null,
         subscriptions: readSubscriptions(),
         vpnDefault: state.vpnDefault,
         vlessDomains: readVlessDomains(),
@@ -909,6 +978,24 @@ const panel = http.createServer(async (req, res) => {
       }
       return sendJson(res, 400, { error: 'action должен быть add|remove' });
     }
+    if (req.method === 'POST' && url === '/api/auto') {
+      const body = await readBody(req);
+      if (typeof body.autoRotate === 'boolean') state.autoRotate = body.autoRotate;
+      if (body.autoPoolRefreshHours !== undefined) {
+        const h = Number(body.autoPoolRefreshHours);
+        if (!Number.isFinite(h) || h < 0 || h > 168) {
+          return sendJson(res, 400, { error: 'autoPoolRefreshHours: 0..168' });
+        }
+        state.autoPoolRefreshHours = h;
+      }
+      saveSettings();
+      log(`автонастройки: обновление подписок ${state.autoPoolRefreshHours > 0 ? 'каждые ' + state.autoPoolRefreshHours + ' ч' : 'выключено'}, автопереключение ${state.autoRotate ? 'вкл' : 'выкл'}`);
+      return sendJson(res, 200, {
+        ok: true,
+        autoRotate: state.autoRotate,
+        autoPoolRefreshHours: state.autoPoolRefreshHours,
+      });
+    }
     if (req.method === 'POST' && url === '/api/check') {
       const body = await readBody(req);
       const d = normalizeDomain(String(body.domain || ''));
@@ -952,6 +1039,7 @@ panel.listen(PANEL_PORT, HOST, () => {
   setInterval(doRefresh, 12 * 60 * 60 * 1000);
   setTimeout(probeChannels, 3000);
   setInterval(probeChannels, 60 * 1000);
+  startAutoPoolScheduler();
   // миграция: если раньше был включён системный PAC — переключаем на статический прокси
   getSystemProxy().then((st) => {
     if (st.mode === 'pac' && st.value === PAC_URL) {

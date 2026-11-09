@@ -108,6 +108,18 @@
     <button id="poolrefresh" class="primary">Проверить конфиги</button>
     <span class="muted" id="poolinfo"></span>
   </div>
+  <div class="row" style="margin-top:8px">
+    <label><input type="checkbox" id="autopool"> Автообновление подписок</label>
+    <select id="autohours">
+      <option value="1">каждый час</option>
+      <option value="3">каждые 3 ч</option>
+      <option value="6">каждые 6 ч</option>
+      <option value="12">каждые 12 ч</option>
+      <option value="24">раз в сутки</option>
+    </select>
+    <label><input type="checkbox" id="autorotate"> Автопереключение на рабочий конфиг</label>
+  </div>
+  <div class="muted" id="autoinfo"></div>
   <ul id="poollist"></ul>
 </div>
 
@@ -208,6 +220,12 @@ async function status() {
     renderVlessList(s.vlessDomains);
     renderSubs(s.subscriptions);
     renderPool(s);
+    $('autopool').checked = s.autoPoolRefreshHours > 0;
+    $('autorotate').checked = !!s.autoRotate;
+    if (s.autoPoolRefreshHours > 0) $('autohours').value = String(s.autoPoolRefreshHours);
+    $('autoinfo').textContent = s.nextPoolRefreshAt
+      ? 'следующее автообновление подписок: ' + new Date(s.nextPoolRefreshAt).toLocaleString('ru-RU')
+      : (s.autoPoolRefreshHours > 0 ? 'автообновление подписок включено' : 'автообновление подписок выключено');
     $('proxied').textContent = s.proxied == null ? '—' : s.proxied.toLocaleString('ru-RU');
     $('upd').textContent = s.lastUpdate ? new Date(s.lastUpdate).toLocaleString('ru-RU') : (s.updateError ? 'ошибка' : '—');
     $('refresh').disabled = !!s.refreshing;
@@ -382,6 +400,10 @@ $('poolrefresh').onclick = async () => {
   try { await post('/api/pool/refresh'); msg('Проверка конфигов запущена…'); }
   catch (e) { msg(e.message, true); }
 };
+const postAuto = async (body) => { try { await post('/api/auto', body); status(); } catch (e) { msg(e.message, true); } };
+$('autopool').onchange = () => postAuto({ autoPoolRefreshHours: $('autopool').checked ? Number($('autohours').value) : 0 });
+$('autohours').onchange = () => { if ($('autopool').checked) postAuto({ autoPoolRefreshHours: Number($('autohours').value) }); };
+$('autorotate').onchange = () => postAuto({ autoRotate: $('autorotate').checked });
 $('syspac').onchange = async (ev) => {
   try { await post('/api/system-proxy', { enabled: ev.target.checked }); msg(ev.target.checked ? 'Системный прокси включён' : 'Системный прокси выключен'); }
   catch (e) { msg(e.message, true); status(); }
