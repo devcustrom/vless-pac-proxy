@@ -8,9 +8,9 @@ chatgpt.site
 claude.ai
 claude.com
 crl3.digicert.com
+gitlab.com
 herdr.dev
 nfsu2.xyz
-opencode.ai
 primevue.dev
 secure.globalsign.com
 ssp.al-adtech.com

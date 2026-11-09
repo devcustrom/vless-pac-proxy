@@ -14,6 +14,7 @@ const path = require('path');
 const { spawn, execFile, execFileSync } = require('child_process');
 const { updateDomains, normalizeDomain } = require('./update-domains');
 const vlessXray = require('./vless-to-xray');
+const vlessPool = require('./vless-pool');
 
 const IS_WIN = process.platform === 'win32';
 
@@ -27,6 +28,8 @@ const REG_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Se
 const PROXY_OVERRIDE = 'localhost;127.0.0.1;*.local;192.168.*;10.*;172.16.*;<local>;zcode.z.ai;*.z.ai';
 const EXTRA_FILE = path.join(DIR, 'extra-domains.txt');
 const VLESS_DOMAINS_FILE = path.join(DIR, 'vless-domains.txt');
+const SUBSCRIPTIONS_FILE = path.join(DIR, 'subscriptions.txt');
+const POOL_STATE_FILE = path.join(DIR, 'pool-state.json'); // пул переживает перезапуск (содержит ключи — в .gitignore)
 const SETTINGS_FILE = path.join(DIR, 'settings.json');
 const UPSTREAM_WG = { host: HOST, port: 25345 };     // HTTP-прокси wireproxy (WireGuard)
 const UPSTREAM_VLESS = { host: HOST, port: vlessXray.XRAY_HTTP_PORT }; // HTTP-прокси xray (VLESS)
@@ -48,6 +51,12 @@ const state = {
   directSet: new Set(),
   vlessSet: new Set(),
   vpnDefault: 'wireguard', // куда идут домены из списков: 'wireguard' | 'vless'
+  pool: [],            // [{ link, name, protocol, address, ok, ms }] — проверенные конфиги
+  poolTesting: false,
+  poolUpdatedAt: null,
+  poolError: null,
+  activeLink: null,    // ссылка текущего применённого VLESS-конфига
+  lastRotateAt: 0,     // антидребезг авто-ротации
   proxied: null,
   direct: null,
   lastUpdate: null,
@@ -176,6 +185,113 @@ function writeVlessDomains(list) {
   return unique;
 }
 
+// ---------------- подписки и пул конфигов ----------------
+function readSubscriptions() {
+  if (!fs.existsSync(SUBSCRIPTIONS_FILE)) return [];
+  return fs.readFileSync(SUBSCRIPTIONS_FILE, 'utf8')
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter((s) => s && !s.startsWith('#'));
+}
+
+function writeSubscriptions(list) {
+  const unique = Array.from(new Set(list));
+  fs.writeFileSync(
+    SUBSCRIPTIONS_FILE,
+    '# Подписки-источники конфигов (по одному URL в строке, только http/https).\n' +
+    '# По умолчанию — публичные подписки igareck/vpn-configs-for-russia.\n\n' +
+    unique.join('\n') + (unique.length ? '\n' : '')
+  );
+  return unique;
+}
+
+// Персистентность пула: после перезапуска не надо заново гонять проверку
+function loadPoolState() {
+  try {
+    const s = JSON.parse(fs.readFileSync(POOL_STATE_FILE, 'utf8'));
+    if (Array.isArray(s.pool)) state.pool = s.pool;
+    if (s.updatedAt) state.poolUpdatedAt = s.updatedAt;
+    if (s.activeLink) state.activeLink = s.activeLink;
+  } catch { /* нет файла — пул пуст */ }
+}
+
+function savePoolState() {
+  try {
+    fs.writeFileSync(POOL_STATE_FILE, JSON.stringify({
+      updatedAt: state.poolUpdatedAt,
+      activeLink: state.activeLink,
+      pool: state.pool,
+    }));
+  } catch { /* ignore */ }
+}
+
+async function refreshPool() {
+  if (state.poolTesting) return;
+  state.poolTesting = true;
+  state.poolError = null;
+  try {
+    const subs = readSubscriptions();
+    if (!subs.length) throw new Error('нет подписок: добавьте URL в панели');
+    const perSource = [];
+    for (const url of subs) {
+      try {
+        const text = await vlessPool.safeFetchText(url);
+        const links = vlessPool.parseSubscriptionLinks(text);
+        perSource.push(links);
+        log(`подписка ${new URL(url).host}: ${links.length} конфигов`);
+      } catch (e) {
+        log(`подписка ${url}: ошибка — ${e.message}`);
+      }
+    }
+    // чередуем конфиги из разных подписок, чтобы в тест попадали все источники
+    const unique = new Set();
+    for (let round = 0; perSource.some((arr) => arr[round]); round++) {
+      for (const arr of perSource) {
+        const link = arr[round];
+        if (link) unique.add(link);
+      }
+    }
+    const uniqueArr = Array.from(unique);
+    if (!uniqueArr.length) throw new Error('в подписках не найдено поддерживаемых конфигов (vless://, ss://)');
+    log(`проверяю ${Math.min(uniqueArr.length, 80)} из ${uniqueArr.length} конфигов...`);
+    const results = await vlessPool.testLinks(uniqueArr, (m) => log(m));
+    results.sort((a, b) => Number(b.ok) - Number(a.ok) || (a.ms || 1e9) - (b.ms || 1e9));
+    state.pool = results;
+    state.poolUpdatedAt = new Date().toISOString();
+    savePoolState();
+    const okCount = results.filter((r) => r.ok).length;
+    log(`пул обновлён: рабочих ${okCount} из ${results.length}`);
+    // если текущий VLESS мёртв — сразу переключаемся на рабочий
+    if (!state.exitIpVlessOk) maybeRotate(true);
+  } catch (e) {
+    state.poolError = e.message;
+    log('ошибка обновления пула:', e.message);
+  } finally {
+    state.poolTesting = false;
+  }
+}
+
+// Переключение VLESS на рабочий конфиг из пула
+function maybeRotate(force) {
+  if (!state.pool.length || state.poolTesting) return false;
+  if (!force && Date.now() - state.lastRotateAt < 5 * 60 * 1000) return false;
+  const cand = state.pool.find((p) => p.ok && p.link !== state.activeLink);
+  if (!cand) return false;
+  try {
+    const info = vlessXray.saveLink(cand.link);
+    state.activeLink = cand.link;
+    state.lastRotateAt = Date.now();
+    savePoolState();
+    log(`VLESS переключён на рабочий конфиг: ${cand.name} (${cand.protocol} ${cand.address}:${cand.port}, ${cand.ms} мс)`);
+    restartXray();
+    setTimeout(probeChannels, 8000);
+    return true;
+  } catch (e) {
+    log('не удалось применить конфиг из пула:', e.message);
+    return false;
+  }
+}
+
 // ---------------- вспомогательные ----------------
 function run(cmd, args, cb) {
   execFile(cmd, args, { windowsHide: true, timeout: 30000 }, (e, stdout, stderr) => cb(e, stdout, stderr));
@@ -227,6 +343,8 @@ async function probeChannels() {
       state.exitIpVlessOk = false;
       state.exitIpVlessAt = 0;
     }
+    // VLESS лежит, а в пуле есть рабочий конфиг — ротируем (не чаще раза в 5 мин)
+    if (vlessXray.hasConfig() && !state.exitIpVlessOk) maybeRotate(false);
   } finally {
     probing = false;
   }
@@ -632,6 +750,13 @@ const panel = http.createServer(async (req, res) => {
         vlessConfigured: vlessXray.hasConfig(),
         vlessUp: state.exitIpVlessOk,
         exitIpVless: state.exitIpVlessOk ? state.exitIpVless : null,
+        pool: state.pool.slice(0, 60).map((p, i) => ({
+          i, name: p.name, protocol: p.protocol, address: p.address, port: p.port, ok: p.ok, ms: p.ms,
+        })),
+        poolTesting: state.poolTesting,
+        poolUpdatedAt: state.poolUpdatedAt,
+        poolError: state.poolError,
+        subscriptions: readSubscriptions(),
         vpnDefault: state.vpnDefault,
         vlessDomains: readVlessDomains(),
         proxied: state.proxied,
@@ -670,6 +795,7 @@ const panel = http.createServer(async (req, res) => {
       if (body.action === 'set-link') {
         try {
           const info = vlessXray.saveLink(String(body.link || ''));
+          state.activeLink = String(body.link || '').trim();
           log('VLESS-конфиг сохранён:', JSON.stringify(info));
           restartXray();
           setTimeout(probeChannels, 6000);
@@ -680,6 +806,7 @@ const panel = http.createServer(async (req, res) => {
       }
       if (body.action === 'remove-link') {
         if (fs.existsSync(path.join(DIR, 'xray-config.json'))) fs.unlinkSync(path.join(DIR, 'xray-config.json'));
+        state.activeLink = null;
         stopXray();
         return sendJson(res, 200, { ok: true });
       }
@@ -711,6 +838,48 @@ const panel = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true });
       }
       return sendJson(res, 400, { error: 'неизвестное действие' });
+    }
+    if (req.method === 'POST' && url === '/api/pool/refresh') {
+      if (state.poolTesting) return sendJson(res, 409, { error: 'уже выполняется' });
+      refreshPool();
+      return sendJson(res, 202, { ok: true });
+    }
+    if (req.method === 'POST' && url === '/api/pool/use') {
+      const body = await readBody(req);
+      const idx = Number(body.index);
+      const item = Number.isInteger(idx) ? state.pool[idx] : null;
+      if (!item) return sendJson(res, 400, { error: 'нет такого конфига в пуле' });
+      try {
+        const info = vlessXray.saveLink(item.link);
+        state.activeLink = item.link;
+        savePoolState();
+        log(`применён конфиг из пула: ${item.name} -> ${info.protocol} ${info.address}:${info.port}`);
+        restartXray();
+        setTimeout(probeChannels, 6000);
+        return sendJson(res, 200, { ok: true, info });
+      } catch (e) {
+        return sendJson(res, 400, { error: e.message });
+      }
+    }
+    if (req.method === 'POST' && url === '/api/subscriptions') {
+      const body = await readBody(req);
+      const value = String(body.url || '').trim();
+      if (body.action === 'add') {
+        try {
+          await vlessPool.validateUrl(value); // только http/https, не локальные адреса
+        } catch (e) {
+          return sendJson(res, 400, { error: e.message });
+        }
+        let list = readSubscriptions();
+        if (!list.includes(value)) list.push(value);
+        writeSubscriptions(list);
+        return sendJson(res, 200, { ok: true, subscriptions: readSubscriptions() });
+      }
+      if (body.action === 'remove') {
+        writeSubscriptions(readSubscriptions().filter((u) => u !== value));
+        return sendJson(res, 200, { ok: true, subscriptions: readSubscriptions() });
+      }
+      return sendJson(res, 400, { error: 'action должен быть add|remove' });
     }
     if (req.method === 'POST' && url === '/api/check') {
       const body = await readBody(req);
@@ -745,6 +914,7 @@ const panel = http.createServer(async (req, res) => {
 panel.listen(PANEL_PORT, HOST, () => {
   log(`панель: http://${HOST}:${PANEL_PORT}/  |  PAC: ${PAC_URL}`);
   loadSettings();
+  loadPoolState();
   state.vlessSet = new Set(readVlessDomains());
   if (!isWgConfigured()) log('WireGuard не настроен (нет корректного wg.conf) — канал отключён');
   if (!vlessXray.hasConfig()) log('VLESS не настроен (нет vless:// ссылки) — канал отключён');

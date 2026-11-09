@@ -97,6 +97,21 @@
 </div>
 
 <div class="card">
+  <b>Пул конфигов (подписки)</b>
+  <div class="muted">Источники — подписки ниже (поддерживаются vless:// и ss://, остальные протоколы пропускаются). Если VLESS-канал умирает, менеджер сам переключится на рабочий конфиг из пула — не чаще раза в 5 минут.</div>
+  <div id="subslist"></div>
+  <form id="subadd" class="row" style="margin-top:6px">
+    <input type="text" id="suburl" placeholder="https://.../subscription.txt" autocomplete="off">
+    <button type="submit">Добавить подписку</button>
+  </form>
+  <div class="row" style="margin-top:10px">
+    <button id="poolrefresh" class="primary">Проверить конфиги</button>
+    <span class="muted" id="poolinfo"></span>
+  </div>
+  <ul id="poollist"></ul>
+</div>
+
+<div class="card">
   <div class="row">
     <span>Заблокированных в списке: <b id="proxied">—</b></span>
     <span class="muted">обновлено: <span id="upd">—</span></span>
@@ -191,6 +206,8 @@ async function status() {
     if (!s.wgConfigured && !s.vlessConfigured) notes.push('Ни один VPN-канал не настроен: положите wg.conf или вставьте vless:// ссылку.');
     $('vnote').textContent = notes.join(' ');
     renderVlessList(s.vlessDomains);
+    renderSubs(s.subscriptions);
+    renderPool(s);
     $('proxied').textContent = s.proxied == null ? '—' : s.proxied.toLocaleString('ru-RU');
     $('upd').textContent = s.lastUpdate ? new Date(s.lastUpdate).toLocaleString('ru-RU') : (s.updateError ? 'ошибка' : '—');
     $('refresh').disabled = !!s.refreshing;
@@ -211,6 +228,44 @@ function renderVlessList(domains) {
     const span = document.createElement('span'); span.textContent = d;
     const btn = document.createElement('button'); btn.textContent = 'убрать';
     btn.onclick = async () => { try { await post('/api/vless', { action: 'remove-domain', domain: d }); status(); } catch (e) { msg(e.message, true); } };
+    li.append(span, btn); el.append(li);
+  });
+}
+
+function renderSubs(subs) {
+  const el = $('subslist');
+  el.innerHTML = '';
+  (subs || []).forEach((u) => {
+    const li = document.createElement('li');
+    const span = document.createElement('span');
+    span.className = 'muted';
+    span.style.fontSize = '12px';
+    span.textContent = u;
+    const btn = document.createElement('button'); btn.textContent = 'убрать';
+    btn.onclick = async () => { try { await post('/api/subscriptions', { action: 'remove', url: u }); status(); } catch (e) { msg(e.message, true); } };
+    li.append(span, btn); el.append(li);
+  });
+}
+
+function renderPool(s) {
+  const info = $('poolinfo');
+  $('poolrefresh').disabled = !!s.poolTesting;
+  if (s.poolTesting) info.textContent = 'проверяю конфиги…';
+  else if (s.poolError) info.textContent = 'ошибка: ' + s.poolError;
+  else if (s.poolUpdatedAt) {
+    const ok = (s.pool || []).filter((p) => p.ok).length;
+    info.textContent = `рабочих ${ok} из ${s.pool.length} · проверено ${new Date(s.poolUpdatedAt).toLocaleTimeString('ru-RU')}`;
+  } else info.textContent = 'ещё не проверялись';
+
+  const el = $('poollist');
+  el.innerHTML = '';
+  (s.pool || []).slice(0, 25).forEach((p) => {
+    const li = document.createElement('li');
+    const span = document.createElement('span');
+    span.innerHTML = `<span class="dot ${p.ok ? 'ok' : 'bad'}" style="width:8px;height:8px;margin-right:6px"></span>` +
+      `${String(p.name).slice(0, 40)} <span class="muted">${p.protocol} ${p.address}:${p.port}${p.ok && p.ms ? ' · ' + p.ms + ' мс' : ''}</span>`;
+    const btn = document.createElement('button'); btn.textContent = 'использовать';
+    btn.onclick = async () => { try { await post('/api/pool/use', { index: p.i }); status(); msg('Конфиг применён: ' + p.name); } catch (e) { msg(e.message, true); } };
     li.append(span, btn); el.append(li);
   });
 }
@@ -314,6 +369,17 @@ $('vdf').onsubmit = async (ev) => {
   const d = $('vd').value.trim();
   if (!d) return;
   try { await post('/api/vless', { action: 'add-domain', domain: d }); $('vd').value = ''; status(); msg('Домен добавлен в VLESS-список'); }
+  catch (e) { msg(e.message, true); }
+};
+$('subadd').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const u = $('suburl').value.trim();
+  if (!u) return;
+  try { await post('/api/subscriptions', { action: 'add', url: u }); $('suburl').value = ''; status(); msg('Подписка добавлена'); }
+  catch (e) { msg(e.message, true); }
+};
+$('poolrefresh').onclick = async () => {
+  try { await post('/api/pool/refresh'); msg('Проверка конфигов запущена…'); }
   catch (e) { msg(e.message, true); }
 };
 $('syspac').onchange = async (ev) => {

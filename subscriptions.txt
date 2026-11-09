@@ -1,0 +1,6 @@
+# Подписки-источники конфигов (по одному URL в строке, только http/https).
+# Файл редактируется и вручную, и через веб-панель.
+# По умолчанию — публичные подписки из репозитория igareck/vpn-configs-for-russia
+# (VLESS/Reality, обновляются ежедневно):
+https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/BLACK_VLESS_RUS.txt
+https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/Vless-Reality-White-Lists-Rus-Mobile.txt
