@@ -31,7 +31,7 @@ $mi1.add_Click({ Start-Process 'http://127.0.0.1:8080/' })
 $mi2 = $menu.Items.Add('Обновить списки доменов')
 $mi2.add_Click({
     try {
-        Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8080/api/refresh' -TimeoutSec 5 | Out-Null
+        Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8080/api/refresh' -Headers @{ 'X-WPC' = '1' } -TimeoutSec 5 | Out-Null
         Balloon 'Обновление списка запущено'
     } catch { Balloon 'Панель не отвечает' $true }
 })
@@ -39,7 +39,7 @@ $mi2.add_Click({
 $mi3 = $menu.Items.Add('Перезапустить VPN-прокси')
 $mi3.add_Click({
     try {
-        Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8080/api/restart-proxy' -TimeoutSec 5 | Out-Null
+        Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8080/api/restart-proxy' -Headers @{ 'X-WPC' = '1' } -TimeoutSec 5 | Out-Null
         Balloon 'Перезапуск VPN-прокси'
     } catch { Balloon 'Панель не отвечает' $true }
 })

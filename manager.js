@@ -722,9 +722,9 @@ function parseHostPort(url, defPort) {
 
 const proxyServer = http.createServer((req, res) => {
   // Обычный HTTP-прокси запрос: абсолютный URI (GET http://example.com/ ...)
-  if (!/^https?:\/\//i.test(req.url)) {
-    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-    return res.end('это прокси-порт; панель на ' + PANEL_PORT);
+  if (!/^http:\/\//i.test(req.url)) {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('это прокси-порт: http-запросы (absolute-URI) и CONNECT; https — через CONNECT');
   }
   let u;
   try { u = new URL(req.url); } catch { res.writeHead(400); return res.end(); }
@@ -739,13 +739,25 @@ const proxyServer = http.createServer((req, res) => {
   const headers = { ...req.headers };
   delete headers.proxy_connection;
   delete headers['proxy-connection'];
-  const up = chan
+  const opts = chan
     ? (() => {
         const target = chan === 'vless' ? UPSTREAM_VLESS : UPSTREAM_WG;
-        return http.request({ host: target.host, port: target.port, method: req.method, path: req.url, headers }); // прокси сам делает CONNECT
+        // в локальный прокси (UPSTREAM_*) уходит нормализованный URL из парсера,
+        // а не сырая строка запроса; https-схема сюда не попадает
+        return { host: target.host, port: target.port, method: req.method, path: u.href, headers };
       })()
-    : http.request({ host: u.hostname, port: u.port || 80, method: req.method, path: u.pathname + u.search, headers });
-  const upstream = up;
+    : {
+        host: u.hostname,
+        port: u.port || 80,
+        method: req.method,
+        path: u.pathname + u.search,
+        headers,
+        lookup: vlessPool.checkedLookup, // IP проверяется в момент подключения (анти-SSRF)
+      };
+  const upstream = http.request(opts, (ures) => {
+    res.writeHead(ures.statusCode || 502, ures.headers);
+    ures.pipe(res);
+  });
   upstream.on('error', () => { try { res.writeHead(502); res.end('upstream error'); } catch { /* ignore */ } });
   req.pipe(upstream);
 });
@@ -780,7 +792,7 @@ proxyServer.on('connect', (req, clientSocket, head) => {
     up.on('error', (e) => { log(`upstream error ${host}: ${e.message}`); clientSocket.destroy(); });
     up.end();
   } else {
-    const up = net.connect(port, host, () => {
+    const up = net.connect({ host, port, lookup: vlessPool.checkedLookup }, () => {
       // реальный IP сервера, к которому ушло прямое соединение (в DevTools он не виден)
       log(`  -> ${host}:${port} = ${up.remoteAddress} [direct]`);
       clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
@@ -808,7 +820,28 @@ function readBody(req) {
   });
 }
 
+// Защита панели: только 127.0.0.1/localhost в Host (анти-DNS-rebinding) и
+// обязательный заголовок X-WPC на изменяющих запросах (анти-CSRF: сторонний
+// сайт не сможет отправить его без CORS-preflight, которого мы не разрешаем).
+const PANEL_HOSTS = new Set([`${HOST}:${PANEL_PORT}`, `localhost:${PANEL_PORT}`]);
+
+function panelGuard(req, res) {
+  const hostHeader = String(req.headers.host || '').toLowerCase();
+  if (!PANEL_HOSTS.has(hostHeader)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('forbidden host');
+    return false;
+  }
+  if (req.method !== 'GET' && req.method !== 'HEAD' && req.headers['x-wpc'] !== '1') {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('missing x-wpc header');
+    return false;
+  }
+  return true;
+}
+
 const panel = http.createServer(async (req, res) => {
+  if (!panelGuard(req, res)) return;
   const url = (req.url || '/').split('?')[0];
   try {
     if (req.method === 'GET' && (url === '/' || url === '/index.html')) {

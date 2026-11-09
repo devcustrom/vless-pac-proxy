@@ -1,6 +1,6 @@
 @echo off
 rem Сначала просим менеджер выключить системный прокси (пока он жив)
-curl -s -m 3 -X POST http://127.0.0.1:8080/api/system-proxy -H "Content-Type: application/json" -d "{""enabled"":false}" >nul 2>&1
+curl -s -m 3 -X POST http://127.0.0.1:8080/api/system-proxy -H "Content-Type: application/json" -H "X-WPC: 1" -d "{""enabled"":false}" >nul 2>&1
 rem Страховка, если менеджер уже не отвечает: снимаем настройку прокси напрямую в реестре
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable /t REG_DWORD /d 0 /f >nul 2>&1
 rem Убираем env-прокси, чтобы приложения с собственным HTTP-клиентом

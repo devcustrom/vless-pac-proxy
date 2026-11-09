@@ -330,4 +330,4 @@ async function testLinks(links, onLog = () => {}) {
   return results;
 }
 
-module.exports = { safeFetchText, validateUrl, parseSubscriptionLinks, testLinks, isForbiddenIp };
+module.exports = { safeFetchText, validateUrl, parseSubscriptionLinks, testLinks, isForbiddenIp, checkedLookup };
