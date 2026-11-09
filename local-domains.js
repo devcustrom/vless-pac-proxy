@@ -47,14 +47,34 @@ function findTarget(domains, hostHeader) {
 function createLocalProxy({ port, getDomains, log }) {
   const server = http.createServer((req, res) => {
     const entry = findTarget(getDomains(), req.headers.host);
+    // Host и путь не отражаем как есть: только безопасные символы
+    const safeHost = hostOnly(req.headers.host).replace(/[^a-z0-9.:-]/g, '').slice(0, 128);
+    const safePath = String(req.url || '').replace(/[^A-Za-z0-9/?&=._~%-]/g, '').slice(0, 512);
     if (!entry) {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-      const names = getDomains().map((d) => d.domain).join(', ') || '—';
-      return res.end(`локальный домен не настроен: ${hostOnly(req.headers.host)}\nнастроены: ${names}`);
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'X-Content-Type-Options': 'nosniff' });
+      // в тело не попадают данные из запроса; список доменов — из конфига и
+      // проходит фильтр символов
+      const names = getDomains().map((d) => d.domain).join(', ').replace(/[^a-z0-9., _-]/g, '') || '—';
+      return res.end(`локальный домен не настроен\nнастроены: ${names}`);
     }
-    log(`local: ${hostOnly(req.headers.host)}${req.url} -> 127.0.0.1:${entry.port}`);
+    log(`local: ${safeHost}${safePath} -> 127.0.0.1:${entry.port}`);
+    // Нормализуем путь через парсер (без сырой строки запроса) и фильтруем
+    // hop-by-hop заголовки: наружу уходят только валидные данные.
+    let targetPath = '/';
+    try {
+      const pu = new URL(String(req.url || '/'), 'http://local.invalid');
+      targetPath = pu.pathname + pu.search;
+    } catch { targetPath = '/'; }
+    const fwdHeaders = { ...req.headers };
+    delete fwdHeaders['proxy-connection'];
+    delete fwdHeaders.connection;
+    delete fwdHeaders['keep-alive'];
+    delete fwdHeaders.te;
+    delete fwdHeaders.trailer;
+    delete fwdHeaders['transfer-encoding'];
+    delete fwdHeaders.upgrade;
     const up = http.request(
-      { host: '127.0.0.1', port: entry.port, method: req.method, path: req.url, headers: req.headers },
+      { host: '127.0.0.1', port: entry.port, method: req.method, path: targetPath, headers: fwdHeaders },
       (ures) => {
         res.writeHead(ures.statusCode || 502, ures.headers);
         ures.pipe(res);
@@ -69,11 +89,13 @@ function createLocalProxy({ port, getDomains, log }) {
   // WebSocket и прочие Upgrade — прозрачно, с сохранением исходных заголовков
   server.on('upgrade', (req, socket, head) => {
     const entry = findTarget(getDomains(), req.headers.host);
+    const safeHost = hostOnly(req.headers.host).replace(/[^a-z0-9.:-]/g, '').slice(0, 128);
+    const safePath = String(req.url || '').replace(/[^A-Za-z0-9/?&=._~%-]/g, '').slice(0, 512);
     if (!entry) {
       socket.destroy();
       return;
     }
-    log(`local: upgrade ${hostOnly(req.headers.host)}${req.url} -> 127.0.0.1:${entry.port}`);
+    log(`local: upgrade ${safeHost}${safePath} -> 127.0.0.1:${entry.port}`);
     const up = net.connect(entry.port, '127.0.0.1', () => {
       const lines = [String(req.method) + ' ' + String(req.url) + ' HTTP/1.1'];
       const raw = req.rawHeaders || [];
