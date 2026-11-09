@@ -60,7 +60,7 @@ function makeRequestHandler(getDomains, log) {
       const names = getDomains().map((d) => d.domain).join(', ').replace(/[^a-z0-9., _-]/g, '') || '—';
       return res.end(`локальный домен не настроен\nнастроены: ${names}`);
     }
-    log(`local: ${safeHost}${safePath} -> 127.0.0.1:${entry.port}`);
+    log(`local: ${safeHost}${safePath} -> :${entry.port}`);
 
     // Нормализуем путь через парсер (без сырой строки запроса) и фильтруем
     // hop-by-hop заголовки: наружу уходят только валидные данные.
@@ -78,7 +78,9 @@ function makeRequestHandler(getDomains, log) {
     delete fwdHeaders['transfer-encoding'];
     delete fwdHeaders.upgrade;
     const up = http.request(
-      { host: '127.0.0.1', port: entry.port, method: req.method, path: targetPath, headers: fwdHeaders },
+      // host 'localhost' + autoSelectFamily (Node 20+): цель может слушать
+      // только ::1 или только 127.0.0.1 — пробуются оба loopback-адреса
+      { host: 'localhost', port: entry.port, method: req.method, path: targetPath, headers: fwdHeaders },
       (ures) => {
         res.writeHead(ures.statusCode || 502, ures.headers);
         ures.pipe(res);
@@ -101,8 +103,8 @@ function makeUpgradeHandler(getDomains, log) {
       socket.destroy();
       return;
     }
-    log(`local: upgrade ${safeHost}${safePath} -> 127.0.0.1:${entry.port}`);
-    const up = net.connect(entry.port, '127.0.0.1', () => {
+    log(`local: upgrade ${safeHost}${safePath} -> :${entry.port}`);
+    const up = net.connect({ host: 'localhost', port: entry.port }, () => {
       const lines = [String(req.method) + ' ' + String(req.url) + ' HTTP/1.1'];
       const raw = req.rawHeaders || [];
       for (let i = 0; i + 1 < raw.length; i += 2) {

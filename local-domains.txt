@@ -3,3 +3,4 @@
 # Для «настоящих» имён запустите local-domains-hosts.bat от администратора.
 
 panel.localhost = 8080
+local.stage.stich.su = 3000
