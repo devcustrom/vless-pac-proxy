@@ -1,6 +1,10 @@
 # Подписки-источники конфигов (по одному URL в строке, только http/https).
 # Файл редактируется и вручную, и через веб-панель.
-# По умолчанию — публичные подписки из репозитория igareck/vpn-configs-for-russia
-# (VLESS/Reality, обновляются ежедневно):
+# Публичные подписки из репозитория igareck/vpn-configs-for-russia
+# (обновляются ежедневно). Поддерживаются vless:// и ss://;
+# остальные протоколы (hysteria2, vmess, trojan) пропускаются.
 https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/BLACK_VLESS_RUS.txt
+https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/BLACK_VLESS_RUS_mobile.txt
+https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/BLACK_SS%2BAll_RUS.txt
+https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/BLACK_SS_WEAK_DPI_RUS.txt
 https://raw.githubusercontent.com/igareck/vpn-configs-for-russia/main/Vless-Reality-White-Lists-Rus-Mobile.txt
