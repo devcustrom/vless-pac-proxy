@@ -10,6 +10,7 @@ const path = require('path');
 const net = require('net');
 const dns = require('dns');
 const http = require('http');
+const https = require('https');
 const tls = require('tls');
 const { spawn, execFile } = require('child_process');
 const { generateLinkConfig } = require('./vless-to-xray');
@@ -20,20 +21,23 @@ const TEST_BASE_PORT = 26100; // диапазон локальных inbounds т
 const MAX_TEST = 120;         // сколько конфигов проверять за один прогон
 const PROBE_TIMEOUT_MS = 8000;
 
-// Пути к исполняемому файлу и временным конфигам фиксированы и проверяются:
-// только внутри каталога проекта (защита от выхода за границы).
-function withinDir(p) {
-  const root = path.resolve(DIR) + path.sep;
-  return path.resolve(p).startsWith(root);
+// Пути к исполняемому файлу и временным конфигам: только basename внутри каталога
+// проекта. safeJoin проверяет имя файла (без слэшей/..) и границу каталога.
+function safeJoin(base, name) {
+  if (typeof name !== 'string' || path.basename(name) !== name || name === '.' || name === '..') {
+    throw new Error('некорректное имя файла');
+  }
+  const p = path.resolve(base, name);
+  if (!p.startsWith(path.resolve(base) + path.sep)) {
+    throw new Error('путь вне каталога проекта');
+  }
+  return p;
 }
-const XRAY_EXE_PATH = path.join(DIR, IS_WIN ? 'xray.exe' : 'xray');
+const XRAY_EXE_PATH = safeJoin(DIR, IS_WIN ? 'xray.exe' : 'xray');
 const ONE_CFG_FILE = 'xray-pool-one.json';
 const POOL_CFG_FILE = 'xray-pool-test.json';
-const ONE_CFG_PATH = path.join(DIR, ONE_CFG_FILE);
-const POOL_CFG_PATH = path.join(DIR, POOL_CFG_FILE);
-if (!withinDir(XRAY_EXE_PATH) || !withinDir(ONE_CFG_PATH) || !withinDir(POOL_CFG_PATH)) {
-  throw new Error('некорректные пути к компонентам xray');
-}
+const ONE_CFG_PATH = safeJoin(DIR, ONE_CFG_FILE);
+const POOL_CFG_PATH = safeJoin(DIR, POOL_CFG_FILE);
 
 // ---------------- безопасность URL ----------------
 function ipv4ToInt(ip) {
@@ -101,25 +105,69 @@ async function validateUrl(raw) {
   return u;
 }
 
-// Загрузка текста с ручной проверкой каждого редиректа
+// Кастомный резолвер для http(s).request: проверяет фактически подключаемый IP
+// (закрывает TOCTOU/DNS-rebinding: проверка не только до запроса, но и на соединении).
+function checkedLookup(hostname, options, callback) {
+  dns.lookup(hostname, options, (err, address, family) => {
+    if (err) return callback(err);
+    const list = Array.isArray(address) ? address : [{ address, family }];
+    for (const a of list) {
+      if (isForbiddenIp(a.address)) {
+        return callback(new Error('хост указывает на запрещённый адрес'));
+      }
+    }
+    callback(null, address, family);
+  });
+}
+
+// GET с проверкой IP на соединении; возвращает { text } или { redirect }
+function httpGetText(u, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const lib = u.protocol === 'https:' ? https : http;
+    const req = lib.request(
+      u,
+      {
+        method: 'GET',
+        lookup: checkedLookup,
+        headers: { 'user-agent': 'wireproxy-control/1.0' },
+      },
+      (res) => {
+        const status = res.statusCode || 0;
+        if ([301, 302, 303, 307, 308].includes(status)) {
+          res.resume();
+          return resolve({ redirect: res.headers.location || null });
+        }
+        if (status < 200 || status >= 300) {
+          res.resume();
+          return reject(new Error('HTTP ' + status));
+        }
+        const chunks = [];
+        let size = 0;
+        res.on('data', (c) => {
+          size += c.length;
+          if (size > 5 * 1024 * 1024) return req.destroy(new Error('ответ слишком большой'));
+          chunks.push(c);
+        });
+        res.on('end', () => resolve({ text: Buffer.concat(chunks).toString('utf8') }));
+        res.on('error', reject);
+      }
+    );
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('таймаут запроса')));
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+// Загрузка текста с проверкой каждого редиректа и IP на соединении
 async function safeFetchText(raw, maxHops = 4) {
   let u = await validateUrl(raw);
   for (let hop = 0; hop <= maxHops; hop++) {
-    const res = await fetch(u.href, {
-      redirect: 'manual',
-      signal: AbortSignal.timeout(30000),
-      headers: { 'user-agent': 'wireproxy-control/1.0' },
-    });
-    if ([301, 302, 303, 307, 308].includes(res.status)) {
-      const loc = res.headers.get('location');
-      if (!loc) throw new Error('редирект без location');
-      u = await validateUrl(new URL(loc, u).href);
+    const r = await httpGetText(u, 30000);
+    if (r.redirect) {
+      u = await validateUrl(new URL(r.redirect, u).href);
       continue;
     }
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const text = await res.text();
-    if (text.length > 5 * 1024 * 1024) throw new Error('ответ слишком большой');
-    return text;
+    return r.text;
   }
   throw new Error('слишком много редиректов');
 }

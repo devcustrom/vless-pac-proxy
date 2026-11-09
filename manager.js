@@ -26,11 +26,21 @@ const PAC_URL = `http://${HOST}:${PANEL_PORT}/proxy.pac`;
 const UPSTREAM = { host: HOST, port: 25345 }; // HTTP-прокси wireproxy
 const REG_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings';
 const PROXY_OVERRIDE = 'localhost;127.0.0.1;*.local;192.168.*;10.*;172.16.*;<local>;zcode.z.ai;*.z.ai';
-const EXTRA_FILE = path.join(DIR, 'extra-domains.txt');
-const VLESS_DOMAINS_FILE = path.join(DIR, 'vless-domains.txt');
-const SUBSCRIPTIONS_FILE = path.join(DIR, 'subscriptions.txt');
-const POOL_STATE_FILE = path.join(DIR, 'pool-state.json'); // пул переживает перезапуск (содержит ключи — в .gitignore)
-const SETTINGS_FILE = path.join(DIR, 'settings.json');
+
+// Все файлы состояния — только по фиксированным именам внутри каталога проекта.
+function fileInDir(name) {
+  if (typeof name !== 'string' || path.basename(name) !== name || name === '.' || name === '..') {
+    throw new Error('некорректное имя файла состояния');
+  }
+  const p = path.resolve(DIR, name);
+  if (!p.startsWith(path.resolve(DIR) + path.sep)) throw new Error('путь вне каталога проекта');
+  return p;
+}
+const EXTRA_FILE = fileInDir('extra-domains.txt');
+const VLESS_DOMAINS_FILE = fileInDir('vless-domains.txt');
+const SUBSCRIPTIONS_FILE = fileInDir('subscriptions.txt');
+const POOL_STATE_FILE = fileInDir('pool-state.json'); // пул переживает перезапуск (содержит ключи — в .gitignore)
+const SETTINGS_FILE = fileInDir('settings.json');
 const UPSTREAM_WG = { host: HOST, port: 25345 };     // HTTP-прокси wireproxy (WireGuard)
 const UPSTREAM_VLESS = { host: HOST, port: vlessXray.XRAY_HTTP_PORT }; // HTTP-прокси xray (VLESS)
 const EXTRA_HEADER = [
@@ -620,6 +630,15 @@ function doRefresh() {
 }
 
 // ---------------- умный HTTP-прокси (8081) ----------------
+// Запрет пересылки в локальные/приватные/резервные адреса: локальный прокси не
+// должен служить мостом к loopback/внутренним сервисам даже для локальных клиентов.
+function forbiddenDestination(hostRaw) {
+  const h = String(hostRaw || '').toLowerCase().replace(/^\[|\]$/g, '');
+  if (!h) return true;
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local')) return true;
+  return net.isIP(h) ? vlessPool.isForbiddenIp(h) : false;
+}
+
 function pipeSockets(a, b, head) {
   if (head && head.length) b.write(head);
   a.pipe(b);
@@ -645,6 +664,10 @@ const proxyServer = http.createServer((req, res) => {
   }
   let u;
   try { u = new URL(req.url); } catch { res.writeHead(400); return res.end(); }
+  if (forbiddenDestination(u.hostname)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('запрещённый адрес назначения');
+  }
   noteVisited(u.hostname);
   const route = routeFor(u.hostname);
   const chan = activeChannel(route);
@@ -665,6 +688,11 @@ const proxyServer = http.createServer((req, res) => {
 
 proxyServer.on('connect', (req, clientSocket, head) => {
   const { host, port } = parseHostPort(req.url, 443);
+  if (forbiddenDestination(host)) {
+    log(`CONNECT ${host}:${port} отклонён (запрещённый адрес назначения)`);
+    clientSocket.destroy();
+    return;
+  }
   noteVisited(host);
   const route = routeFor(host);
   const chan = activeChannel(route);
