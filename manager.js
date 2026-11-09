@@ -15,6 +15,7 @@ const { spawn, execFile, execFileSync } = require('child_process');
 const { updateDomains, normalizeDomain } = require('./update-domains');
 const vlessXray = require('./vless-to-xray');
 const vlessPool = require('./vless-pool');
+const localDomains = require('./local-domains');
 
 const IS_WIN = process.platform === 'win32';
 
@@ -39,6 +40,7 @@ function fileInDir(name) {
 const EXTRA_FILE = fileInDir('extra-domains.txt');
 const VLESS_DOMAINS_FILE = fileInDir('vless-domains.txt');
 const SUBSCRIPTIONS_FILE = fileInDir('subscriptions.txt');
+const LOCAL_DOMAINS_FILE = fileInDir('local-domains.txt');
 const POOL_STATE_FILE = fileInDir('pool-state.json'); // пул переживает перезапуск (содержит ключи — в .gitignore)
 const SETTINGS_FILE = fileInDir('settings.json');
 const UPSTREAM_WG = { host: HOST, port: 25345 };     // HTTP-прокси wireproxy (WireGuard)
@@ -73,6 +75,8 @@ const state = {
   autoRotate: true,    // автопереключение на рабочий конфиг
   autoPoolRefreshHours: 6, // автообновление подписок, часов (0 — выключено)
   wgDeadNotified: false,
+  localProxyPort: 80,  // плагин локальных доменов: порт реверс-прокси (loopback)
+  localProxyError: null,
   proxied: null,
   direct: null,
   lastUpdate: null,
@@ -183,6 +187,9 @@ function loadSettings() {
     if (Number.isFinite(s.autoPoolRefreshHours) && s.autoPoolRefreshHours >= 0) {
       state.autoPoolRefreshHours = s.autoPoolRefreshHours;
     }
+    if (Number.isFinite(s.localProxyPort) && s.localProxyPort >= 1 && s.localProxyPort <= 65535) {
+      state.localProxyPort = s.localProxyPort;
+    }
   } catch { /* нет файла — значения по умолчанию */ }
 }
 
@@ -191,7 +198,66 @@ function saveSettings() {
     vpnDefault: state.vpnDefault,
     autoRotate: state.autoRotate,
     autoPoolRefreshHours: state.autoPoolRefreshHours,
+    localProxyPort: state.localProxyPort,
   }, null, 2));
+}
+
+// ---------------- плагин локальных доменов ----------------
+let localCache = { mtime: 0, list: [] };
+
+function getLocalDomains() {
+  try {
+    const st = fs.statSync(LOCAL_DOMAINS_FILE);
+    if (st.mtimeMs !== localCache.mtime) {
+      localCache = {
+        mtime: st.mtimeMs,
+        list: localDomains.parseConfig(fs.readFileSync(LOCAL_DOMAINS_FILE, 'utf8')),
+      };
+    }
+    return localCache.list;
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalDomains(list) {
+  const lines = [
+    '# Плагин локальных доменов: домен = порт (по одному в строке).',
+    '# *.localhost браузеры резолвят в 127.0.0.1 без правки hosts.',
+    '# Для «настоящих» имён запустите local-domains-hosts.bat от администратора.',
+    '',
+  ];
+  for (const d of list) lines.push(`${d.domain} = ${d.port}`);
+  fs.writeFileSync(LOCAL_DOMAINS_FILE, lines.join('\n') + '\n');
+  localCache = { mtime: 0, list: [] }; // сброс кэша
+  return getLocalDomains();
+}
+
+function readLocalDomains() {
+  return getLocalDomains();
+}
+
+function startLocalProxy() {
+  try {
+    const srv = localDomains.createLocalProxy({
+      port: state.localProxyPort,
+      getDomains: getLocalDomains,
+      log,
+    });
+    srv.on('error', (e) => {
+      state.localProxyError = e.code === 'EADDRINUSE'
+        ? `порт ${state.localProxyPort} занят другим приложением`
+        : e.message;
+      log('плагин локальных доменов: ошибка —', state.localProxyError);
+    });
+    srv.on('listening', () => {
+      state.localProxyError = null;
+      log(`плагин локальных доменов: http://127.0.0.1:${state.localProxyPort} (${getLocalDomains().length} домен(ов))`);
+    });
+  } catch (e) {
+    state.localProxyError = e.message;
+    log('плагин локальных доменов не запустился:', e.message);
+  }
 }
 
 function readVlessDomains() {
@@ -827,7 +893,11 @@ const PANEL_HOSTS = new Set([`${HOST}:${PANEL_PORT}`, `localhost:${PANEL_PORT}`]
 
 function panelGuard(req, res) {
   const hostHeader = String(req.headers.host || '').toLowerCase();
-  if (!PANEL_HOSTS.has(hostHeader)) {
+  // свой локальный домен панели (из плагина локальных доменов) — тоже разрешён
+  const allowed = PANEL_HOSTS.has(hostHeader) ||
+    getLocalDomains().some((d) => d.port === PANEL_PORT &&
+      (hostHeader === d.domain || hostHeader === `${d.domain}:${PANEL_PORT}`));
+  if (!allowed) {
     res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('forbidden host');
     return false;
@@ -887,6 +957,11 @@ const panel = http.createServer(async (req, res) => {
           ? new Date(state.lastPoolAttempt + state.autoPoolRefreshHours * 3600 * 1000).toISOString()
           : null,
         subscriptions: readSubscriptions(),
+        localProxy: {
+          port: state.localProxyPort,
+          error: state.localProxyError,
+          domains: getLocalDomains(),
+        },
         vpnDefault: state.vpnDefault,
         vlessDomains: readVlessDomains(),
         proxied: state.proxied,
@@ -1029,6 +1104,27 @@ const panel = http.createServer(async (req, res) => {
         autoPoolRefreshHours: state.autoPoolRefreshHours,
       });
     }
+    if (req.method === 'POST' && url === '/api/local-domains') {
+      const body = await readBody(req);
+      const domain = String(body.domain || '').trim().toLowerCase();
+      if (body.action === 'add') {
+        if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i.test(domain) || domain.length > 253) {
+          return sendJson(res, 400, { error: 'некорректный домен' });
+        }
+        const port = Number(body.port);
+        if (!Number.isInteger(port) || port < 1 || port > 65535) {
+          return sendJson(res, 400, { error: 'порт должен быть 1..65535' });
+        }
+        const list = readLocalDomains().filter((d) => d.domain !== domain);
+        list.push({ domain, port });
+        return sendJson(res, 200, { ok: true, domains: writeLocalDomains(list) });
+      }
+      if (body.action === 'remove') {
+        const list = readLocalDomains().filter((d) => d.domain !== domain);
+        return sendJson(res, 200, { ok: true, domains: writeLocalDomains(list) });
+      }
+      return sendJson(res, 400, { error: 'action должен быть add|remove' });
+    }
     if (req.method === 'POST' && url === '/api/check') {
       const body = await readBody(req);
       const d = normalizeDomain(String(body.domain || ''));
@@ -1073,6 +1169,7 @@ panel.listen(PANEL_PORT, HOST, () => {
   setTimeout(probeChannels, 3000);
   setInterval(probeChannels, 60 * 1000);
   startAutoPoolScheduler();
+  startLocalProxy();
   // миграция: если раньше был включён системный PAC — переключаем на статический прокси
   getSystemProxy().then((st) => {
     if (st.mode === 'pac' && st.value === PAC_URL) {

@@ -124,6 +124,18 @@
 </div>
 
 <div class="card">
+  <b>Локальные домены (плагин)</b>
+  <div class="muted">Домен → локальный порт. Реверс-прокси на <code>127.0.0.1:<span id="lport">80</span></code>, только loopback, WebSocket поддерживается. Домены <code>*.localhost</code> браузеры открывают без правки hosts; для остальных имён запустите <code>local-domains-hosts.bat</code> от администратора.</div>
+  <div id="ldlist"></div>
+  <form id="ldadd" class="row" style="margin-top:6px">
+    <input type="text" id="lddomain" placeholder="app.localhost" autocomplete="off">
+    <input type="text" id="ldport" placeholder="3000" autocomplete="off" style="flex:0 0 90px">
+    <button type="submit">Добавить</button>
+  </form>
+  <div class="muted" id="ldinfo"></div>
+</div>
+
+<div class="card">
   <div class="row">
     <span>Заблокированных в списке: <b id="proxied">—</b></span>
     <span class="muted">обновлено: <span id="upd">—</span></span>
@@ -226,6 +238,7 @@ async function status() {
     $('autoinfo').textContent = s.nextPoolRefreshAt
       ? 'следующее автообновление подписок: ' + new Date(s.nextPoolRefreshAt).toLocaleString('ru-RU')
       : (s.autoPoolRefreshHours > 0 ? 'автообновление подписок включено' : 'автообновление подписок выключено');
+    renderLocalDomains(s.localProxy);
     $('proxied').textContent = s.proxied == null ? '—' : s.proxied.toLocaleString('ru-RU');
     $('upd').textContent = s.lastUpdate ? new Date(s.lastUpdate).toLocaleString('ru-RU') : (s.updateError ? 'ошибка' : '—');
     $('refresh').disabled = !!s.refreshing;
@@ -284,6 +297,22 @@ function renderPool(s) {
       `${String(p.name).slice(0, 40)} <span class="muted">${p.protocol} ${p.address}:${p.port}${p.ok && p.ms ? ' · ' + p.ms + ' мс' : ''}</span>`;
     const btn = document.createElement('button'); btn.textContent = 'использовать';
     btn.onclick = async () => { try { await post('/api/pool/use', { index: p.i }); status(); msg('Конфиг применён: ' + p.name); } catch (e) { msg(e.message, true); } };
+    li.append(span, btn); el.append(li);
+  });
+}
+
+function renderLocalDomains(lp) {
+  if (!lp) return;
+  $('lport').textContent = lp.port;
+  $('ldinfo').textContent = lp.error ? 'ошибка реверс-прокси: ' + lp.error : '';
+  const el = $('ldlist');
+  el.innerHTML = '';
+  (lp.domains || []).forEach((d) => {
+    const li = document.createElement('li');
+    const span = document.createElement('span');
+    span.innerHTML = `<code>http://${d.domain}</code> <span class="muted">→ 127.0.0.1:${d.port}</span>`;
+    const btn = document.createElement('button'); btn.textContent = 'убрать';
+    btn.onclick = async () => { try { await post('/api/local-domains', { action: 'remove', domain: d.domain }); status(); } catch (e) { msg(e.message, true); } };
     li.append(span, btn); el.append(li);
   });
 }
@@ -404,6 +433,19 @@ const postAuto = async (body) => { try { await post('/api/auto', body); status()
 $('autopool').onchange = () => postAuto({ autoPoolRefreshHours: $('autopool').checked ? Number($('autohours').value) : 0 });
 $('autohours').onchange = () => { if ($('autopool').checked) postAuto({ autoPoolRefreshHours: Number($('autohours').value) }); };
 $('autorotate').onchange = () => postAuto({ autoRotate: $('autorotate').checked });
+$('ldadd').onsubmit = async (ev) => {
+  ev.preventDefault();
+  const d = $('lddomain').value.trim();
+  const p = Number($('ldport').value.trim());
+  if (!d) return;
+  try {
+    await post('/api/local-domains', { action: 'add', domain: d, port: p });
+    $('lddomain').value = '';
+    $('ldport').value = '';
+    status();
+    msg('Домен добавлен: http://' + d);
+  } catch (e) { msg(e.message, true); }
+};
 $('syspac').onchange = async (ev) => {
   try { await post('/api/system-proxy', { enabled: ev.target.checked }); msg(ev.target.checked ? 'Системный прокси включён' : 'Системный прокси выключен'); }
   catch (e) { msg(e.message, true); status(); }
