@@ -271,6 +271,53 @@ wireproxy `:25344`, HTTP wireproxy `:25345`, HTTP xray `:25346`.
   Ключи и сертификаты лежат в `certs/` и в git не попадают.
 - Неизвестный домен получает 404 со списком настроенных.
 
+### Агент-API и MCP
+
+Плагин отдаёт HTTP-API и MCP-сервер, чтобы агенты сами заводили и проверяли
+тестовые домены.
+
+**HTTP-API** (только loopback, изменяющие запросы требуют заголовок `X-WPC: 1`):
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| GET | `/api/local-domains` | список доменов + порты http/https |
+| POST | `/api/local-domains` | `{action:'add'\|'remove', domain, port}` |
+| POST | `/api/local-domains/probe` | `{domain}` — GET `/` через реверс-прокси, вернёт статус и время |
+| GET | `/api/local-ports` | слушающие loopback-порты (найти порт dev-сервера) |
+
+Пример:
+
+```bash
+curl -s http://127.0.0.1:8080/api/local-ports
+curl -s -X POST http://127.0.0.1:8080/api/local-domains \
+  -H 'Content-Type: application/json' -H 'X-WPC: 1' \
+  -d '{"action":"add","domain":"app.localhost","port":3000}'
+curl -s -X POST http://127.0.0.1:8080/api/local-domains/probe \
+  -H 'Content-Type: application/json' -H 'X-WPC: 1' \
+  -d '{"domain":"app.localhost"}'
+```
+
+**MCP-сервер** `mcp-server.js` (stdio, без зависимостей) — тонкий клиент к этому
+API. Инструменты: `local_domains_list`, `local_domains_add`,
+`local_domains_remove`, `local_domains_probe`, `local_ports`.
+
+Подключение в MCP-клиенте (ZCode/Claude/Cursor и т.п. — блок mcpServers):
+
+```json
+{
+  "mcpServers": {
+    "local-domains": {
+      "command": "node",
+      "args": ["C:\\Users\\devcu\\wireproxy\\mcp-server.js"]
+    }
+  }
+}
+```
+
+Так агент может: найти свободный/занятый порт, зарегистрировать
+`app.localhost → 3000`, проверить, что приложение реально отвечает на
+`http://app.localhost/`, и убрать домен за собой.
+
 ## Повседневное использование
 
 | Действие | Windows | macOS |

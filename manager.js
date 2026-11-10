@@ -1184,6 +1184,57 @@ const panel = http.createServer(async (req, res) => {
         autoPoolRefreshHours: state.autoPoolRefreshHours,
       });
     }
+    if (req.method === 'GET' && url === '/api/local-domains') {
+      return sendJson(res, 200, {
+        httpPort: state.localProxyPort,
+        httpsPort: state.localHttpsPort,
+        httpsError: state.localHttpsError,
+        domains: getLocalDomains(),
+      });
+    }
+    if (req.method === 'GET' && url === '/api/local-ports') {
+      // слушающие loopback-порты: агенту проще найти порт своего dev-сервера
+      const ports = await new Promise((resolve) => {
+        execFile('netstat', ['-ano', '-p', 'TCP'], { windowsHide: true, timeout: 5000 }, (e, stdout) => {
+          const found = new Set();
+          if (!e && stdout) {
+            for (const line of String(stdout).split(/\r?\n/)) {
+              const m = /^\s*TCP\s+(?:127\.0\.0\.1|\[::1\]):(\d+)\s+\S+\s+LISTENING/i.exec(line);
+              if (m) found.add(Number(m[1]));
+            }
+          }
+          resolve(Array.from(found).sort((a, b) => a - b));
+        });
+      });
+      return sendJson(res, 200, { ports });
+    }
+    if (req.method === 'POST' && url === '/api/local-domains/probe') {
+      const body = await readBody(req);
+      const domain = String(body.domain || '').trim().toLowerCase();
+      const target = getLocalDomains().find((d) => d.domain === domain);
+      if (!target) return sendJson(res, 404, { error: 'домен не настроен' });
+      const started = Date.now();
+      const result = await new Promise((resolve) => {
+        const r2 = http.request(
+          {
+            host: '127.0.0.1',
+            port: state.localProxyPort,
+            path: '/',
+            method: 'GET',
+            headers: { Host: domain, 'User-Agent': 'wireproxy-probe' },
+            timeout: 5000,
+          },
+          (rres) => {
+            rres.resume();
+            resolve({ status: rres.statusCode || 0, ms: Date.now() - started });
+          }
+        );
+        r2.on('timeout', () => { r2.destroy(); resolve({ status: 0, ms: Date.now() - started, error: 'timeout' }); });
+        r2.on('error', (e) => resolve({ status: 0, ms: Date.now() - started, error: e.message }));
+        r2.end();
+      });
+      return sendJson(res, 200, { domain, port: target.port, ...result });
+    }
     if (req.method === 'POST' && url === '/api/local-domains') {
       const body = await readBody(req);
       const domain = String(body.domain || '').trim().toLowerCase();
