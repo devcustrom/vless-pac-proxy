@@ -42,12 +42,14 @@ xattr -d com.apple.quarantine ./xray 2>/dev/null || true
 
 # 2c. Иконка в строке меню (нужны Xcode Command Line Tools: xcode-select --install)
 HAVE_TRAY=0
-if [ ! -x ./WireproxyTray ] && command -v swiftc >/dev/null 2>&1; then
-  echo "Собираю иконку меню-бара ..."
-  if swiftc -O tray.swift -o WireproxyTray 2>/dev/null; then
-    HAVE_TRAY=1
-  else
-    echo "Не удалось собрать трей — панель всё равно будет работать."
+if command -v swiftc >/dev/null 2>&1; then
+  if [ ! -x ./WireproxyTray ] || [ ./tray.swift -nt ./WireproxyTray ]; then
+    echo "Собираю иконку меню-бара ..."
+    if swiftc -O tray.swift -o WireproxyTray 2>/dev/null; then
+      HAVE_TRAY=1
+    else
+      echo "Не удалось собрать трей — панель всё равно будет работать."
+    fi
   fi
 fi
 [ -x ./WireproxyTray ] && HAVE_TRAY=1
