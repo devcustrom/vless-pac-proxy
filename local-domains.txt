@@ -4,3 +4,4 @@
 
 panel.localhost = 8080
 local.stage.stich.su = 3000
+toomatch.localhost = 4321

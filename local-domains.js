@@ -110,7 +110,8 @@ function makeUpgradeHandler(getDomains, log) {
       for (let i = 0; i + 1 < raw.length; i += 2) {
         lines.push(raw[i] + ': ' + raw[i + 1]);
       }
-      socket.write(lines.join('\r\n') + '\r\n\r\n');
+      // рукопожатие уходит В АПСТРИМ (не в клиентский сокет!)
+      up.write(lines.join('\r\n') + '\r\n\r\n');
       if (head && head.length) up.write(head);
       up.pipe(socket);
       socket.pipe(up);
