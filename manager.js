@@ -466,7 +466,12 @@ async function autoRecover(reason) {
   if (!cand) {
     if (state.poolTried.size) {
       state.poolTried.clear();
-      log('автовосстановление: все рабочие кандидаты испробованы, цикл сброшен');
+      log('автовосстановление: все рабочие кандидаты испробованы');
+      // все «рабочие» уже умерли — сразу тянем свежие подписки, не ждём расписания
+      if (now - state.lastPoolAttempt > POOL_MIN_GAP_MS) {
+        log('автовосстановление: перекачиваю подписки');
+        await refreshPool();
+      }
     }
     return false;
   }
