@@ -10,6 +10,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
+use crate::engines::EngineKind;
 use crate::state::{AppState, CheckEntry};
 use crate::wlog;
 
@@ -21,9 +22,34 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
     let panel_port = state.panel_port;
     wlog!("панель: http://127.0.0.1:{panel_port}/  |  умный прокси: 127.0.0.1:{SMART_PROXY_PORT}");
 
-    // движки и фоновые задачи
-    state.wg.start();
-    state.xr.start();
+    // движки: скачиваем отсутствующие, затем запускаем супервизор
+    {
+        let st = state.clone();
+        tokio::spawn(async move {
+            let missing = [EngineKind::Wireproxy, EngineKind::Xray]
+                .into_iter()
+                .any(|kind| crate::engines::find_engine(kind).is_none());
+            if missing {
+                wlog!("движки: скачиваю отсутствующие (первый запуск)…");
+                for kind in [EngineKind::Wireproxy, EngineKind::Xray] {
+                    if let Err(e) =
+                        crate::engines::downloads::ensure(&st.dir, kind, Some(st.clone())).await
+                    {
+                        wlog!("движки: {} — {e:#}", kind.label());
+                    }
+                }
+            }
+            st.wg.start();
+            st.xr.start();
+            if missing && st.interactive {
+                let url = format!("http://127.0.0.1:{}/", st.panel_port);
+                wlog!("первый запуск: открываю панель {url}");
+                if let Err(e) = crate::shell::open_url(&url) {
+                    wlog!("панель: не удалось открыть браузер — {e:#}");
+                }
+            }
+        });
+    }
     {
         let st = state.clone();
         tokio::spawn(async move {
@@ -77,6 +103,8 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/api/pool/refresh", post(pool_refresh))
         .route("/api/pool/use", post(pool_use))
         .route("/api/subscriptions", post(subscriptions))
+        .route("/api/engines/ensure", post(engines_ensure))
+        .route("/api/trust-certs", post(trust_certs_handler))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, guard));
 
@@ -102,6 +130,42 @@ async fn quit(State(st): State<Arc<AppState>>) -> Json<Value> {
         std::process::exit(0);
     });
     Json(json!({ "ok": true }))
+}
+
+async fn engines_ensure(State(st): State<Arc<AppState>>) -> Response {
+    let st = st.clone();
+    tokio::spawn(async move {
+        for kind in [EngineKind::Wireproxy, EngineKind::Xray] {
+            if let Err(e) = crate::engines::downloads::ensure(&st.dir, kind, Some(st.clone())).await
+            {
+                wlog!("движки: {} — {e:#}", kind.label());
+            }
+        }
+        st.wg.start();
+        st.xr.start();
+    });
+    Json(json!({ "ok": true, "message": "загрузка началась" })).into_response()
+}
+
+async fn trust_certs_handler(State(st): State<Arc<AppState>>) -> Response {
+    match crate::local_tls::trust_certs(&st.dir) {
+        Ok(()) => {
+            let script = st.dir.join(crate::local_tls::trust_script_name());
+            match crate::shell::run_elevated(&script) {
+                Ok(()) => Json(json!({ "ok": true })).into_response(),
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response(),
+            }
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("{e:#}") })),
+        )
+            .into_response(),
+    }
 }
 
 // ---------------- guards ----------------
@@ -231,6 +295,9 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
             .map(|(domain, count, last)| json!({ "domain": domain, "count": count, "last": last }))
             .collect()
     };
+    let engines_ready = crate::engines::find_engine(EngineKind::Wireproxy).is_some()
+        && crate::engines::find_engine(EngineKind::Xray).is_some();
+    let downloads = st.downloads.lock().map(|d| d.clone()).unwrap_or_default();
 
     Json(json!({
         "vpnUp": st.wg.is_running(),
@@ -264,6 +331,8 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         "vpnDefault": settings.vpn_default,
         "autostart": crate::autostart::installed(),
         "caTrusted": crate::trust_status::is_trusted(&st.dir),
+        "enginesReady": engines_ready,
+        "engineDownloads": downloads,
         "vlessDomains": vless_only.into_iter().collect::<Vec<_>>(),
         "proxied": lists_counts.0,
         "direct": lists_counts.1,

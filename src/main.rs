@@ -29,6 +29,7 @@ mod net;
 mod paths;
 mod routing;
 mod settings;
+mod shell;
 mod single_instance;
 mod state;
 mod systemproxy;
@@ -95,7 +96,7 @@ fn main() -> anyhow::Result<()> {
     logging::init(&dir)?;
 
     match cli.command.unwrap_or(Command::Run) {
-        Command::Run => run_manager(dir, cli.panel_port, cli.no_tray),
+        Command::Run => run_manager(dir, cli.panel_port, cli.no_tray, cli.hidden),
         Command::Install => install::install(&dir),
         Command::Uninstall => install::uninstall(&dir),
         Command::Stop => stop_manager(cli.panel_port),
@@ -109,7 +110,7 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool) -> anyhow::Result<()> {
+fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool, hidden: bool) -> anyhow::Result<()> {
     let _instance = match single_instance::acquire(&dir)? {
         Some(instance) => instance,
         None => {
@@ -126,7 +127,7 @@ fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool) -> anyhow::Result<(
         .build()?;
     let st = {
         let _guard = rt.enter();
-        state::AppState::new(dir, panel_port)
+        state::AppState::new(dir, panel_port, !hidden)
     };
 
     #[cfg(any(windows, target_os = "macos"))]

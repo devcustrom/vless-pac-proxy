@@ -113,7 +113,7 @@ impl App {
         match id {
             "open" => {
                 let url = panel_url(&self.ctx);
-                if let Err(e) = open_url(&url) {
+                if let Err(e) = crate::shell::open_url(&url) {
                     wlog!("трей: открыть панель — {e:#}");
                 }
             }
@@ -124,7 +124,7 @@ impl App {
                         .state
                         .dir
                         .join(crate::local_tls::trust_script_name());
-                    if let Err(e) = run_elevated(&script) {
+                    if let Err(e) = crate::shell::run_elevated(&script) {
                         wlog!("трей: сертификаты — {e:#}");
                     }
                 }
@@ -178,62 +178,4 @@ fn panel_url(ctx: &Ctx) -> String {
     } else {
         format!("http://127.0.0.1:{}/", ctx.state.panel_port)
     }
-}
-
-#[cfg(windows)]
-fn wide(value: &str) -> Vec<u16> {
-    use std::os::windows::ffi::OsStrExt;
-    std::ffi::OsStr::new(value)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect()
-}
-
-#[cfg(windows)]
-fn shell_execute(verb: &str, target: &str) -> Result<()> {
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
-    let verb = wide(verb);
-    let target = wide(target);
-    let rc = unsafe {
-        ShellExecuteW(
-            std::ptr::null_mut(),
-            verb.as_ptr(),
-            target.as_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            1,
-        )
-    };
-    if rc as isize <= 32 {
-        anyhow::bail!("ShellExecuteW вернул {}", rc as isize);
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn open_url(url: &str) -> Result<()> {
-    shell_execute("open", url)
-}
-
-#[cfg(windows)]
-fn run_elevated(path: &std::path::Path) -> Result<()> {
-    shell_execute("runas", &path.to_string_lossy())
-}
-
-#[cfg(target_os = "macos")]
-fn open_url(url: &str) -> Result<()> {
-    std::process::Command::new("open")
-        .arg(url)
-        .spawn()
-        .map(|_| ())
-        .map_err(Into::into)
-}
-
-#[cfg(target_os = "macos")]
-fn run_elevated(path: &std::path::Path) -> Result<()> {
-    std::process::Command::new("open")
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(Into::into)
 }

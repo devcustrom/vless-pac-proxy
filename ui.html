@@ -57,6 +57,17 @@
 <h1>VPN-прокси (wireproxy)</h1>
 <div class="sub">PAC: <code>http://127.0.0.1:8080/proxy.pac</code> · SOCKS5: <code>127.0.0.1:25344</code> · HTTP: <code>127.0.0.1:25345</code></div>
 
+<div class="card" id="onboard" hidden>
+  <b>Быстрый старт</b>
+  <div class="muted" id="ob-text" style="margin-top:6px"></div>
+  <div class="row" style="margin-top:10px">
+    <button id="ob-engines" class="primary">Скачать движки</button>
+    <button id="ob-certs">Установить сертификаты</button>
+    <label class="syspac"><input type="checkbox" id="ob-syspac"> Системный прокси</label>
+  </div>
+  <div class="muted err" id="ob-dl" style="margin-top:6px"></div>
+</div>
+
 <div class="card">
   <div class="row">
     <span class="dot" id="dot"></span><b id="vpn">проверяю…</b>
@@ -67,7 +78,7 @@
     <span>Выходной IP: <b id="xip">—</b></span>
   </div>
   <div class="row" style="margin-top:8px">
-    <label class="syspac"><input type="checkbox" id="syspac"> Системный прокси для всей Windows (браузер → менеджер → VPN/напрямую)</label>
+    <label class="syspac"><input type="checkbox" id="syspac"> Системный прокси для всей системы (браузер → менеджер → VPN/напрямую)</label>
   </div>
 </div>
 
@@ -239,6 +250,7 @@ async function status() {
       ? 'следующее автообновление подписок: ' + new Date(s.nextPoolRefreshAt).toLocaleString('ru-RU')
       : (s.autoPoolRefreshHours > 0 ? 'автообновление подписок включено' : 'автообновление подписок выключено');
     renderLocalDomains(s.localProxy);
+    renderOnboarding(s);
     $('proxied').textContent = s.proxied == null ? '—' : s.proxied.toLocaleString('ru-RU');
     $('upd').textContent = s.lastUpdate ? new Date(s.lastUpdate).toLocaleString('ru-RU') : (s.updateError ? 'ошибка' : '—');
     $('refresh').disabled = !!s.refreshing;
@@ -299,6 +311,32 @@ function renderPool(s) {
     btn.onclick = async () => { try { await post('/api/pool/use', { index: p.i }); status(); msg('Конфиг применён: ' + p.name); } catch (e) { msg(e.message, true); } };
     li.append(span, btn); el.append(li);
   });
+}
+
+function renderOnboarding(s) {
+  const box = $('onboard');
+  if (!box) return;
+  const dl = s.engineDownloads || {};
+  const entries = Object.entries(dl);
+  const downloading = entries.some(([, d]) => d && (d.stage === 'download' || d.stage === 'unpack'));
+  const configured = !!s.wgConfigured || !!s.vlessConfigured;
+  const show = !s.enginesReady || !configured || downloading;
+  box.hidden = !show;
+  if (!show) return;
+  const lines = [];
+  if (!s.enginesReady) lines.push(downloading ? 'Скачиваю движки…' : 'Движки wireproxy/xray ещё не скачаны.');
+  else lines.push('Движки готовы.');
+  if (!s.wgConfigured && !s.vlessConfigured) lines.push('Добавьте канал: положите wg.conf рядом с программой или вставьте vless:// ниже.');
+  else if (!s.vlessConfigured) lines.push('WireGuard настроен; VLESS можно добавить как резервный канал.');
+  const parts = entries
+    .filter(([, d]) => d && d.stage !== 'done')
+    .map(([k, d]) => `${k}: ${d.stage === 'download' ? Math.round(100 * (d.done || 0) / Math.max(1, d.total || 1)) + '%' : d.stage}`);
+  if (parts.length) lines.push(parts.join(' · '));
+  $('ob-text').textContent = lines.join(' ');
+  $('ob-dl').textContent = entries.map(([k, d]) => (d && d.error ? `${k}: ${d.error}` : '')).filter(Boolean).join(' · ');
+  $('ob-engines').hidden = s.enginesReady || downloading;
+  $('ob-certs').hidden = !!s.caTrusted;
+  $('ob-syspac').checked = !!(s.systemProxy && s.systemProxy.enabled);
 }
 
 function renderLocalDomains(lp) {
@@ -456,6 +494,9 @@ $('syspac').onchange = async (ev) => {
 };
 $('refresh').onclick = async () => { try { await post('/api/refresh'); msg('Обновление запущено…'); } catch (e) { msg(e.message, true); } };
 $('restart').onclick = async () => { try { await post('/api/restart-proxy'); msg('Перезапуск…'); } catch (e) { msg(e.message, true); } };
+$('ob-engines').onclick = async () => { try { await post('/api/engines/ensure'); msg('Загрузка движков запущена…'); status(); } catch (e) { msg(e.message, true); } };
+$('ob-certs').onclick = async () => { try { await post('/api/trust-certs'); msg('Запущен установщик сертификатов (UAC)…'); } catch (e) { msg(e.message, true); } };
+$('ob-syspac').onchange = async (ev) => { try { await post('/api/system-proxy', { enabled: ev.target.checked }); status(); } catch (e) { msg(e.message, true); } };
 
 status();
 setInterval(status, 5000);

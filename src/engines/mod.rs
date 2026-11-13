@@ -4,9 +4,9 @@
 //! Безопасность: имена программ и все аргументы — литералы, выбранные по
 //! enum EngineKind (никакого пользовательского ввода в команду). Рабочий
 //! каталог — каталог, где найден движок рядом с приложением.
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -16,8 +16,16 @@ use tokio::sync::mpsc;
 
 use crate::wlog;
 
+pub mod downloads;
 pub mod wireproxy;
 pub mod xray;
+
+/// Каталог данных, где лежат скачанные движки (заполняется при старте).
+static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_data_dir(dir: &Path) {
+    let _ = DATA_DIR.set(dir.to_path_buf());
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineKind {
@@ -26,7 +34,7 @@ pub enum EngineKind {
 }
 
 impl EngineKind {
-    fn exe_name(self) -> &'static str {
+    pub fn exe_name(self) -> &'static str {
         match self {
             EngineKind::Wireproxy => {
                 if cfg!(windows) {
@@ -45,7 +53,7 @@ impl EngineKind {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             EngineKind::Wireproxy => "wireproxy",
             EngineKind::Xray => "xray",
@@ -74,6 +82,12 @@ fn app_dirs() -> Vec<PathBuf> {
 
 pub fn find_engine(kind: EngineKind) -> Option<PathBuf> {
     for dir in app_dirs() {
+        let candidate = dir.join(kind.exe_name());
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    if let Some(dir) = DATA_DIR.get() {
         let candidate = dir.join(kind.exe_name());
         if candidate.is_file() {
             return Some(candidate);

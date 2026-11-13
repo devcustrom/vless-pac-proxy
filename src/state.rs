@@ -41,6 +41,15 @@ pub struct Lists {
     pub refreshing: bool,
 }
 
+/// Прогресс скачивания движка (wireproxy/xray).
+#[derive(Clone, Default, serde::Serialize)]
+pub struct DownloadInfo {
+    pub stage: String,
+    pub done: u64,
+    pub total: u64,
+    pub error: Option<String>,
+}
+
 #[derive(Default)]
 pub struct Visited {
     pub items: Vec<(String, u64, i64)>, // domain, count, last_ts
@@ -73,9 +82,12 @@ pub struct CheckEntry {
 pub struct AppState {
     pub dir: PathBuf,
     pub panel_port: u16,
+    /// Интерактивный запуск (не автозапуск): можно открыть браузер с панелью.
+    pub interactive: bool,
     pub local_domains: Mutex<Vec<crate::net::local_proxy::LocalDomain>>,
     pub local_http_error: Mutex<Option<String>>,
     pub local_https_error: Mutex<Option<String>>,
+    pub downloads: Mutex<HashMap<String, DownloadInfo>>,
     pub tls_config:
         Mutex<Option<std::sync::Arc<tokio::sync::RwLock<std::sync::Arc<rustls::ServerConfig>>>>>,
     pub settings: Mutex<Settings>,
@@ -90,7 +102,8 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(dir: PathBuf, panel_port: u16) -> std::sync::Arc<Self> {
+    pub fn new(dir: PathBuf, panel_port: u16, interactive: bool) -> std::sync::Arc<Self> {
+        crate::engines::set_data_dir(&dir);
         let settings = Settings::load(&dir);
         let wg = Engine::new(crate::engines::EngineKind::Wireproxy, {
             let d = dir.clone();
@@ -108,9 +121,11 @@ impl AppState {
         let st = std::sync::Arc::new(Self {
             dir,
             panel_port,
+            interactive,
             local_domains: Mutex::new(local_domains),
             local_http_error: Mutex::new(None),
             local_https_error: Mutex::new(None),
+            downloads: Mutex::new(HashMap::new()),
             tls_config: Mutex::new(None),
             settings: Mutex::new(settings),
             wg,
