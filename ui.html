@@ -15,7 +15,7 @@
   @media (prefers-color-scheme: dark) {
     body { background: #16181d; color: #e6e6e6; }
     .card { background: #1f232b !important; border-color: #2c313a !important; }
-    input, button { background: #262b34 !important; color: #e6e6e6 !important; border-color: #3a4150 !important; }
+    input, button, textarea { background: #262b34 !important; color: #e6e6e6 !important; border-color: #3a4150 !important; }
   }
   h1 { font-size: 22px; margin: 0 0 4px; }
   .sub { opacity: .6; font-size: 13px; margin-bottom: 16px; }
@@ -30,6 +30,11 @@
   input[type=text] {
     flex: 1; min-width: 200px; padding: 8px 10px; border: 1px solid #ccd0d6;
     border-radius: 8px; font-size: 14px;
+  }
+  textarea {
+    width: 100%; margin-top: 8px; padding: 8px 10px; border: 1px solid #ccd0d6;
+    border-radius: 8px; font-size: 13px; resize: vertical;
+    font-family: ui-monospace, Consolas, monospace;
   }
   button {
     padding: 8px 14px; border: 1px solid #ccd0d6; border-radius: 8px;
@@ -66,6 +71,16 @@
     <label class="syspac"><input type="checkbox" id="ob-syspac"> Системный прокси</label>
   </div>
   <div class="muted err" id="ob-dl" style="margin-top:6px"></div>
+  <details style="margin-top:10px">
+    <summary>Конфиг WireGuard (wg.conf)</summary>
+    <div class="muted" style="margin-top:6px">Вставьте содержимое wg.conf или выберите файл — он сохранится локально, а WireGuard-канал перезапустится.</div>
+    <textarea id="wgtext" rows="7" spellcheck="false" placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = 10.66.66.2/32&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = host:51820"></textarea>
+    <div class="row" style="margin-top:6px">
+      <input type="file" id="wgfile" accept=".conf,.txt,text/plain">
+      <button id="wgsave" class="primary">Сохранить wg.conf</button>
+    </div>
+    <div class="muted" id="wginfo"></div>
+  </details>
 </div>
 
 <div class="card">
@@ -338,6 +353,7 @@ function renderOnboarding(s) {
   $('ob-engines').hidden = s.enginesReady || downloading;
   $('ob-certs').hidden = !!s.caTrusted;
   $('ob-syspac').checked = !!(s.systemProxy && s.systemProxy.enabled);
+  if ($('wginfo')) $('wginfo').textContent = s.wgConfigured ? 'WireGuard настроен' : 'WireGuard не настроен';
 }
 
 function renderLocalDomains(lp) {
@@ -498,6 +514,24 @@ $('restart').onclick = async () => { try { await post('/api/restart-proxy'); msg
 $('ob-engines').onclick = async () => { try { await post('/api/engines/ensure'); msg('Загрузка движков запущена…'); status(); } catch (e) { msg(e.message, true); } };
 $('ob-certs').onclick = async () => { try { await post('/api/trust-certs'); msg('Запущен установщик сертификатов (UAC)…'); } catch (e) { msg(e.message, true); } };
 $('ob-syspac').onchange = async (ev) => { try { await post('/api/system-proxy', { enabled: ev.target.checked }); status(); } catch (e) { msg(e.message, true); } };
+$('wgfile').onchange = async (ev) => {
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  try {
+    $('wgtext').value = await file.text();
+    msg('Файл загружен — нажмите «Сохранить wg.conf»');
+  } catch (e) { msg(e.message, true); }
+};
+$('wgsave').onclick = async () => {
+  const content = $('wgtext').value.trim();
+  if (!content) { msg('Вставьте содержимое wg.conf', true); return; }
+  try {
+    const r = await post('/api/wg', { action: 'set', content });
+    $('wgtext').value = '';
+    msg('wg.conf сохранён' + (r.endpoint ? ': ' + r.endpoint : ''));
+    status();
+  } catch (e) { msg(e.message, true); }
+};
 
 status();
 setInterval(status, 5000);

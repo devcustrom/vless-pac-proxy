@@ -88,6 +88,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/proxy.pac", get(pac))
         .route("/api/extra", post(extra))
         .route("/api/vless", post(vless))
+        .route("/api/wg", post(wg_config))
         .route("/api/refresh", post(refresh_lists))
         .route("/api/restart-proxy", post(restart_proxy))
         .route("/api/system-proxy", post(system_proxy))
@@ -132,6 +133,65 @@ async fn quit(State(st): State<Arc<AppState>>) -> Json<Value> {
         std::process::exit(0);
     });
     Json(json!({ "ok": true }))
+}
+
+async fn wg_config(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let action = body.get("action").and_then(|v| v.as_str()).unwrap_or("set");
+    let path = match crate::paths::in_dir(&st.dir, "wg.conf") {
+        Ok(path) => path,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    if action == "clear" {
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(st.dir.join("wireproxy.conf"));
+        st.wg.stop();
+        wlog!("wg.conf: удалён пользователем");
+        return Json(json!({ "ok": true, "configured": false })).into_response();
+    }
+    let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    if let Err(e) = crate::engines::wireproxy::validate(content) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("{e:#}") })),
+        )
+            .into_response();
+    }
+    let tmp = path.with_extension("conf.tmp");
+    if let Err(e) = std::fs::write(&tmp, content) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response();
+    }
+    if path.exists() {
+        let _ = std::fs::remove_file(&path);
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response();
+    }
+    if let Err(e) = crate::engines::wireproxy::ensure_config(&st.dir) {
+        wlog!("wg.conf: wireproxy.conf — {e:#}");
+    }
+    st.wg.restart();
+    let endpoint = content
+        .lines()
+        .find(|line| line.trim_start().to_lowercase().starts_with("endpoint"))
+        .and_then(|line| line.split_once('='))
+        .map(|(_, value)| value.trim().to_string())
+        .unwrap_or_default();
+    wlog!("wg.conf: сохранён (Endpoint {endpoint})");
+    Json(json!({ "ok": true, "configured": true, "endpoint": endpoint })).into_response()
 }
 
 async fn engines_ensure(State(st): State<Arc<AppState>>) -> Response {

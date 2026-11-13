@@ -107,7 +107,7 @@ impl AppState {
         let settings = Settings::load(&dir);
         let wg = Engine::new(crate::engines::EngineKind::Wireproxy, {
             let d = dir.clone();
-            move || crate::engines::wireproxy::is_configured(&d)
+            move || crate::engines::wireproxy::prepare(&d)
         });
         let xr = Engine::new(crate::engines::EngineKind::Xray, {
             let d = dir.clone();
