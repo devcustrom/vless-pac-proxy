@@ -29,7 +29,11 @@ mod systemproxy;
 mod vless;
 
 #[derive(Parser, Debug)]
-#[command(name = "wireproxy-control", version, about = "Умный прокси-стек WireGuard + VLESS/SS")]
+#[command(
+    name = "wireproxy-control",
+    version,
+    about = "Умный прокси-стек WireGuard + VLESS/SS"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,

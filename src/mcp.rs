@@ -24,7 +24,9 @@ fn http_call(method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
     stream.write_all(req.as_bytes())?;
     let mut resp = String::new();
     stream.read_to_string(&mut resp)?;
-    let (head, body) = resp.split_once("\r\n\r\n").context("некорректный ответ менеджера")?;
+    let (head, body) = resp
+        .split_once("\r\n\r\n")
+        .context("некорректный ответ менеджера")?;
     let status: u16 = head
         .lines()
         .next()
@@ -91,7 +93,11 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
     match name {
         "local_domains_list" => http_call("GET", "/api/local-domains", None),
         "local_domains_add" => {
-            let domain = args.get("domain").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let domain = args
+                .get("domain")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             if domain.is_empty() {
                 anyhow::bail!("нужен domain");
             }
@@ -103,7 +109,11 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             )
         }
         "local_domains_remove" => {
-            let domain = args.get("domain").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let domain = args
+                .get("domain")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             if domain.is_empty() {
                 anyhow::bail!("нужен domain");
             }
@@ -114,7 +124,11 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             )
         }
         "local_domains_probe" => {
-            let domain = args.get("domain").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let domain = args
+                .get("domain")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             if domain.is_empty() {
                 anyhow::bail!("нужен domain");
             }
@@ -200,7 +214,11 @@ pub fn run_stdio(_dir: &Path) -> Result<()> {
             }
             _ => {
                 if id.is_some() {
-                    respond(id, None, Some((-32601, format!("method not found: {method}"))));
+                    respond(
+                        id,
+                        None,
+                        Some((-32601, format!("method not found: {method}"))),
+                    );
                 }
             }
         }

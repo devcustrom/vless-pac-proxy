@@ -21,7 +21,7 @@ pub fn is_forbidden_ipv4(ip: Ipv4Addr) -> bool {
         || in_range([192, 168, 0, 0], [255, 255, 0, 0]) // private
         || in_range([198, 18, 0, 0], [255, 254, 0, 0]) // benchmarking
         || in_range([224, 0, 0, 0], [240, 0, 0, 0])  // multicast
-        || in_range([240, 0, 0, 0], [240, 0, 0, 0])  // reserved
+        || in_range([240, 0, 0, 0], [240, 0, 0, 0]) // reserved
 }
 
 pub fn is_forbidden_ipv6(ip: Ipv6Addr) -> bool {
@@ -104,18 +104,43 @@ mod tests {
 
     #[test]
     fn ranges() {
-        for s in ["127.0.0.1", "10.1.2.3", "192.168.0.1", "172.16.5.5", "169.254.169.254", "100.64.0.1", "224.0.0.1", "0.0.0.0"] {
-            assert!(is_forbidden_ip(s.parse().unwrap()), "{s} должен быть запрещён");
+        for s in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "192.168.0.1",
+            "172.16.5.5",
+            "169.254.169.254",
+            "100.64.0.1",
+            "224.0.0.1",
+            "0.0.0.0",
+        ] {
+            assert!(
+                is_forbidden_ip(s.parse().unwrap()),
+                "{s} должен быть запрещён"
+            );
         }
         for s in ["1.1.1.1", "8.8.8.8", "5.129.236.81"] {
-            assert!(!is_forbidden_ip(s.parse().unwrap()), "{s} должен быть разрешён");
+            assert!(
+                !is_forbidden_ip(s.parse().unwrap()),
+                "{s} должен быть разрешён"
+            );
         }
     }
 
     #[test]
     fn v6_ranges() {
-        for s in ["::1", "::", "fe80::1", "fc00::1", "fd42::1", "::ffff:127.0.0.1"] {
-            assert!(is_forbidden_ip(s.parse().unwrap()), "{s} должен быть запрещён");
+        for s in [
+            "::1",
+            "::",
+            "fe80::1",
+            "fc00::1",
+            "fd42::1",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(
+                is_forbidden_ip(s.parse().unwrap()),
+                "{s} должен быть запрещён"
+            );
         }
         assert!(!is_forbidden_ip("2606:4700:4700::1111".parse().unwrap()));
     }

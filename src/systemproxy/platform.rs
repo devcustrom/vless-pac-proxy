@@ -4,7 +4,8 @@ use std::path::Path;
 use anyhow::Result;
 
 pub const PROXY_ADDR: &str = "127.0.0.1:8081";
-pub const PROXY_OVERRIDE: &str = "localhost;127.0.0.1;*.local;192.168.*;10.*;172.16.*;<local>;zcode.z.ai;*.z.ai";
+pub const PROXY_OVERRIDE: &str =
+    "localhost;127.0.0.1;*.local;192.168.*;10.*;172.16.*;<local>;zcode.z.ai;*.z.ai";
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ProxyState {
@@ -15,8 +16,6 @@ pub struct ProxyState {
 
 #[cfg(windows)]
 mod imp {
-    use std::path::Path;
-
     use anyhow::Result;
     use winreg::enums::{HKEY_CURRENT_USER, KEY_ALL_ACCESS, KEY_READ};
     use winreg::RegKey;
@@ -65,12 +64,24 @@ mod imp {
         let server: Option<String> = key.get_value("ProxyServer").ok();
         let pac: Option<String> = key.get_value("AutoConfigURL").ok();
         if enabled == 1 && server.as_deref() == Some(PROXY_ADDR) {
-            return Ok(ProxyState { enabled: true, mode: Some("static".into()), value: server });
+            return Ok(ProxyState {
+                enabled: true,
+                mode: Some("static".into()),
+                value: server,
+            });
         }
         if let Some(url) = pac {
-            return Ok(ProxyState { enabled: false, mode: Some("pac".into()), value: Some(url) });
+            return Ok(ProxyState {
+                enabled: false,
+                mode: Some("pac".into()),
+                value: Some(url),
+            });
         }
-        Ok(ProxyState { enabled: false, mode: None, value: server })
+        Ok(ProxyState {
+            enabled: false,
+            mode: None,
+            value: server,
+        })
     }
 
     /// Синхронное выключение при выходе (чтобы не сломать браузер).
@@ -94,7 +105,11 @@ mod imp {
     }
 
     pub fn get_system_proxy() -> Result<ProxyState> {
-        Ok(ProxyState { enabled: false, mode: None, value: None })
+        Ok(ProxyState {
+            enabled: false,
+            mode: None,
+            value: None,
+        })
     }
 
     pub fn disable_on_exit() {}

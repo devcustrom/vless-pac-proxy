@@ -74,7 +74,8 @@ mod tests {
     use super::*;
 
     fn routing() -> Routing {
-        let set = |items: &[&str]| -> HashSet<String> { items.iter().map(|s| s.to_string()).collect() };
+        let set =
+            |items: &[&str]| -> HashSet<String> { items.iter().map(|s| s.to_string()).collect() };
         Routing {
             proxied: set(&["example.com", "claude.ai"]),
             direct_override: set(&["gosuslugi.ru"]),

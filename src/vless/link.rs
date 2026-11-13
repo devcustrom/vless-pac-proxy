@@ -138,27 +138,27 @@ pub fn parse_ss(raw: &str) -> Result<ParsedLink> {
     };
     let body = body.split('?').next().unwrap_or(body); // plugin и пр. игнорируем
 
-    let (method, password, address, port) = if let Some((userinfo, hostport)) = body.rsplit_once('@')
-    {
-        // SIP002: ss://base64(method:password)@host:port
-        let decoded = decode_b64(userinfo).context("не удалось разобрать ss userinfo")?;
-        let (m, p) = decoded
-            .split_once(':')
-            .context("не удалось разобрать ss userinfo")?;
-        let (host, port) = split_host_port(hostport)?;
-        (m.to_string(), p.to_string(), host, port)
-    } else {
-        // legacy: ss://base64(method:password@host:port)
-        let decoded = decode_b64(body).context("не удалось разобрать legacy ss-ссылку")?;
-        let (m, rest2) = decoded
-            .split_once(':')
-            .context("не удалось разобрать legacy ss-ссылку")?;
-        let (p, hostport) = rest2
-            .rsplit_once('@')
-            .context("не удалось разобрать legacy ss-ссылку")?;
-        let (host, port) = split_host_port(hostport)?;
-        (m.to_string(), p.to_string(), host, port)
-    };
+    let (method, password, address, port) =
+        if let Some((userinfo, hostport)) = body.rsplit_once('@') {
+            // SIP002: ss://base64(method:password)@host:port
+            let decoded = decode_b64(userinfo).context("не удалось разобрать ss userinfo")?;
+            let (m, p) = decoded
+                .split_once(':')
+                .context("не удалось разобрать ss userinfo")?;
+            let (host, port) = split_host_port(hostport)?;
+            (m.to_string(), p.to_string(), host, port)
+        } else {
+            // legacy: ss://base64(method:password@host:port)
+            let decoded = decode_b64(body).context("не удалось разобрать legacy ss-ссылку")?;
+            let (m, rest2) = decoded
+                .split_once(':')
+                .context("не удалось разобрать legacy ss-ссылку")?;
+            let (p, hostport) = rest2
+                .rsplit_once('@')
+                .context("не удалось разобрать legacy ss-ссылку")?;
+            let (host, port) = split_host_port(hostport)?;
+            (m.to_string(), p.to_string(), host, port)
+        };
 
     Ok(ParsedLink {
         protocol: "ss".into(),
@@ -182,9 +182,7 @@ pub fn parse_ss(raw: &str) -> Result<ParsedLink> {
 }
 
 fn split_host_port(hostport: &str) -> Result<(String, u16)> {
-    let (host, port) = hostport
-        .rsplit_once(':')
-        .context("нет порта в ss-ссылке")?;
+    let (host, port) = hostport.rsplit_once(':').context("нет порта в ss-ссылке")?;
     let host = host.trim_matches(|c| c == '[' || c == ']').to_string();
     let port: u16 = port.parse().context("некорректный порт в ss-ссылке")?;
     Ok((host, port))
@@ -258,7 +256,8 @@ pub fn build_outbound(p: &ParsedLink, tag: &str) -> Value {
             }
             stream["wsSettings"] = ws;
         } else if p.network == "grpc" {
-            stream["grpcSettings"] = json!({ "serviceName": p.service_name.clone().unwrap_or_default() });
+            stream["grpcSettings"] =
+                json!({ "serviceName": p.service_name.clone().unwrap_or_default() });
         }
         json!({
             "tag": tag,
@@ -285,7 +284,14 @@ pub fn build_outbound(p: &ParsedLink, tag: &str) -> Value {
 /// Полный конфиг xray: HTTP-инбаунд 25346 + один outbound.
 pub fn generate_config(raw: &str) -> Result<(Value, ParsedLink)> {
     let parsed = parse_any(raw)?;
-    let outbound = build_outbound(&parsed, if parsed.protocol == "vless" { "vless-out" } else { "ss-out" });
+    let outbound = build_outbound(
+        &parsed,
+        if parsed.protocol == "vless" {
+            "vless-out"
+        } else {
+            "ss-out"
+        },
+    );
     let config = json!({
         "log": { "loglevel": "warning" },
         "inbounds": [{
@@ -332,8 +338,14 @@ mod tests {
         assert_eq!(p.flow.as_deref(), Some("xtls-rprx-vision"));
         assert_eq!(p.short_id.as_deref(), Some("6ba85179"));
         let out = build_outbound(&p, "out0");
-        assert_eq!(out["settings"]["vnext"][0]["users"][0]["flow"], "xtls-rprx-vision");
-        assert_eq!(out["streamSettings"]["realitySettings"]["publicKey"], "abcDEF123");
+        assert_eq!(
+            out["settings"]["vnext"][0]["users"][0]["flow"],
+            "xtls-rprx-vision"
+        );
+        assert_eq!(
+            out["streamSettings"]["realitySettings"]["publicKey"],
+            "abcDEF123"
+        );
     }
 
     #[test]
@@ -344,7 +356,10 @@ mod tests {
         assert_eq!(p.host_header.as_deref(), Some("front.example.com"));
         let out = build_outbound(&p, "out0");
         assert_eq!(out["streamSettings"]["wsSettings"]["path"], "/ws");
-        assert_eq!(out["streamSettings"]["tlsSettings"]["serverName"], "front.example.com");
+        assert_eq!(
+            out["streamSettings"]["tlsSettings"]["serverName"],
+            "front.example.com"
+        );
     }
 
     #[test]
@@ -366,7 +381,8 @@ mod tests {
     fn parses_ss_legacy() {
         let b64 = {
             use base64::Engine;
-            base64::engine::general_purpose::STANDARD.encode("chacha20-ietf-poly1305:secret@5.6.7.8:8389")
+            base64::engine::general_purpose::STANDARD
+                .encode("chacha20-ietf-poly1305:secret@5.6.7.8:8389")
         };
         let p = parse_ss(&format!("ss://{b64}")).unwrap();
         assert_eq!(p.method, "chacha20-ietf-poly1305");

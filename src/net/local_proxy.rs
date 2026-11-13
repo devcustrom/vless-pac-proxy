@@ -52,15 +52,18 @@ mod tests {
     fn parses_lines() {
         assert_eq!(
             parse_line("app.localhost = 3000"),
-            Some(LocalDomain { domain: "app.localhost".into(), port: 3000 })
+            Some(LocalDomain {
+                domain: "app.localhost".into(),
+                port: 3000
+            })
         );
-        assert_eq!(
-            parse_line("http://panel.localhost:8080/"),
-            None
-        );
+        assert_eq!(parse_line("http://panel.localhost:8080/"), None);
         assert_eq!(
             parse_line("panel.localhost 8080"),
-            Some(LocalDomain { domain: "panel.localhost".into(), port: 8080 })
+            Some(LocalDomain {
+                domain: "panel.localhost".into(),
+                port: 8080
+            })
         );
         assert_eq!(parse_line("# comment"), None);
     }

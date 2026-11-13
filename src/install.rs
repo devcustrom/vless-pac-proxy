@@ -14,6 +14,9 @@ pub fn install(dir: &Path) -> Result<()> {
 
 pub fn uninstall(dir: &Path) -> Result<()> {
     crate::logging::log(format!("uninstall: {}", dir.display()));
-    println!("Удаление автозапуска — этап M5. Данные в {} не тронуты.", dir.display());
+    println!(
+        "Удаление автозапуска — этап M5. Данные в {} не тронуты.",
+        dir.display()
+    );
     Ok(())
 }

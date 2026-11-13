@@ -35,7 +35,11 @@ mod tests {
     fn detects_placeholders() {
         let d = tmpdir();
         let mut f = std::fs::File::create(d.join("wg.conf")).unwrap();
-        writeln!(f, "[Interface]\nPrivateKey = ВАШ_ПРИВАТНЫЙ_КЛЮЧ\nEndpoint = vpn.example.com:51820").unwrap();
+        writeln!(
+            f,
+            "[Interface]\nPrivateKey = ВАШ_ПРИВАТНЫЙ_КЛЮЧ\nEndpoint = vpn.example.com:51820"
+        )
+        .unwrap();
         assert!(!is_configured(&d));
         std::fs::write(
             d.join("wg.conf"),
