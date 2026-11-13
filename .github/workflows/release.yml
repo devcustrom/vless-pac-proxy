@@ -20,6 +20,7 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item target/release/wireproxy-control.exe dist/
           Copy-Item README.md dist/
+          Copy-Item README-MAC.md dist/
           Compress-Archive -Path dist/* -DestinationPath "wireproxy-control-${{ github.ref_name }}-windows-x64.zip"
       - uses: actions/upload-artifact@v4
         with:
@@ -45,8 +46,8 @@ jobs:
             target/x86_64-apple-darwin/release/wireproxy-control
           chmod +x wireproxy-control
           mkdir -p dist
-          cp wireproxy-control README.md dist/
-          zip -r "wireproxy-control-${GITHUB_REF_NAME}-macos-universal.zip" dist
+          cp wireproxy-control README.md README-MAC.md dist/
+          (cd dist && zip -r "../wireproxy-control-${GITHUB_REF_NAME}-macos-universal.zip" .)
       - uses: actions/upload-artifact@v4
         with:
           name: macos
