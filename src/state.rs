@@ -73,6 +73,11 @@ pub struct CheckEntry {
 pub struct AppState {
     pub dir: PathBuf,
     pub panel_port: u16,
+    pub local_domains: Mutex<Vec<crate::net::local_proxy::LocalDomain>>,
+    pub local_http_error: Mutex<Option<String>>,
+    pub local_https_error: Mutex<Option<String>>,
+    pub tls_config:
+        Mutex<Option<std::sync::Arc<tokio::sync::RwLock<std::sync::Arc<rustls::ServerConfig>>>>>,
     pub settings: Mutex<Settings>,
     pub wg: Engine,
     pub xr: Engine,
@@ -95,9 +100,18 @@ impl AppState {
             let d = dir.clone();
             move || crate::engines::xray::has_config(&d)
         });
+        let local_domains = crate::paths::in_dir(&dir, "local-domains.txt")
+            .ok()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|t| crate::net::local_proxy::parse_config(&t))
+            .unwrap_or_default();
         let st = std::sync::Arc::new(Self {
             dir,
             panel_port,
+            local_domains: Mutex::new(local_domains),
+            local_http_error: Mutex::new(None),
+            local_https_error: Mutex::new(None),
+            tls_config: Mutex::new(None),
             settings: Mutex::new(settings),
             wg,
             xr,

@@ -9,6 +9,13 @@ settings.json
 proxy.pac
 xray-pool-*.json
 certs/
+hosts-entries.txt
+local-domains-hosts.bat
+local-domains-hosts.ps1
+local-domains-hosts.command
+local-domains-trust.bat
+local-domains-trust.command
+trust-local-ca.bat
 
 # Бинарники и архивы (скачиваются/собираются установщиками)
 wireproxy.exe

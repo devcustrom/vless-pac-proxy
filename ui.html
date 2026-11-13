@@ -125,7 +125,7 @@
 
 <div class="card">
   <b>Локальные домены (плагин)</b>
-  <div class="muted">Домен → локальный порт. Реверс-прокси на <code>http://127.0.0.1:<span id="lport">80</span></code> и <code>https://127.0.0.1:<span id="lhttpsport">443</span></code> (свой локальный CA: <code>local-domains-trust.bat</code> один раз, без прав админа; Firefox — <code>security.enterprise_roots.enabled=true</code>), только loopback, WebSocket поддерживается. Домены <code>*.localhost</code> браузеры открывают без правки hosts; для остальных имён запустите <code>local-domains-hosts.bat</code> от администратора.</div>
+  <div class="muted">Домен → локальный порт. Реверс-прокси на <code>http://127.0.0.1:<span id="lport">80</span></code> и <code>https://127.0.0.1:<span id="lhttpsport">443</span></code> (свой локальный CA: <code>local-domains-trust.bat</code> один раз, запросит UAC; Firefox — <code>security.enterprise_roots.enabled=true</code>), только loopback, WebSocket поддерживается. Домены <code>*.localhost</code> браузеры открывают без правки hosts; для остальных имён запустите <code>local-domains-hosts.bat</code> от администратора.</div>
   <div id="ldlist"></div>
   <form id="ldadd" class="row" style="margin-top:6px">
     <input type="text" id="lddomain" placeholder="app.localhost" autocomplete="off">

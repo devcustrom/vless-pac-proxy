@@ -6,6 +6,7 @@
 //!   install            — установка: папка данных, движки, автозапуск, панель
 //!   uninstall          — удаление автозапуска (данные остаются)
 //!   trust-certs        — установить локальный CA в доверенные
+//!   sync-hosts         — подготовить скрипт синхронизации hosts
 //!   mcp                — MCP-сервер (stdio JSON-RPC)
 //!   version            — версия
 #![allow(dead_code)] // временно на время переноса (M0→M6): модули подключаются поэтапно
@@ -17,6 +18,7 @@ mod api;
 mod engines;
 mod install;
 mod lists;
+mod local_hosts;
 mod local_tls;
 mod logging;
 mod mcp;
@@ -62,6 +64,8 @@ enum Command {
     Uninstall,
     /// Установить локальный CA в доверенные (запросит права администратора)
     TrustCerts,
+    /// Подготовить скрипт синхронизации hosts для локальных доменов
+    SyncHosts,
     /// MCP-сервер для агентов (stdio JSON-RPC)
     Mcp,
     /// Показать версию
@@ -84,6 +88,7 @@ fn main() -> anyhow::Result<()> {
         Command::Install => install::install(&dir),
         Command::Uninstall => install::uninstall(&dir),
         Command::TrustCerts => local_tls::trust_certs(&dir),
+        Command::SyncHosts => local_hosts::sync_hosts(&dir),
         Command::Mcp => mcp::run_stdio(&dir),
         Command::Version => {
             println!("wireproxy-control {}", env!("CARGO_PKG_VERSION"));

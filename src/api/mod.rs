@@ -33,6 +33,14 @@ pub async fn run(dir: PathBuf, panel_port: u16) -> anyhow::Result<()> {
             }
         });
     }
+    {
+        let st = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::net::local_proxy::serve(st).await {
+                wlog!("локальные домены остановлены: {e}");
+            }
+        });
+    }
     crate::lists::spawn_scheduler(state.clone());
     crate::vless::pool::spawn_scheduler(state.clone());
     spawn_health_probes(state.clone());
@@ -137,7 +145,16 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
     };
     let extra = read_domains(&st.dir, "extra-domains.txt");
     let subscriptions = read_subs(&st.dir);
-    let local_domains = read_local_domains(&st);
+    let (local_domains, local_http_err, local_https_err) = {
+        let domains = st
+            .local_domains
+            .lock()
+            .map(|d| d.clone())
+            .unwrap_or_default();
+        let http_err = st.local_http_error.lock().ok().and_then(|e| e.clone());
+        let https_err = st.local_https_error.lock().ok().and_then(|e| e.clone());
+        (domains, http_err, https_err)
+    };
     let sys_proxy = crate::systemproxy::get_system_proxy().unwrap_or_default();
     let checks: Vec<CheckEntry> = st.checks.lock().map(|c| c.clone()).unwrap_or_default();
     let (pool_view, pool_testing, pool_updated, pool_error, next_pool_refresh) = {
@@ -205,10 +222,12 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         "subscriptions": subscriptions,
         "localProxy": {
             "port": settings.local_proxy_port,
-            "error": if local_domains.is_empty() { Some("домены не настроены".to_string()) } else { None },
+            "error": local_http_err,
             "httpsPort": settings.local_https_port,
-            "httpsError": "HTTPS-сервер локальных доменов — этап M3",
+            "httpsError": local_https_err,
             "caPath": "certs/ca.crt",
+            "trustScript": crate::local_tls::trust_script_name(),
+            "hostsScript": crate::local_hosts::hosts_script_name(),
             "domains": local_domains.iter().map(|d| json!({ "domain": d.domain, "port": d.port })).collect::<Vec<_>>(),
         },
         "vpnDefault": settings.vpn_default,
@@ -396,11 +415,21 @@ async fn auto(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Respo
 
 async fn local_domains_get(State(st): State<Arc<AppState>>) -> Json<Value> {
     let s = st.settings_snapshot();
-    let domains = read_local_domains(&st);
+    let domains = st
+        .local_domains
+        .lock()
+        .map(|d| d.clone())
+        .unwrap_or_default();
+    let http_err = st.local_http_error.lock().ok().and_then(|e| e.clone());
+    let https_err = st.local_https_error.lock().ok().and_then(|e| e.clone());
     Json(json!({
         "httpPort": s.local_proxy_port,
         "httpsPort": s.local_https_port,
-        "httpsError": "HTTPS-сервер локальных доменов — этап M3",
+        "error": http_err,
+        "httpsError": https_err,
+        "caPath": "certs/ca.crt",
+        "trustScript": crate::local_tls::trust_script_name(),
+        "hostsScript": crate::local_hosts::hosts_script_name(),
         "domains": domains.iter().map(|d| json!({ "domain": d.domain, "port": d.port })).collect::<Vec<_>>(),
     }))
 }
@@ -451,8 +480,53 @@ async fn local_domains_post(State(st): State<Arc<AppState>>, Json(body): Json<Va
         }
     }
     match write_local_domains(&st.dir, &list) {
-        Ok(()) => Json(json!({ "ok": true, "domains": list.iter().map(|d| json!({ "domain": d.domain, "port": d.port })).collect::<Vec<_>>() })).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+        Ok(()) => {
+            if let Ok(mut d) = st.local_domains.lock() {
+                *d = list.clone();
+            }
+            reload_local_tls(&st).await;
+            Json(json!({ "ok": true, "domains": list.iter().map(|d| json!({ "domain": d.domain, "port": d.port })).collect::<Vec<_>>() })).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn reload_local_tls(st: &Arc<AppState>) {
+    let names: Vec<String> = st
+        .local_domains
+        .lock()
+        .map(|d| d.iter().map(|x| x.domain.clone()).collect())
+        .unwrap_or_default();
+    let holder = st.tls_config.lock().ok().and_then(|s| s.clone());
+    let dir = st.dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        if let Err(e) = crate::local_hosts::write_script(&dir, &names) {
+            wlog!("локальные домены: скрипт hosts — {e:#}");
+        }
+        crate::local_tls::build_store(&dir, &names)
+    })
+    .await;
+    match result {
+        Ok(Ok(store)) => {
+            let cfg = crate::local_tls::server_config(Arc::new(store));
+            if let Some(h) = holder {
+                *h.write().await = cfg;
+            }
+            if let Ok(mut e) = st.local_https_error.lock() {
+                *e = None;
+            }
+        }
+        Ok(Err(e)) => {
+            if let Ok(mut x) = st.local_https_error.lock() {
+                *x = Some(format!("{e:#}"));
+            }
+            wlog!("локальный HTTPS: сертификаты — {e:#}");
+        }
+        Err(e) => wlog!("локальный HTTPS: задача сборки сертификатов упала — {e}"),
     }
 }
 
@@ -463,25 +537,61 @@ async fn local_domains_probe(State(st): State<Arc<AppState>>, Json(body): Json<V
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
-    let Some(target) = read_local_domains(&st)
-        .into_iter()
-        .find(|d| d.domain == domain)
-    else {
+    let target = st
+        .local_domains
+        .lock()
+        .map(|d| d.iter().find(|x| x.domain == domain).cloned())
+        .ok()
+        .flatten();
+    let Some(target) = target else {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "домен не настроен" })),
         )
             .into_response();
     };
-    // HTTP-реверс-прокси появится в M3; пока честно сообщаем об этом
-    Json(json!({
-        "domain": domain,
-        "port": target.port,
-        "status": 0,
-        "ms": 0,
-        "error": "локальные домены (HTTP/HTTPS) — этап M3"
-    }))
-    .into_response()
+    let http_port = st.settings_snapshot().local_proxy_port;
+    let started = std::time::Instant::now();
+    let status = probe_local_domain(&domain, http_port).await;
+    let ms = started.elapsed().as_millis() as u64;
+    match status {
+        Some(code) => Json(json!({
+            "domain": domain,
+            "port": target.port,
+            "status": code,
+            "ms": ms
+        }))
+        .into_response(),
+        None => Json(json!({
+            "domain": domain,
+            "port": target.port,
+            "status": 0,
+            "ms": ms,
+            "error": "локальный домен не ответил"
+        }))
+        .into_response(),
+    }
+}
+
+async fn probe_local_domain(domain: &str, http_port: u16) -> Option<u16> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpStream;
+    let mut sock = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        TcpStream::connect(("127.0.0.1", http_port)),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    let request = format!("GET / HTTP/1.1\r\nHost: {domain}\r\nConnection: close\r\n\r\n");
+    sock.write_all(request.as_bytes()).await.ok()?;
+    let mut buf = vec![0u8; 256];
+    let n = tokio::time::timeout(std::time::Duration::from_secs(5), sock.read(&mut buf))
+        .await
+        .ok()?
+        .ok()?;
+    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+    head.lines().next()?.split_whitespace().nth(1)?.parse().ok()
 }
 
 async fn local_ports(State(_st): State<Arc<AppState>>) -> Json<Value> {
@@ -706,8 +816,11 @@ fn write_local_domains(
 ) -> std::io::Result<()> {
     let path = crate::paths::in_dir(dir, "local-domains.txt")
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
-    let mut text =
-        String::from("# Плагин локальных доменов: домен = порт (по одному в строке).\n\n");
+    let mut text = String::from(
+        "# Плагин локальных доменов: домен = порт (по одному в строке).\n\
+         # *.localhost браузеры резолвят в 127.0.0.1 без правки hosts.\n\
+         # Для «настоящих» имён запустите local-domains-hosts.bat от администратора.\n\n",
+    );
     for d in list {
         text.push_str(&format!("{} = {}\n", d.domain, d.port));
     }
