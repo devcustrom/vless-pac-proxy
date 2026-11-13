@@ -1,7 +1,6 @@
 //! VLESS/SS: парсер ссылок, пул подписок, авто-ротация.
 pub mod link;
 pub mod pool;
-pub mod rotate;
 
 /// Локальный HTTP-порт xray, через который идёт VLESS-канал.
 pub const XRAY_HTTP_PORT: u16 = 25346;

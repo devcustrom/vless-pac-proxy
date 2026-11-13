@@ -104,60 +104,58 @@ impl Engine {
         F: Fn() -> bool + Send + 'static,
     {
         let (tx, mut rx) = mpsc::channel::<Cmd>(8);
-        let task_tx = tx.clone();
         let running = Arc::new(AtomicBool::new(false));
         let running_task = running.clone();
         tokio::spawn(async move {
+            let mut desired = false; // «процесс должен работать»
             let mut stopping = false;
-            while let Some(cmd) = rx.recv().await {
-                match cmd {
-                    Cmd::Start => {
-                        if running_task.load(Ordering::SeqCst) || !configured() {
-                            continue;
-                        }
-                        let mut child = match spawn_engine(kind) {
-                            Ok(child) => child,
-                            Err(e) => {
-                                wlog!("{}: не удалось запустить — {e:#}", kind.label());
-                                continue;
-                            }
-                        };
-                        running_task.store(true, Ordering::SeqCst);
-                        loop {
+            loop {
+                if desired && !running_task.load(Ordering::SeqCst) && configured() {
+                    match spawn_engine(kind) {
+                        Ok(mut child) => {
+                            running_task.store(true, Ordering::SeqCst);
                             tokio::select! {
                                 status = child.wait() => {
-                                    running_task.store(false, Ordering::SeqCst);
                                     wlog!("{}: процесс завершился ({status:?})", kind.label());
-                                    if !stopping && configured() {
-                                        tokio::time::sleep(Duration::from_secs(3)).await;
-                                    }
-                                    break;
                                 }
                                 cmd = rx.recv() => {
                                     match cmd {
-                                        Some(Cmd::Stop) | Some(Cmd::Restart) => { let _ = child.kill().await; }
+                                        Some(Cmd::Start) => {}
+                                        Some(Cmd::Stop) => { desired = false; let _ = child.kill().await; }
+                                        Some(Cmd::Restart) => { desired = true; let _ = child.kill().await; }
                                         Some(Cmd::Shutdown) | None => {
                                             stopping = true;
+                                            desired = false;
                                             let _ = child.kill().await;
                                         }
-                                        Some(Cmd::Start) => {}
                                     }
+                                    let _ = child.wait().await;
                                 }
                             }
+                            running_task.store(false, Ordering::SeqCst);
+                            if stopping {
+                                break;
+                            }
+                            if desired {
+                                tokio::time::sleep(Duration::from_secs(3)).await;
+                            }
+                            continue;
                         }
-                    }
-                    Cmd::Stop => {}
-                    Cmd::Restart => {
-                        if configured() {
-                            let _ = task_tx.try_send(Cmd::Start);
+                        Err(e) => {
+                            // движок отсутствует/не запустился: не спамим, ждём команду
+                            wlog!("{}: не удалось запустить — {e:#}", kind.label());
+                            desired = false;
+                            continue;
                         }
-                    }
-                    Cmd::Shutdown => {
-                        running_task.store(false, Ordering::SeqCst);
-                        break;
                     }
                 }
+                match rx.recv().await {
+                    Some(Cmd::Start) | Some(Cmd::Restart) => desired = true,
+                    Some(Cmd::Stop) => desired = false,
+                    Some(Cmd::Shutdown) | None => break,
+                }
             }
+            running_task.store(false, Ordering::SeqCst);
         });
         Self { tx, running }
     }

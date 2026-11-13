@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 
 use crate::engines::Engine;
 use crate::settings::Settings;
+use crate::vless::pool::PoolEntry;
 
 #[derive(Default, Clone)]
 pub struct Health {
@@ -15,6 +16,19 @@ pub struct Health {
     pub exit_ip: Option<String>,
     pub exit_ip_vless: Option<String>,
     pub at: Option<DateTime<Utc>>,
+}
+
+#[derive(Default)]
+pub struct Pool {
+    pub testing: bool,
+    pub updated_at: Option<DateTime<Utc>>,
+    pub error: Option<String>,
+    pub entries: Vec<PoolEntry>,
+    pub active_link: Option<String>,
+    pub tried: std::collections::HashSet<String>,
+    pub rotate_cycle_at: Option<DateTime<Utc>>,
+    pub last_rotate_at: Option<DateTime<Utc>>,
+    pub last_attempt_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Default)]
@@ -64,6 +78,7 @@ pub struct AppState {
     pub xr: Engine,
     pub health: Mutex<Health>,
     pub lists: Mutex<Lists>,
+    pub pool: Mutex<Pool>,
     pub visited: Mutex<Visited>,
     pub checks: Mutex<Vec<CheckEntry>>,
     pub http_clients: Mutex<HashMap<String, reqwest::Client>>,
@@ -80,7 +95,7 @@ impl AppState {
             let d = dir.clone();
             move || crate::engines::xray::has_config(&d)
         });
-        std::sync::Arc::new(Self {
+        let st = std::sync::Arc::new(Self {
             dir,
             panel_port,
             settings: Mutex::new(settings),
@@ -88,10 +103,13 @@ impl AppState {
             xr,
             health: Mutex::new(Health::default()),
             lists: Mutex::new(Lists::default()),
+            pool: Mutex::new(Pool::default()),
             visited: Mutex::new(Visited::default()),
             checks: Mutex::new(Vec::new()),
             http_clients: Mutex::new(HashMap::new()),
-        })
+        });
+        crate::vless::pool::load_pool_state(&st);
+        st
     }
 
     pub fn settings_snapshot(&self) -> Settings {

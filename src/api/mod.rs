@@ -34,6 +34,7 @@ pub async fn run(dir: PathBuf, panel_port: u16) -> anyhow::Result<()> {
         });
     }
     crate::lists::spawn_scheduler(state.clone());
+    crate::vless::pool::spawn_scheduler(state.clone());
     spawn_health_probes(state.clone());
 
     let app = Router::new()
@@ -53,9 +54,9 @@ pub async fn run(dir: PathBuf, panel_port: u16) -> anyhow::Result<()> {
         .route("/api/local-domains/probe", post(local_domains_probe))
         .route("/api/local-ports", get(local_ports))
         .route("/api/check", post(check))
-        .route("/api/pool/refresh", post(pool_stub))
-        .route("/api/pool/use", post(pool_stub))
-        .route("/api/subscriptions", post(subscriptions_stub))
+        .route("/api/pool/refresh", post(pool_refresh))
+        .route("/api/pool/use", post(pool_use))
+        .route("/api/subscriptions", post(subscriptions))
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, guard));
 
@@ -139,6 +140,39 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
     let local_domains = read_local_domains(&st);
     let sys_proxy = crate::systemproxy::get_system_proxy().unwrap_or_default();
     let checks: Vec<CheckEntry> = st.checks.lock().map(|c| c.clone()).unwrap_or_default();
+    let (pool_view, pool_testing, pool_updated, pool_error, next_pool_refresh) = {
+        let p = st.pool.lock().unwrap();
+        let view: Vec<Value> = p
+            .entries
+            .iter()
+            .take(60)
+            .enumerate()
+            .map(|(i, e)| {
+                json!({
+                    "i": i,
+                    "name": e.name,
+                    "protocol": e.protocol,
+                    "address": e.address,
+                    "port": e.port,
+                    "ok": e.ok,
+                    "ms": e.ms
+                })
+            })
+            .collect();
+        let next = match (p.last_attempt_at, settings.auto_pool_refresh_hours) {
+            (Some(t), h) if h > 0.0 => {
+                Some((t + chrono::Duration::seconds((h * 3600.0) as i64)).to_rfc3339())
+            }
+            _ => None,
+        };
+        (
+            Value::Array(view),
+            p.testing,
+            p.updated_at.map(|t| t.to_rfc3339()),
+            p.error.clone(),
+            next,
+        )
+    };
     let visited: Vec<Value> = {
         let v = st.visited.lock().unwrap();
         let mut items = v.items.clone();
@@ -161,13 +195,13 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         "vlessConfigured": crate::engines::xray::has_config(&st.dir),
         "vlessUp": health.vless_ok,
         "exitIpVless": health.exit_ip_vless,
-        "pool": [],
-        "poolTesting": false,
-        "poolUpdatedAt": Value::Null,
-        "poolError": "пул подписок — этап M2",
+        "pool": pool_view,
+        "poolTesting": pool_testing,
+        "poolUpdatedAt": pool_updated,
+        "poolError": pool_error,
         "autoRotate": settings.auto_rotate,
         "autoPoolRefreshHours": settings.auto_pool_refresh_hours,
-        "nextPoolRefreshAt": Value::Null,
+        "nextPoolRefreshAt": next_pool_refresh,
         "subscriptions": subscriptions,
         "localProxy": {
             "port": settings.local_proxy_port,
@@ -552,19 +586,77 @@ async fn http_code(client: &reqwest::Client, url: &str) -> String {
     }
 }
 
-async fn pool_stub() -> Response {
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(json!({ "error": "пул подписок — этап M2" })),
-    )
-        .into_response()
+async fn pool_refresh(State(st): State<Arc<AppState>>) -> Response {
+    if st.pool.lock().map(|p| p.testing).unwrap_or(false) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "уже выполняется" })),
+        )
+            .into_response();
+    }
+    let st2 = st.clone();
+    tokio::spawn(async move {
+        if let Err(e) = crate::vless::pool::refresh(&st2).await {
+            wlog!("обновление пула: {e}");
+        }
+    });
+    (StatusCode::ACCEPTED, Json(json!({ "ok": true }))).into_response()
 }
 
-async fn subscriptions_stub() -> Response {
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(json!({ "error": "подписки — этап M2" })),
-    )
+async fn pool_use(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let index = body
+        .get("index")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(u64::MAX) as usize;
+    match crate::vless::pool::apply_entry(&st, index) {
+        Ok(info) => Json(json!({ "ok": true, "info": info })).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn subscriptions(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let action = body.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    let url = body
+        .get("url")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let mut list = crate::vless::pool::read_subscriptions(&st.dir);
+    match action {
+        "add" => {
+            if let Err(e) = crate::vless::pool::validate_subscription_url(&url).await {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": e.to_string() })),
+                )
+                    .into_response();
+            }
+            if !list.contains(&url) {
+                list.push(url);
+            }
+        }
+        "remove" => list.retain(|u| *u != url),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "action должен быть add|remove" })),
+            )
+                .into_response();
+        }
+    }
+    if let Err(e) = crate::vless::pool::write_subscriptions(&st.dir, &list) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response();
+    }
+    Json(json!({ "ok": true, "subscriptions": crate::vless::pool::read_subscriptions(&st.dir) }))
         .into_response()
 }
 
@@ -680,6 +772,17 @@ async fn probe_once(state: &Arc<AppState>) {
                 "не проходит трафик"
             }
         );
+    }
+    if crate::engines::xray::has_config(&state.dir) {
+        if xr_ip.is_none() {
+            // автовосстановление: применить рабочий конфиг из пула
+            crate::vless::pool::maybe_auto_recover(state, "VLESS мёртв").await;
+        } else if let Ok(mut p) = state.pool.lock() {
+            if !p.tried.is_empty() {
+                p.tried.clear();
+                wlog!("VLESS-канал восстановлен");
+            }
+        }
     }
 }
 
