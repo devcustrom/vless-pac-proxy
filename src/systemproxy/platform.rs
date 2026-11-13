@@ -94,14 +94,130 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+mod imp {
+    use anyhow::{bail, Result};
+    use std::process::Command;
+
+    use super::{ProxyState, PROXY_ADDR, PROXY_OVERRIDE};
+
+    /// Активные сетевые сервисы (Wi-Fi, Ethernet…), кроме отключённых (`*`).
+    fn services() -> Result<Vec<String>> {
+        let out = Command::new("networksetup")
+            .arg("-listallnetworkservices")
+            .output()?;
+        if !out.status.success() {
+            bail!("networksetup: не удалось получить список сервисов");
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        Ok(text
+            .lines()
+            .skip(1)
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('*'))
+            .map(ToString::to_string)
+            .collect())
+    }
+
+    fn run(args: &[String]) -> Result<()> {
+        let out = Command::new("networksetup").args(args).output()?;
+        if !out.status.success() {
+            bail!(
+                "networksetup {}: {}",
+                args.first().map(String::as_str).unwrap_or(""),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        Ok(())
+    }
+
+    pub fn set_system_proxy(enabled: bool) -> Result<ProxyState> {
+        let (host, port) = match PROXY_ADDR.split_once(':') {
+            Some((h, p)) => (h.to_string(), p.to_string()),
+            None => (PROXY_ADDR.to_string(), "8081".to_string()),
+        };
+        for service in services()? {
+            if enabled {
+                run(&[
+                    "-setwebproxy".into(),
+                    service.clone(),
+                    host.clone(),
+                    port.clone(),
+                ])?;
+                run(&[
+                    "-setsecurewebproxy".into(),
+                    service.clone(),
+                    host.clone(),
+                    port.clone(),
+                ])?;
+                let mut bypass: Vec<String> =
+                    vec!["-setproxybypassdomains".into(), service.clone()];
+                bypass.extend(
+                    PROXY_OVERRIDE
+                        .split(';')
+                        .filter(|item| !item.is_empty())
+                        .map(ToString::to_string),
+                );
+                run(&bypass)?;
+                run(&["-setwebproxystate".into(), service.clone(), "on".into()])?;
+                run(&["-setsecurewebproxystate".into(), service, "on".into()])?;
+            } else {
+                run(&["-setwebproxystate".into(), service.clone(), "off".into()])?;
+                run(&["-setsecurewebproxystate".into(), service, "off".into()])?;
+            }
+        }
+        Ok(ProxyState {
+            enabled,
+            mode: Some("static".to_string()),
+            value: Some(PROXY_ADDR.to_string()),
+        })
+    }
+
+    pub fn get_system_proxy() -> Result<ProxyState> {
+        for service in services().unwrap_or_default() {
+            let out = Command::new("networksetup")
+                .args(["-getwebproxy", &service])
+                .output()?;
+            let text = String::from_utf8_lossy(&out.stdout);
+            let enabled = text
+                .lines()
+                .any(|line| line.trim().eq_ignore_ascii_case("Enabled: Yes"));
+            if enabled {
+                let server = text
+                    .lines()
+                    .find_map(|line| line.trim().strip_prefix("Server: "))
+                    .unwrap_or("127.0.0.1");
+                let port = text
+                    .lines()
+                    .find_map(|line| line.trim().strip_prefix("Port: "))
+                    .unwrap_or("8081");
+                return Ok(ProxyState {
+                    enabled: true,
+                    mode: Some("static".to_string()),
+                    value: Some(format!("{server}:{port}")),
+                });
+            }
+        }
+        Ok(ProxyState {
+            enabled: false,
+            mode: None,
+            value: None,
+        })
+    }
+
+    pub fn disable_on_exit() {
+        let _ = set_system_proxy(false);
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 mod imp {
     use anyhow::Result;
 
     use super::ProxyState;
 
     pub fn set_system_proxy(_enabled: bool) -> Result<ProxyState> {
-        anyhow::bail!("macOS-реализация системного прокси — этап M1")
+        anyhow::bail!("системный прокси поддерживается на Windows и macOS")
     }
 
     pub fn get_system_proxy() -> Result<ProxyState> {

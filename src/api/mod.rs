@@ -1,5 +1,4 @@
 //! HTTP-панель и API на 127.0.0.1:8080 + запуск всех сервисов менеджера.
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,8 +17,8 @@ pub const SMART_PROXY_PORT: u16 = 8081;
 pub const PANEL_PORT: u16 = 8080;
 const UI_HTML: &str = include_str!("../../ui.html");
 
-pub async fn run(dir: PathBuf, panel_port: u16) -> anyhow::Result<()> {
-    let state = AppState::new(dir.clone(), panel_port);
+pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
+    let panel_port = state.panel_port;
     wlog!("панель: http://127.0.0.1:{panel_port}/  |  умный прокси: 127.0.0.1:{SMART_PROXY_PORT}");
 
     // движки и фоновые задачи
@@ -45,6 +44,18 @@ pub async fn run(dir: PathBuf, panel_port: u16) -> anyhow::Result<()> {
     crate::vless::pool::spawn_scheduler(state.clone());
     spawn_health_probes(state.clone());
 
+    {
+        let st = state.clone();
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                wlog!("Ctrl+C: завершение");
+                cleanup(&st);
+                tokio::time::sleep(Duration::from_millis(700)).await;
+                std::process::exit(0);
+            }
+        });
+    }
+
     let app = Router::new()
         .route("/", get(index))
         .route("/api/status", get(status))
@@ -54,6 +65,7 @@ pub async fn run(dir: PathBuf, panel_port: u16) -> anyhow::Result<()> {
         .route("/api/refresh", post(refresh_lists))
         .route("/api/restart-proxy", post(restart_proxy))
         .route("/api/system-proxy", post(system_proxy))
+        .route("/api/quit", post(quit))
         .route("/api/auto", post(auto))
         .route(
             "/api/local-domains",
@@ -71,6 +83,25 @@ pub async fn run(dir: PathBuf, panel_port: u16) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", panel_port)).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Завершение: выключить системный прокси и остановить движки.
+pub fn cleanup(state: &AppState) {
+    crate::systemproxy::disable_on_exit();
+    state.wg.shutdown();
+    state.xr.shutdown();
+    wlog!("выход: системный прокси выключен, движки останавливаются");
+}
+
+async fn quit(State(st): State<Arc<AppState>>) -> Json<Value> {
+    let st = st.clone();
+    tokio::spawn(async move {
+        wlog!("API: получен запрос на завершение");
+        cleanup(&st);
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        std::process::exit(0);
+    });
+    Json(json!({ "ok": true }))
 }
 
 // ---------------- guards ----------------
@@ -231,6 +262,8 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
             "domains": local_domains.iter().map(|d| json!({ "domain": d.domain, "port": d.port })).collect::<Vec<_>>(),
         },
         "vpnDefault": settings.vpn_default,
+        "autostart": crate::autostart::installed(),
+        "caTrusted": crate::trust_status::is_trusted(&st.dir),
         "vlessDomains": vless_only.into_iter().collect::<Vec<_>>(),
         "proxied": lists_counts.0,
         "direct": lists_counts.1,

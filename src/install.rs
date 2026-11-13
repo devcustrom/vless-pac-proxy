@@ -1,12 +1,14 @@
-//! Установка/удаление (полный сценарий — этап M5).
+//! Установка/удаление: автозапуск уже здесь, загрузчик движков и мастер
+//! первого запуска — этап M5.
 use std::path::Path;
 
 use anyhow::Result;
 
 pub fn install(dir: &Path) -> Result<()> {
     crate::logging::log(format!("install: каталог данных {}", dir.display()));
+    crate::autostart::install(dir)?;
     println!(
-        "Папка данных: {}\nАвтозапуск, загрузка движков и открытие панели появятся в этапе M5.",
+        "Папка данных: {}\nАвтозапуск включён. Запустите wireproxy-control — панель откроется\nпо адресу http://127.0.0.1:8080/ (движки скачиваются при первом запуске).",
         dir.display()
     );
     Ok(())
@@ -14,9 +16,7 @@ pub fn install(dir: &Path) -> Result<()> {
 
 pub fn uninstall(dir: &Path) -> Result<()> {
     crate::logging::log(format!("uninstall: {}", dir.display()));
-    println!(
-        "Удаление автозапуска — этап M5. Данные в {} не тронуты.",
-        dir.display()
-    );
+    crate::autostart::uninstall()?;
+    println!("Данные в {} не тронуты.", dir.display());
     Ok(())
 }

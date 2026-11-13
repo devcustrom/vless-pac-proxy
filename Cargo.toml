@@ -31,7 +31,9 @@ percent-encoding = "2"
 url = "2"
 regex = "1"
 sha2 = "0.10"
+sha1 = "0.10"
 hex = "0.4"
+fs2 = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"
@@ -43,7 +45,11 @@ futures-util = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console", "Win32_UI_Shell"] }
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tray-icon = "0.19"
+winit = "0.30"
 
 [profile.release]
 opt-level = "s"

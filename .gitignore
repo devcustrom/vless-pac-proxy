@@ -10,6 +10,7 @@ proxy.pac
 xray-pool-*.json
 certs/
 hosts-entries.txt
+instance.lock
 local-domains-hosts.bat
 local-domains-hosts.ps1
 local-domains-hosts.command

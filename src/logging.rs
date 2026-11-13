@@ -1,6 +1,7 @@
-//! Логирование: stdout + manager.log (файл усекается при старте, как в legacy).
+//! Логирование: stdout + manager.log (дописываем; `reset` усекает при старте
+//! менеджера, после того как экземпляр подтвердил единственность).
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
@@ -11,10 +12,20 @@ pub fn init(dir: &Path) -> anyhow::Result<()> {
     let file = OpenOptions::new()
         .create(true)
         .write(true)
-        .truncate(true)
+        .truncate(false)
         .open(&path)?;
     let _ = LOG_FILE.set(Mutex::new(file));
     Ok(())
+}
+
+/// Усекает лог: вызывается только владельцем single-instance.
+pub fn reset() {
+    if let Some(file) = LOG_FILE.get() {
+        if let Ok(mut f) = file.lock() {
+            let _ = f.set_len(0);
+            let _ = f.flush();
+        }
+    }
 }
 
 pub fn log(message: impl AsRef<str>) {
@@ -23,6 +34,7 @@ pub fn log(message: impl AsRef<str>) {
     eprintln!("{line}");
     if let Some(file) = LOG_FILE.get() {
         if let Ok(mut f) = file.lock() {
+            let _ = f.seek(SeekFrom::End(0));
             let _ = writeln!(f, "{line}");
             let _ = f.flush();
         }
