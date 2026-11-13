@@ -42,6 +42,10 @@ struct Cli {
     #[arg(long, global = true, env = "WPC_DATA_DIR")]
     data_dir: Option<PathBuf>,
 
+    /// Порт панели (по умолчанию 8080; полезно, если порт занят)
+    #[arg(long, global = true, env = "WPC_PANEL_PORT", default_value_t = 8080)]
+    panel_port: u16,
+
     /// Запуск без окна консоли (автозапуск)
     #[arg(long, global = true, hide = true)]
     hidden: bool,
@@ -75,7 +79,7 @@ fn main() -> anyhow::Result<()> {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()?;
-            rt.block_on(api::run(dir))
+            rt.block_on(api::run(dir, cli.panel_port))
         }
         Command::Install => install::install(&dir),
         Command::Uninstall => install::uninstall(&dir),

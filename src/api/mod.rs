@@ -1,39 +1,695 @@
-//! HTTP-панель и API (M0-каркас: статика панели + минимальный статус).
+//! HTTP-панель и API на 127.0.0.1:8080 + запуск всех сервисов менеджера.
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
-use axum::extract::State;
-use axum::response::Html;
-use axum::routing::get;
+use axum::extract::{Request, State};
+use axum::http::{Method, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{Html, IntoResponse, Response};
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde_json::json;
+use serde_json::{json, Value};
 
-use crate::state::AppState;
+use crate::state::{AppState, CheckEntry};
+use crate::wlog;
 
+pub const SMART_PROXY_PORT: u16 = 8081;
+pub const PANEL_PORT: u16 = 8080;
 const UI_HTML: &str = include_str!("../../ui.html");
 
-pub async fn run(dir: PathBuf) -> anyhow::Result<()> {
-    let state = Arc::new(AppState::new(dir.clone()));
+pub async fn run(dir: PathBuf, panel_port: u16) -> anyhow::Result<()> {
+    let state = AppState::new(dir.clone(), panel_port);
+    wlog!("панель: http://127.0.0.1:{panel_port}/  |  умный прокси: 127.0.0.1:{SMART_PROXY_PORT}");
+
+    // движки и фоновые задачи
+    state.wg.start();
+    state.xr.start();
+    {
+        let st = state.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::net::smart_proxy::serve(st).await {
+                wlog!("умный прокси остановлен: {e}");
+            }
+        });
+    }
+    crate::lists::spawn_scheduler(state.clone());
+    spawn_health_probes(state.clone());
+
     let app = Router::new()
         .route("/", get(index))
         .route("/api/status", get(status))
-        .with_state(state);
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 8080u16)).await?;
-    crate::wlog!("панель: http://127.0.0.1:8080/ (Rust-версия, каркас M0)");
+        .route("/proxy.pac", get(pac))
+        .route("/api/extra", post(extra))
+        .route("/api/vless", post(vless))
+        .route("/api/refresh", post(refresh_lists))
+        .route("/api/restart-proxy", post(restart_proxy))
+        .route("/api/system-proxy", post(system_proxy))
+        .route("/api/auto", post(auto))
+        .route(
+            "/api/local-domains",
+            get(local_domains_get).post(local_domains_post),
+        )
+        .route("/api/local-domains/probe", post(local_domains_probe))
+        .route("/api/local-ports", get(local_ports))
+        .route("/api/check", post(check))
+        .route("/api/pool/refresh", post(pool_stub))
+        .route("/api/pool/use", post(pool_stub))
+        .route("/api/subscriptions", post(subscriptions_stub))
+        .with_state(state.clone())
+        .layer(middleware::from_fn_with_state(state, guard));
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", panel_port)).await?;
     axum::serve(listener, app).await?;
     Ok(())
 }
+
+// ---------------- guards ----------------
+
+async fn guard(State(st): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    let host = req
+        .headers()
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mut allowed = host == format!("127.0.0.1:{}", st.panel_port)
+        || host == format!("localhost:{}", st.panel_port);
+    if !allowed {
+        // домены, указывающие на панель (из плагина локальных домменов)
+        let domains = read_local_domains(&st);
+        allowed = domains.iter().any(|d| {
+            d.port == st.panel_port
+                && (host == d.domain || host == format!("{}:{}", d.domain, st.panel_port))
+        });
+    }
+    if !allowed {
+        return (StatusCode::FORBIDDEN, "forbidden host").into_response();
+    }
+    let needs_token = req.method() != Method::GET && req.method() != Method::HEAD;
+    if needs_token {
+        let ok = req
+            .headers()
+            .get("x-wpc")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        if !ok {
+            return (StatusCode::FORBIDDEN, "missing x-wpc header").into_response();
+        }
+    }
+    next.run(req).await
+}
+
+// ---------------- handlers ----------------
 
 async fn index() -> Html<&'static str> {
     Html(UI_HTML)
 }
 
-async fn status(State(st): State<Arc<AppState>>) -> Json<serde_json::Value> {
+async fn pac(State(st): State<Arc<AppState>>) -> Response {
+    let path = st.dir.join("proxy.pac");
+    let body = std::fs::read_to_string(path).unwrap_or_else(|_| crate::lists::pac_content());
+    (
+        StatusCode::OK,
+        [
+            ("Content-Type", "application/x-ns-proxy-autoconfig"),
+            ("Cache-Control", "no-cache"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
+    let settings = st.settings_snapshot();
+    let health = st.health.lock().map(|h| h.clone()).unwrap_or_default();
+    let (lists_counts, last_update, update_error, refreshing, vless_only) = {
+        let l = st.lists.lock().unwrap();
+        (
+            (l.proxied.len(), l.direct.len()),
+            l.last_update,
+            l.error.clone(),
+            l.refreshing,
+            l.vless_only.clone(),
+        )
+    };
+    let extra = read_domains(&st.dir, "extra-domains.txt");
+    let subscriptions = read_subs(&st.dir);
+    let local_domains = read_local_domains(&st);
+    let sys_proxy = crate::systemproxy::get_system_proxy().unwrap_or_default();
+    let checks: Vec<CheckEntry> = st.checks.lock().map(|c| c.clone()).unwrap_or_default();
+    let visited: Vec<Value> = {
+        let v = st.visited.lock().unwrap();
+        let mut items = v.items.clone();
+        items.sort_by_key(|(_, _, ts)| std::cmp::Reverse(*ts));
+        items
+            .into_iter()
+            .take(60)
+            .map(|(domain, count, last)| json!({ "domain": domain, "count": count, "last": last }))
+            .collect()
+    };
+
     Json(json!({
+        "vpnUp": st.wg.is_running(),
+        "wgConfigured": crate::engines::wireproxy::is_configured(&st.dir),
+        "proxyRunning": st.wg.is_running(),
+        "wgUp": health.wg_ok,
+        "exitIp": health.exit_ip,
+        "xrayRunning": st.xr.is_running(),
+        "vlessPortUp": st.xr.is_running(),
+        "vlessConfigured": crate::engines::xray::has_config(&st.dir),
+        "vlessUp": health.vless_ok,
+        "exitIpVless": health.exit_ip_vless,
+        "pool": [],
+        "poolTesting": false,
+        "poolUpdatedAt": Value::Null,
+        "poolError": "пул подписок — этап M2",
+        "autoRotate": settings.auto_rotate,
+        "autoPoolRefreshHours": settings.auto_pool_refresh_hours,
+        "nextPoolRefreshAt": Value::Null,
+        "subscriptions": subscriptions,
+        "localProxy": {
+            "port": settings.local_proxy_port,
+            "error": if local_domains.is_empty() { Some("домены не настроены".to_string()) } else { None },
+            "httpsPort": settings.local_https_port,
+            "httpsError": "HTTPS-сервер локальных доменов — этап M3",
+            "caPath": "certs/ca.crt",
+            "domains": local_domains.iter().map(|d| json!({ "domain": d.domain, "port": d.port })).collect::<Vec<_>>(),
+        },
+        "vpnDefault": settings.vpn_default,
+        "vlessDomains": vless_only.into_iter().collect::<Vec<_>>(),
+        "proxied": lists_counts.0,
+        "direct": lists_counts.1,
+        "lastUpdate": last_update,
+        "updateError": update_error,
+        "refreshing": refreshing,
         "mode": crate::lists::MODE,
-        "version": env!("CARGO_PKG_VERSION"),
-        "dataDir": st.dir.display().to_string(),
-        "settings": st.settings,
-        "bootstrap": "M0: API переносится по этапам"
+        "systemProxy": sys_proxy,
+        "extra": extra,
+        "checks": checks,
+        "visited": visited,
     }))
+}
+
+async fn extra(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let action = body.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    let Some(domain) = body
+        .get("domain")
+        .and_then(|v| v.as_str())
+        .and_then(crate::lists::normalize_domain)
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "некорректный домен" })),
+        )
+            .into_response();
+    };
+    let mut list = read_domains(&st.dir, "extra-domains.txt");
+    match action {
+        "add" => {
+            if !list.contains(&domain) {
+                list.push(domain.clone());
+            }
+        }
+        "remove" => list.retain(|d| *d != domain),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "action должен быть add|remove" })),
+            )
+                .into_response();
+        }
+    }
+    if let Err(e) = write_domains(&st.dir, "extra-domains.txt", &list) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response();
+    }
+    spawn_refresh(&st);
+    Json(json!({ "ok": true, "extra": read_domains(&st.dir, "extra-domains.txt") })).into_response()
+}
+
+async fn vless(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let action = body.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    match action {
+        "set-link" => {
+            let link = body.get("link").and_then(|v| v.as_str()).unwrap_or("");
+            match crate::vless::link::save_link(&st.dir, link) {
+                Ok(info) => {
+                    wlog!("VLESS-конфиг сохранён: {info:?}");
+                    st.xr.restart();
+                    Json(json!({ "ok": true, "info": info })).into_response()
+                }
+                Err(e) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": e.to_string() })),
+                )
+                    .into_response(),
+            }
+        }
+        "remove-link" => {
+            let _ = std::fs::remove_file(st.dir.join("xray-config.json"));
+            st.xr.stop();
+            Json(json!({ "ok": true })).into_response()
+        }
+        "set-default" => {
+            let value = body.get("value").and_then(|v| v.as_str()).unwrap_or("");
+            if value != "wireguard" && value != "vless" {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "value должен быть wireguard|vless" })),
+                )
+                    .into_response();
+            }
+            let mut s = st.settings.lock().unwrap();
+            s.vpn_default = value.to_string();
+            let _ = s.save(&st.dir);
+            Json(json!({ "ok": true, "vpnDefault": s.vpn_default })).into_response()
+        }
+        "add-domain" | "remove-domain" => {
+            let Some(domain) = body
+                .get("domain")
+                .and_then(|v| v.as_str())
+                .and_then(crate::lists::normalize_domain)
+            else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "некорректный домен" })),
+                )
+                    .into_response();
+            };
+            let mut list = read_domains(&st.dir, "vless-domains.txt");
+            if action == "add-domain" {
+                if !list.contains(&domain) {
+                    list.push(domain);
+                }
+            } else {
+                list.retain(|d| *d != domain);
+            }
+            list.sort();
+            list.dedup();
+            if let Err(e) = write_domains(&st.dir, "vless-domains.txt", &list) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": e.to_string() })),
+                )
+                    .into_response();
+            }
+            if let Ok(mut l) = st.lists.lock() {
+                l.vless_only = list.iter().cloned().collect();
+            }
+            Json(json!({ "ok": true, "vlessDomains": list })).into_response()
+        }
+        "restart" => {
+            st.xr.restart();
+            Json(json!({ "ok": true })).into_response()
+        }
+        _ => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "неизвестное действие" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn refresh_lists(State(st): State<Arc<AppState>>) -> Response {
+    spawn_refresh(&st);
+    (StatusCode::ACCEPTED, Json(json!({ "ok": true }))).into_response()
+}
+
+async fn restart_proxy(State(st): State<Arc<AppState>>) -> Json<Value> {
+    wlog!("перезапуск wireproxy по запросу из панели");
+    st.wg.restart();
+    Json(json!({ "ok": true }))
+}
+
+async fn system_proxy(State(_st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let enabled = body
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    match crate::systemproxy::set_system_proxy(enabled) {
+        Ok(state) => Json(json!({ "ok": true, "state": state })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn auto(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let mut s = st.settings.lock().unwrap();
+    if let Some(v) = body.get("autoRotate").and_then(|v| v.as_bool()) {
+        s.auto_rotate = v;
+    }
+    if let Some(v) = body.get("autoPoolRefreshHours").and_then(|v| v.as_f64()) {
+        if !(0.0..=168.0).contains(&v) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "autoPoolRefreshHours: 0..168" })),
+            )
+                .into_response();
+        }
+        s.auto_pool_refresh_hours = v;
+    }
+    let _ = s.save(&st.dir);
+    Json(json!({ "ok": true, "autoRotate": s.auto_rotate, "autoPoolRefreshHours": s.auto_pool_refresh_hours })).into_response()
+}
+
+async fn local_domains_get(State(st): State<Arc<AppState>>) -> Json<Value> {
+    let s = st.settings_snapshot();
+    let domains = read_local_domains(&st);
+    Json(json!({
+        "httpPort": s.local_proxy_port,
+        "httpsPort": s.local_https_port,
+        "httpsError": "HTTPS-сервер локальных доменов — этап M3",
+        "domains": domains.iter().map(|d| json!({ "domain": d.domain, "port": d.port })).collect::<Vec<_>>(),
+    }))
+}
+
+async fn local_domains_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let action = body.get("action").and_then(|v| v.as_str()).unwrap_or("");
+    let domain = body
+        .get("domain")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    if domain.is_empty()
+        || !domain
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "некорректный домен" })),
+        )
+            .into_response();
+    }
+    let mut list = read_local_domains(&st);
+    match action {
+        "add" => {
+            let port = body.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
+            if !(1..=65535).contains(&port) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "порт должен быть 1..65535" })),
+                )
+                    .into_response();
+            }
+            list.retain(|d| d.domain != domain);
+            list.push(crate::net::local_proxy::LocalDomain {
+                domain,
+                port: port as u16,
+            });
+        }
+        "remove" => list.retain(|d| d.domain != domain),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "action должен быть add|remove" })),
+            )
+                .into_response();
+        }
+    }
+    match write_local_domains(&st.dir, &list) {
+        Ok(()) => Json(json!({ "ok": true, "domains": list.iter().map(|d| json!({ "domain": d.domain, "port": d.port })).collect::<Vec<_>>() })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+async fn local_domains_probe(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let domain = body
+        .get("domain")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let Some(target) = read_local_domains(&st)
+        .into_iter()
+        .find(|d| d.domain == domain)
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "домен не настроен" })),
+        )
+            .into_response();
+    };
+    // HTTP-реверс-прокси появится в M3; пока честно сообщаем об этом
+    Json(json!({
+        "domain": domain,
+        "port": target.port,
+        "status": 0,
+        "ms": 0,
+        "error": "локальные домены (HTTP/HTTPS) — этап M3"
+    }))
+    .into_response()
+}
+
+async fn local_ports(State(_st): State<Arc<AppState>>) -> Json<Value> {
+    Json(json!({ "ports": scan_local_ports() }))
+}
+
+fn scan_local_ports() -> Vec<u16> {
+    use std::process::Command;
+    let mut ports: Vec<u16> = Vec::new();
+    if let Ok(output) = Command::new("netstat").args(["-ano", "-p", "TCP"]).output() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            let mut parts = line.split_whitespace();
+            if !parts
+                .next()
+                .map(|p| p.eq_ignore_ascii_case("TCP"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            let Some(local) = parts.next() else { continue };
+            if parts.next().is_none() {
+                continue;
+            }
+            let state = parts.next().unwrap_or("");
+            if !state.eq_ignore_ascii_case("LISTENING") {
+                continue;
+            }
+            let is_loopback = local.starts_with("127.0.0.1:") || local.starts_with("[::1]:");
+            if !is_loopback {
+                continue;
+            }
+            if let Some((_, port)) = local.rsplit_once(':') {
+                if let Ok(p) = port.parse::<u16>() {
+                    ports.push(p);
+                }
+            }
+        }
+    }
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
+async fn check(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let Some(domain) = body
+        .get("domain")
+        .and_then(|v| v.as_str())
+        .and_then(crate::lists::normalize_domain)
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "некорректный домен" })),
+        )
+            .into_response();
+    };
+    let url = format!("https://{domain}/");
+    let direct_client = st.client("check-direct", None);
+    let direct = http_code(&direct_client, &url).await;
+
+    let settings = st.settings_snapshot();
+    let (_, vless_ok) = st.health_snapshot();
+    let port = if settings.vpn_default == "vless" && vless_ok {
+        crate::vless::XRAY_HTTP_PORT
+    } else {
+        crate::vless::WIREPROXY_HTTP_PORT
+    };
+    let vpn_client = st.client(&format!("check-vpn-{port}"), Some(port));
+    let vpn = http_code(&vpn_client, &url).await;
+
+    let ok = |c: &str| c != "000" && c != "403" && c != "451";
+    let verdict = if ok(&vpn) && !ok(&direct) {
+        "vpn-helps"
+    } else if ok(&direct) && !ok(&vpn) {
+        "direct-only"
+    } else if ok(&direct) && ok(&vpn) {
+        "both-ok"
+    } else if vpn == "000" {
+        "blocked-everywhere"
+    } else {
+        "challenge"
+    };
+    let entry = CheckEntry {
+        domain: domain.clone(),
+        direct: direct.clone(),
+        vpn: vpn.clone(),
+        verdict: verdict.to_string(),
+        at: chrono::Utc::now().to_rfc3339(),
+    };
+    if let Ok(mut checks) = st.checks.lock() {
+        checks.insert(0, entry.clone());
+        checks.truncate(25);
+    }
+    wlog!("проверка {domain}: напрямую {direct}, через VPN {vpn} -> {verdict}");
+    Json(json!({ "domain": entry.domain, "direct": entry.direct, "vpn": entry.vpn, "verdict": entry.verdict, "at": entry.at })).into_response()
+}
+
+async fn http_code(client: &reqwest::Client, url: &str) -> String {
+    match client.get(url).send().await {
+        Ok(resp) => resp.status().as_u16().to_string(),
+        Err(_) => "000".to_string(),
+    }
+}
+
+async fn pool_stub() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({ "error": "пул подписок — этап M2" })),
+    )
+        .into_response()
+}
+
+async fn subscriptions_stub() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({ "error": "подписки — этап M2" })),
+    )
+        .into_response()
+}
+
+// ---------------- файловые помощники ----------------
+
+pub fn read_domains(dir: &std::path::Path, name: &str) -> Vec<String> {
+    crate::lists::read_domain_file(dir, name)
+}
+
+pub fn write_domains(dir: &std::path::Path, name: &str, list: &[String]) -> std::io::Result<()> {
+    let path = crate::paths::in_dir(dir, name)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
+    let mut text = String::from("# wireproxy-control: домены (по одному в строке)\n\n");
+    for d in list {
+        text.push_str(d);
+        text.push('\n');
+    }
+    std::fs::write(path, text)
+}
+
+fn read_subs(dir: &std::path::Path) -> Vec<String> {
+    let Ok(path) = crate::paths::in_dir(dir, "subscriptions.txt") else {
+        return Vec::new();
+    };
+    std::fs::read_to_string(path)
+        .map(|t| {
+            t.lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn read_local_domains(st: &Arc<AppState>) -> Vec<crate::net::local_proxy::LocalDomain> {
+    let Ok(path) = crate::paths::in_dir(&st.dir, "local-domains.txt") else {
+        return Vec::new();
+    };
+    std::fs::read_to_string(path)
+        .map(|t| crate::net::local_proxy::parse_config(&t))
+        .unwrap_or_default()
+}
+
+fn write_local_domains(
+    dir: &std::path::Path,
+    list: &[crate::net::local_proxy::LocalDomain],
+) -> std::io::Result<()> {
+    let path = crate::paths::in_dir(dir, "local-domains.txt")
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
+    let mut text =
+        String::from("# Плагин локальных доменов: домен = порт (по одному в строке).\n\n");
+    for d in list {
+        text.push_str(&format!("{} = {}\n", d.domain, d.port));
+    }
+    std::fs::write(path, text)
+}
+
+fn spawn_refresh(st: &Arc<AppState>) {
+    let st = st.clone();
+    tokio::spawn(async move {
+        if let Err(e) = crate::lists::refresh(&st).await {
+            wlog!("обновление списков: {e}");
+        }
+    });
+}
+
+// ---------------- health ----------------
+
+fn spawn_health_probes(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        loop {
+            probe_once(&state).await;
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    });
+}
+
+async fn probe_once(state: &Arc<AppState>) {
+    let wg_client = state.client("probe-wg", Some(crate::vless::WIREPROXY_HTTP_PORT));
+    let wg_ip = exit_ip(&wg_client).await;
+    let xr_client = state.client("probe-xr", Some(crate::vless::XRAY_HTTP_PORT));
+    let xr_ip = if crate::engines::xray::has_config(&state.dir) {
+        exit_ip(&xr_client).await
+    } else {
+        None
+    };
+    let wg_was = state.health.lock().map(|h| h.wg_ok).unwrap_or(false);
+    let xr_was = state.health.lock().map(|h| h.vless_ok).unwrap_or(false);
+    if let Ok(mut h) = state.health.lock() {
+        h.wg_ok = wg_ip.is_some();
+        h.exit_ip = wg_ip.clone();
+        h.vless_ok = xr_ip.is_some();
+        h.exit_ip_vless = xr_ip.clone();
+        h.at = Some(chrono::Utc::now());
+    }
+    if wg_was != wg_ip.is_some() {
+        wlog!(
+            "WireGuard канал: {}",
+            if wg_ip.is_some() {
+                "работает"
+            } else {
+                "не проходит трафик"
+            }
+        );
+    }
+    if xr_was != xr_ip.is_some() && crate::engines::xray::has_config(&state.dir) {
+        wlog!(
+            "VLESS канал: {}",
+            if xr_ip.is_some() {
+                "работает"
+            } else {
+                "не проходит трафик"
+            }
+        );
+    }
+}
+
+async fn exit_ip(client: &reqwest::Client) -> Option<String> {
+    let resp = client.get("https://api.ipify.org").send().await.ok()?;
+    let text = resp.text().await.ok()?;
+    let ip = text.trim();
+    if ip.is_empty() {
+        None
+    } else {
+        Some(ip.to_string())
+    }
 }

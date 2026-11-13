@@ -7,7 +7,7 @@ pub const PROXY_ADDR: &str = "127.0.0.1:8081";
 pub const PROXY_OVERRIDE: &str =
     "localhost;127.0.0.1;*.local;192.168.*;10.*;172.16.*;<local>;zcode.z.ai;*.z.ai";
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct ProxyState {
     pub enabled: bool,
     pub mode: Option<String>,
