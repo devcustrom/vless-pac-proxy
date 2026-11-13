@@ -55,7 +55,7 @@
 </head>
 <body>
 <h1>VPN-прокси (wireproxy)</h1>
-<div class="sub">PAC: <code>http://127.0.0.1:8080/proxy.pac</code> · SOCKS5: <code>127.0.0.1:25344</code> · HTTP: <code>127.0.0.1:25345</code></div>
+<div class="sub">PAC: <code id="pacurl">/proxy.pac</code> · SOCKS5: <code>127.0.0.1:25344</code> · HTTP: <code>127.0.0.1:25345</code></div>
 
 <div class="card" id="onboard" hidden>
   <b>Быстрый старт</b>
@@ -196,6 +196,7 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+$('pacurl').textContent = location.origin + '/proxy.pac';
 const msg = (t, err) => { $('msg').textContent = t; $('msg').className = err ? 'err' : 'muted'; };
 
 const VERDICTS = {

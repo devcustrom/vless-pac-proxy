@@ -111,6 +111,8 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool, hidden: bool) -> anyhow::Result<()> {
+    let requested_port = panel_port;
+    let panel_port = pick_panel_port(requested_port);
     let _instance = match single_instance::acquire(&dir)? {
         Some(instance) => instance,
         None => {
@@ -122,6 +124,9 @@ fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool, hidden: bool) -> an
         }
     };
     logging::reset();
+    if panel_port != requested_port {
+        wlog!("порт {requested_port} занят — панель на {panel_port}");
+    }
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -154,6 +159,20 @@ fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool, hidden: bool) -> an
 
     let _ = no_tray;
     rt.block_on(api::run(st))
+}
+
+/// Первый свободный порт панели, начиная с preferred (8081 занят умным
+/// прокси). Освобождаем проверочный listener сразу — гонка маловероятна.
+fn pick_panel_port(preferred: u16) -> u16 {
+    for port in preferred..=preferred.saturating_add(20) {
+        if port == 8081 {
+            continue;
+        }
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
+    preferred
 }
 
 /// Просит запущенный менеджер завершиться через локальный API (с X-WPC).
