@@ -24,3 +24,6 @@ WireproxyTray
 .browsertest/
 node_modules/
 wireproxy.conf
+
+# Rust
+/target/
