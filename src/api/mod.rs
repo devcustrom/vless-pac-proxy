@@ -106,9 +106,10 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/api/engines/ensure", post(engines_ensure))
         .route("/api/trust-certs", post(trust_certs_handler))
         .with_state(state.clone())
-        .layer(middleware::from_fn_with_state(state, guard));
+        .layer(middleware::from_fn_with_state(state.clone(), guard));
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", panel_port)).await?;
+    crate::paths::write_panel_port(&state.dir, panel_port);
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -118,6 +119,7 @@ pub fn cleanup(state: &AppState) {
     crate::systemproxy::disable_on_exit();
     state.wg.shutdown();
     state.xr.shutdown();
+    crate::paths::clear_panel_port(&state.dir);
     wlog!("выход: системный прокси выключен, движки останавливаются");
 }
 

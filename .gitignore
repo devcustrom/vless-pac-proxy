@@ -11,6 +11,7 @@ xray-pool-*.json
 certs/
 hosts-entries.txt
 instance.lock
+panel.port
 .*.download
 local-domains-hosts.bat
 local-domains-hosts.ps1

@@ -7,14 +7,18 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
-const API: &str = "127.0.0.1:8080";
+/// Фактический порт панели: из panel.port (авто-выбор), иначе 8080.
+fn api_addr(dir: &Path) -> String {
+    let port = crate::paths::read_panel_port(dir).unwrap_or(8080);
+    format!("127.0.0.1:{port}")
+}
 
-fn http_call(method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
-    let mut stream = TcpStream::connect(API).context("менеджер недоступен")?;
+fn http_call(api: &str, method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
+    let mut stream = TcpStream::connect(api).context("менеджер недоступен")?;
     let payload = body
         .map(|b| serde_json::to_string(b).unwrap_or_default())
         .unwrap_or_default();
-    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {API}\r\nConnection: close\r\n");
+    let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {api}\r\nConnection: close\r\n");
     if !payload.is_empty() {
         req.push_str("Content-Type: application/json\r\nX-WPC: 1\r\n");
         req.push_str(&format!("Content-Length: {}\r\n", payload.len()));
@@ -89,9 +93,10 @@ fn tools() -> Value {
     ])
 }
 
-fn call_tool(name: &str, args: &Value) -> Result<Value> {
+fn call_tool(dir: &Path, name: &str, args: &Value) -> Result<Value> {
+    let api = api_addr(dir);
     match name {
-        "local_domains_list" => http_call("GET", "/api/local-domains", None),
+        "local_domains_list" => http_call(&api, "GET", "/api/local-domains", None),
         "local_domains_add" => {
             let domain = args
                 .get("domain")
@@ -103,6 +108,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
             }
             let port = args.get("port").and_then(|v| v.as_u64()).unwrap_or(0);
             http_call(
+                &api,
                 "POST",
                 "/api/local-domains",
                 Some(&json!({ "action": "add", "domain": domain, "port": port })),
@@ -118,6 +124,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 anyhow::bail!("нужен domain");
             }
             http_call(
+                &api,
                 "POST",
                 "/api/local-domains",
                 Some(&json!({ "action": "remove", "domain": domain })),
@@ -133,12 +140,13 @@ fn call_tool(name: &str, args: &Value) -> Result<Value> {
                 anyhow::bail!("нужен domain");
             }
             http_call(
+                &api,
                 "POST",
                 "/api/local-domains/probe",
                 Some(&json!({ "domain": domain })),
             )
         }
-        "local_ports" => http_call("GET", "/api/local-ports", None),
+        "local_ports" => http_call(&api, "GET", "/api/local-ports", None),
         other => anyhow::bail!("неизвестный инструмент: {other}"),
     }
 }
@@ -160,7 +168,7 @@ fn respond(id: Option<&Value>, result: Option<Value>, error: Option<(i64, String
     let _ = std::io::stdout().flush();
 }
 
-pub fn run_stdio(_dir: &Path) -> Result<()> {
+pub fn run_stdio(dir: &Path) -> Result<()> {
     let stdin = std::io::stdin();
     for line in stdin.lock().lines() {
         let line = match line {
@@ -194,7 +202,7 @@ pub fn run_stdio(_dir: &Path) -> Result<()> {
                 let params = msg.get("params").cloned().unwrap_or(Value::Null);
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(Value::Null);
-                match call_tool(name, &args) {
+                match call_tool(dir, name, &args) {
                     Ok(result) => respond(
                         id,
                         Some(json!({

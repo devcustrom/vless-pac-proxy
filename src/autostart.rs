@@ -28,9 +28,13 @@ mod imp {
     const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
     const VALUE: &str = "wireproxy-control";
 
-    pub fn install(_dir: &Path) -> Result<()> {
+    pub fn install(dir: &Path) -> Result<()> {
         let exe = std::env::current_exe()?;
-        let cmd = format!("\"{}\" --hidden", exe.display());
+        let cmd = format!(
+            "\"{}\" --hidden --data-dir \"{}\"",
+            exe.display(),
+            dir.display()
+        );
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let key = hkcu.open_subkey_with_flags(RUN_KEY, KEY_SET_VALUE)?;
         key.set_value(VALUE, &cmd)?;

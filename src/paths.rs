@@ -49,10 +49,51 @@ pub fn in_dir(dir: &Path, name: &str) -> Result<PathBuf> {
     Ok(candidate)
 }
 
+/// Файл с фактическим портом панели (порт может быть выбран автоматически).
+pub const PANEL_PORT_FILE: &str = "panel.port";
+
+pub fn write_panel_port(dir: &Path, port: u16) {
+    if let Ok(path) = in_dir(dir, PANEL_PORT_FILE) {
+        let _ = std::fs::write(path, format!("{port}\n"));
+    }
+}
+
+pub fn read_panel_port(dir: &Path) -> Option<u16> {
+    let path = in_dir(dir, PANEL_PORT_FILE).ok()?;
+    let text = std::fs::read_to_string(path).ok()?;
+    text.trim().parse::<u16>().ok().filter(|port| *port > 0)
+}
+
+pub fn clear_panel_port(dir: &Path) {
+    if let Ok(path) = in_dir(dir, PANEL_PORT_FILE) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 pub fn exe_name(base: &str) -> String {
     if cfg!(windows) {
         format!("{base}.exe")
     } else {
         base.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panel_port_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("wpc-port-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(read_panel_port(&dir), None);
+        write_panel_port(&dir, 8082);
+        assert_eq!(read_panel_port(&dir), Some(8082));
+        clear_panel_port(&dir);
+        assert_eq!(read_panel_port(&dir), None);
+        // мусор вместо порта не принимаем
+        std::fs::write(dir.join(PANEL_PORT_FILE), "not-a-port\n").unwrap();
+        assert_eq!(read_panel_port(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

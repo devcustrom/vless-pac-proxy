@@ -99,7 +99,7 @@ fn main() -> anyhow::Result<()> {
         Command::Run => run_manager(dir, cli.panel_port, cli.no_tray, cli.hidden),
         Command::Install => install::install(&dir),
         Command::Uninstall => install::uninstall(&dir),
-        Command::Stop => stop_manager(cli.panel_port),
+        Command::Stop => stop_manager(&dir, cli.panel_port),
         Command::TrustCerts => local_tls::trust_certs(&dir),
         Command::SyncHosts => local_hosts::sync_hosts(&dir),
         Command::Mcp => mcp::run_stdio(&dir),
@@ -176,33 +176,43 @@ fn pick_panel_port(preferred: u16) -> u16 {
 }
 
 /// Просит запущенный менеджер завершиться через локальный API (с X-WPC).
-fn stop_manager(panel_port: u16) -> anyhow::Result<()> {
+fn stop_manager(dir: &std::path::Path, panel_port: u16) -> anyhow::Result<()> {
     use std::io::{Read, Write};
     use std::net::TcpStream;
     use std::time::Duration;
 
-    let addr = format!("127.0.0.1:{panel_port}");
-    let mut sock = match TcpStream::connect(&addr) {
-        Ok(sock) => sock,
-        Err(_) => {
-            println!("менеджер не запущен ({addr})");
+    let mut ports: Vec<u16> = Vec::new();
+    if let Some(saved) = paths::read_panel_port(dir) {
+        ports.push(saved);
+    }
+    if !ports.contains(&panel_port) {
+        ports.push(panel_port);
+    }
+
+    let mut wrong_server = None;
+    for port in &ports {
+        let addr = format!("127.0.0.1:{port}");
+        let Ok(mut sock) = TcpStream::connect(&addr) else {
+            continue;
+        };
+        sock.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let request = format!(
+            "POST /api/quit HTTP/1.1\r\nHost: {addr}\r\nX-WPC: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        sock.write_all(request.as_bytes())?;
+        let mut response = String::new();
+        let _ = sock.read_to_string(&mut response);
+        let status_ok =
+            response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200");
+        if status_ok && response.contains("\"ok\":true") {
+            println!("менеджер останавливается (порт {port})");
             return Ok(());
         }
-    };
-    sock.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let request = format!(
-        "POST /api/quit HTTP/1.1\r\nHost: {addr}\r\nX-WPC: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-    );
-    sock.write_all(request.as_bytes())?;
-    let mut response = String::new();
-    let _ = sock.read_to_string(&mut response);
-    if response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200") {
-        println!("менеджер останавливается");
-    } else {
-        println!(
-            "не удалось остановить: {}",
-            response.lines().next().unwrap_or("нет ответа")
-        );
+        wrong_server = Some(response.lines().next().unwrap_or("нет ответа").to_string());
+    }
+    match wrong_server {
+        Some(line) => println!("не удалось остановить: {line}"),
+        None => println!("менеджер не запущен (искали порты: {ports:?})"),
     }
     Ok(())
 }
