@@ -1,132 +1,137 @@
-# Установка на macOS
+# macOS: установка и особенности
 
-Стек кроссплатформенный: код общий с Windows-версией, отличия — бинарники
-wireproxy/xray под архитектуру мака, системный прокси через `networksetup`,
-автозапуск через launchd и иконка в строке меню вместо системного трея.
+Бинарник `wireproxy-control` — универсальный (Intel + Apple Silicon). Код общий
+с Windows-версией; отличия — движки под архитектуру мака, системный прокси
+через `networksetup`, автозапуск через launchd и иконка в строке меню.
+
+> macOS-часть собирается в GitHub Actions и проверена сборкой, но не прошла
+> ручной смоук на живом Mac. Считайте её **beta**: если что-то не работает,
+> запустите `./wireproxy-control --no-tray` и смотрите `manager.log`.
 
 ## Установка
 
-```bash
-git clone https://github.com/devcustrom/vless-pac-proxy.git ~/wireproxy
-cd ~/wireproxy
-```
-
-1. **Конфиг WireGuard (необязательно).** Создайте на своём WireGuard-сервере
-   отдельного клиента для мака и положите его конфиг как `wg.conf` в папку
-   проекта. Минимальные требования и формат — в основном README, раздел
-   «Настройка WireGuard».
-
-   Не используйте ключ, который уже работает на другом устройстве: сервер
-   держит одну сессию на peer, и устройства будут перебивать друг друга.
-   Если WireGuard не нужен — пропустите шаг, стек будет работать через VLESS.
-
-2. **Установщик:**
+1. Скачайте `wireproxy-control-macos-universal.zip` из Releases и распакуйте.
+2. Снимите карантин (Gatekeeper блокирует неподписанные бинарники):
 
    ```bash
-   chmod +x mac-*.sh
-   ./mac-install.sh
+   xattr -dr com.apple.quarantine wireproxy-control
+   chmod +x wireproxy-control
    ```
 
-   Что он делает:
-   - скачивает `wireproxy` (Apple Silicon или Intel — определяется по `uname -m`);
-   - скачивает `xray` — для VLESS-канала;
-   - создаёт `wireproxy.conf` из шаблона (или чинит путь `WGConfig`, если файл
-     скопирован с другой системы);
-   - ставит LaunchAgent `~/Library/LaunchAgents/com.wireproxy.manager.plist`
-     с автозапуском при входе и перезапуском при падении;
-   - проверяет, что панель отвечает.
+   Либо: ПКМ → «Открыть» → «Открыть» в Finder.
 
-3. **Первичная настройка** — в панели http://127.0.0.1:8080/:
-   - WireGuard уже настроен (если положили `wg.conf`);
-   - для VLESS вставьте `vless://` ссылку в карточке «VLESS (Xray)»;
-   - включите галку «Системный прокси».
+3. Запустите:
 
-4. Перезапустите браузер — он подхватит системные настройки прокси.
+   ```bash
+   ./wireproxy-control
+   ```
+
+   При первом запуске скачаются `wireproxy` и `xray` (проверка sha256),
+   создастся папка данных, откроется панель в браузере.
+
+4. В панели: добавьте `vless://`-ссылку или положите `wg.conf` рядом с
+   бинарником, затем включите системный прокси.
+
+Данные: рядом с бинарником, если там есть `wg.conf`/`settings.json`
+(portable), иначе `~/Library/Application Support/wireproxy-control`.
+Переопределить: `--data-dir ~/wireproxy`.
+
+## Автозапуск
+
+```bash
+./wireproxy-control install
+```
+
+Создаёт `~/Library/LaunchAgents/com.wireproxy-control.plist` с `KeepAlive` и
+скрытым запуском. Включить сразу:
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.wireproxy-control.plist
+```
+
+Выключить:
+
+```bash
+./wireproxy-control uninstall
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.wireproxy-control.plist
+```
+
+Логи launchd и менеджера: `manager.log` в папке данных.
+
+## Системный прокси
+
+Галка «Системный прокси» в панели (или иконка в меню-баре → трей) проходит по
+всем активным сетевым сервисам из `networksetup -listallnetworkservices` и
+выставляет web/secure web proxy на `127.0.0.1:8081` плюс список исключений
+(localhost, локальные подсети, `*.local`).
+
+- При выходе прокси выключается автоматически — браузер не останется без
+  интернета.
+- Переключились Wi-Fi ↔ Ethernet с другим набором сервисов — просто снимите и
+  поставьте галку заново.
+- Вручную: Системные настройки → Сеть → активный сервис → Подробнее → Прокси.
+
+## Иконка в строке меню
+
+Меню: «Открыть панель», «Установить сертификаты…», «Обновить списки доменов»,
+«Перезапустить движки», «Выход» (с выключением системного прокси и остановкой
+движков).
+
+«Открыть панель» ведёт на **https://panel.localhost/**, если домен
+`panel.localhost` привязан к панели и CA уже в доверенных; иначе —
+`http://127.0.0.1:8080/`.
+
+## Локальные домены и HTTPS
+
+1. Блок «Локальные домены»: `app.localhost = 3000`.
+2. HTTPS: кнопка «Установить сертификаты» запускает
+   `local-domains-trust.command` (запросит пароль администратора):
+
+   ```bash
+   sudo security add-trusted-cert -d -r trustRoot \
+     -k /Library/Keychains/System.keychain certs/ca.crt
+   ```
+
+3. `*.localhost` резолвится браузером без hosts. Для настоящих имён:
+
+   ```bash
+   ./wireproxy-control sync-hosts
+   ./local-domains-hosts.command   # sudo внутри
+   ```
+
+4. Firefox: `security.enterprise_roots.enabled = true` в `about:config`.
+
+Порты 80/443 заданы в `settings.json` (`localProxyPort`, `localHttpsPort`).
+Если macOS не даёт занять их без прав, поставьте 8088/8443 — ошибка видна в
+панели, а домены продолжат работать по этим портам.
 
 ## Команды
 
 | Действие | Команда |
-|---|---|
-| Остановить стек | `./mac-stop.sh` |
-| Запустить снова | `./mac-start.sh` (или перелогиниться — LaunchAgent поднимет сам) |
-| Логи вживую | `tail -f ~/wireproxy/manager.log` |
-| Проверить панель | `curl -s http://127.0.0.1:8080/api/status` |
-
-Удалить автозапуск совсем:
-
-```bash
-launchctl unload ~/Library/LaunchAgents/com.wireproxy.manager.plist
-rm ~/Library/LaunchAgents/com.wireproxy.manager.plist
-```
-
-## Системный прокси на macOS
-
-Галка в панели применяет настройки к **активному** сетевому сервису —
-он определяется по интерфейсу default-маршрута (Wi-Fi или Ethernet).
-Выставляются веб-прокси и secure web proxy на `127.0.0.1:8081`, а также
-список исключений (localhost, локальные подсети, релей ZCode).
-
-Если переключились между Wi-Fi и Ethernet — просто снимите и поставьте галку
-заново, настройки хранятся отдельно для каждого сервиса.
-
-Вручную: Системные настройки → Сеть → активный сервис → Подробнее → Прокси.
-
-## Иконка в строке меню
-
-Аналог трея Windows — иконка в строке меню macOS: «Открыть панель управления»,
-«Обновить списки доменов», «Перезапустить VPN-прокси», «Остановить стек и
-выйти». При наведении подсказка показывает, отвечает ли панель.
-
-Если локальные сертификаты установлены и `panel.localhost` настроен, «Открыть
-панель» ведёт на **https://panel.localhost/**; иначе открывается
-`http://127.0.0.1:8080/`, а в меню появляется пункт **«Добавить локальные
-сертификаты…»** — он запросит пароль администратора и выполнит
-`security add-trusted-cert` для CA из `certs/ca.crt`.
-
-Это отдельное Swift-приложение `WireproxyTray`; установщик собирает его сам
-(и пересобирает, если `tray.swift` новее бинарника), если установлены
-Xcode Command Line Tools:
-
-```bash
-xcode-select --install   # один раз
-./mac-install.sh         # перезапустить установщик — соберёт иконку
-```
-
-Если `swiftc` нет — панель работает как обычно, просто без иконки в меню-баре.
-
-## HTTPS для локальных доменов
-
-Плагин умеет HTTPS со своим локальным CA (`certs/ca.crt`). На macOS доверять
-CA нужно в системный keychain:
-
-```bash
-sudo security add-trusted-cert -d -r trustRoot \
-  -k /Library/Keychains/System.keychain ~/wireproxy/certs/ca.crt
-```
-
-Firefox: `security.enterprise_roots.enabled=true` в `about:config`.
-Удалить: `sudo security delete-certificate -c "wireproxy-control local CA" /Library/Keychains/System.keychain`.
-
-## Отличия от Windows
-
-- Иконка живёт в строке меню (см. выше), а не в системном трее; запуск и
-  перезапуск обеспечивает launchd.
-- Gatekeeper может заблокировать неподписанные бинарники: разрешите в
-  Системных настройках → Конфиденциальность и безопасность → «Всё равно
-  открыть» (установщик уже пробует снять карантин через `xattr`).
-- Логи и настройки — те же файлы в папке проекта.
+| --- | --- |
+| Запуск (трей) | `./wireproxy-control` |
+| Без трея | `./wireproxy-control --no-tray` |
+| Остановить | `./wireproxy-control stop` |
+| Автозапуск вкл/выкл | `./wireproxy-control install` / `uninstall` |
+| Сертификаты | `./wireproxy-control trust-certs` |
+| hosts | `./wireproxy-control sync-hosts` |
+| Логи | `tail -f ~/Library/Application\ Support/wireproxy-control/manager.log` |
+| Статус API | `curl -s http://127.0.0.1:8080/api/status` |
 
 ## Проверка работы
 
-1. Панель: http://127.0.0.1:8080/ — оба канала в статусе, выходные IP.
-2. Маршрут через прокси:
+```bash
+curl -s http://127.0.0.1:8080/api/status | python3 -m json.tool | head -40
+curl -x http://127.0.0.1:8081 https://api.ipify.org; echo
+```
 
-   ```bash
-   curl -x http://127.0.0.1:8081 https://api.ipify.org
-   ```
+Второй IP должен совпадать с выходным адресом VPN, а не с адресом провайдера.
+Точечная проверка домена — карточка «Проверка сайта» в панели.
 
-   IP должен совпадать с выходным адресом вашего VPN-сервера, а не с
-   адресом провайдера.
+## Отличия от Windows
 
-3. Точечная проверка заблокированного домена — карточка «Проверка сайта»
-   в панели.
+- Иконка в строке меню, а не в системном трее.
+- Автозапуск — LaunchAgent с `KeepAlive`; после падения launchd поднимет сам.
+- Доверие CA — системный keychain (`sudo`), а не `certutil`.
+- Системный прокси — `networksetup`, список сервисов определяется
+  автоматически.
