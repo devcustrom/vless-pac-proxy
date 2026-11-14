@@ -364,6 +364,7 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({
         "vpnUp": st.wg.is_running(),
         "wgConfigured": crate::engines::wireproxy::is_configured(&st.dir),
+        "wgEndpoint": crate::engines::wireproxy::endpoint(&st.dir),
         "proxyRunning": st.wg.is_running(),
         "wgUp": health.wg_ok,
         "exitIp": health.exit_ip,

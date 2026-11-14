@@ -71,16 +71,6 @@
     <label class="syspac"><input type="checkbox" id="ob-syspac"> Системный прокси</label>
   </div>
   <div class="muted err" id="ob-dl" style="margin-top:6px"></div>
-  <details style="margin-top:10px">
-    <summary>Конфиг WireGuard (wg.conf)</summary>
-    <div class="muted" style="margin-top:6px">Вставьте содержимое wg.conf или выберите файл — он сохранится локально, а WireGuard-канал перезапустится.</div>
-    <textarea id="wgtext" rows="7" spellcheck="false" placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = 10.66.66.2/32&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = host:51820"></textarea>
-    <div class="row" style="margin-top:6px">
-      <input type="file" id="wgfile" accept=".conf,.txt,text/plain">
-      <button id="wgsave" class="primary">Сохранить wg.conf</button>
-    </div>
-    <div class="muted" id="wginfo"></div>
-  </details>
 </div>
 
 <div class="card">
@@ -95,6 +85,18 @@
   <div class="row" style="margin-top:8px">
     <label class="syspac"><input type="checkbox" id="syspac"> Системный прокси для всей системы (браузер → менеджер → VPN/напрямую)</label>
   </div>
+</div>
+
+<div class="card">
+  <b>WireGuard — конфиг (wg.conf)</b>
+  <div class="muted">Вставьте содержимое wg.conf или выберите файл. Сохранится локально, wireproxy.conf обновится, канал перезапустится. Текущий конфиг не отображается (в нём приватный ключ).</div>
+  <textarea id="wgtext" rows="7" spellcheck="false" placeholder="[Interface]&#10;PrivateKey = ...&#10;Address = 10.66.66.2/32&#10;&#10;[Peer]&#10;PublicKey = ...&#10;Endpoint = host:51820"></textarea>
+  <div class="row" style="margin-top:6px">
+    <input type="file" id="wgfile" accept=".conf,.txt,text/plain">
+    <button id="wgsave" class="primary">Сохранить wg.conf</button>
+    <button id="wgclear">Удалить</button>
+  </div>
+  <div class="muted" id="wginfo"></div>
 </div>
 
 <div class="card">
@@ -267,6 +269,9 @@ async function status() {
       : (s.autoPoolRefreshHours > 0 ? 'автообновление подписок включено' : 'автообновление подписок выключено');
     renderLocalDomains(s.localProxy);
     renderOnboarding(s);
+    $('wginfo').textContent = s.wgConfigured
+      ? 'WireGuard настроен' + (s.wgEndpoint ? ': ' + s.wgEndpoint : '')
+      : 'WireGuard не настроен';
     $('proxied').textContent = s.proxied == null ? '—' : s.proxied.toLocaleString('ru-RU');
     $('upd').textContent = s.lastUpdate ? new Date(s.lastUpdate).toLocaleString('ru-RU') : (s.updateError ? 'ошибка' : '—');
     $('refresh').disabled = !!s.refreshing;
@@ -353,7 +358,6 @@ function renderOnboarding(s) {
   $('ob-engines').hidden = s.enginesReady || downloading;
   $('ob-certs').hidden = !!s.caTrusted;
   $('ob-syspac').checked = !!(s.systemProxy && s.systemProxy.enabled);
-  if ($('wginfo')) $('wginfo').textContent = s.wgConfigured ? 'WireGuard настроен' : 'WireGuard не настроен';
 }
 
 function renderLocalDomains(lp) {
@@ -529,6 +533,15 @@ $('wgsave').onclick = async () => {
     const r = await post('/api/wg', { action: 'set', content });
     $('wgtext').value = '';
     msg('wg.conf сохранён' + (r.endpoint ? ': ' + r.endpoint : ''));
+    status();
+  } catch (e) { msg(e.message, true); }
+};
+$('wgclear').onclick = async () => {
+  if (!confirm('Удалить wg.conf и остановить WireGuard?')) return;
+  try {
+    await post('/api/wg', { action: 'clear' });
+    $('wgtext').value = '';
+    msg('wg.conf удалён');
     status();
   } catch (e) { msg(e.message, true); }
 };

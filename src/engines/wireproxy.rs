@@ -84,6 +84,12 @@ pub fn is_configured(dir: &Path) -> bool {
     text_configured(&text)
 }
 
+/// Endpoint из wg.conf (host:port, без ключей) — только для отображения.
+pub fn endpoint(dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join("wg.conf")).ok()?;
+    endpoint_value(&text).map(str::to_string)
+}
+
 fn desired_config(dir: &Path) -> Result<String> {
     let base = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
     Ok(format!(
