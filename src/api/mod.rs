@@ -765,7 +765,14 @@ async fn local_ports(State(_st): State<Arc<AppState>>) -> Json<Value> {
 fn scan_local_ports() -> Vec<u16> {
     use std::process::Command;
     let mut ports: Vec<u16> = Vec::new();
-    if let Ok(output) = Command::new("netstat").args(["-ano", "-p", "TCP"]).output() {
+    let mut cmd = Command::new("netstat");
+    cmd.args(["-ano", "-p", "TCP"]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    if let Ok(output) = cmd.output() {
         let text = String::from_utf8_lossy(&output.stdout);
         for line in text.lines() {
             let mut parts = line.split_whitespace();

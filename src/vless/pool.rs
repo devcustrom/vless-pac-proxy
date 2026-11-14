@@ -57,6 +57,7 @@ fn xray_dir() -> Result<PathBuf> {
 fn cmd_test() -> Command {
     let mut c = Command::new(".\\xray.exe");
     c.args(["-test", "-c", "xray-pool-one.json"]);
+    c.creation_flags(0x08000000); // CREATE_NO_WINDOW: без мигающих консолей
     c
 }
 
@@ -71,6 +72,7 @@ fn cmd_test() -> Command {
 fn cmd_run() -> Command {
     let mut c = Command::new(".\\xray.exe");
     c.args(["-c", "xray-pool-test.json"]);
+    c.creation_flags(0x08000000);
     c
 }
 
