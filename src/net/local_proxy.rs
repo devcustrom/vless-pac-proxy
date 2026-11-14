@@ -117,23 +117,23 @@ pub async fn serve(state: Arc<AppState>) -> Result<()> {
     if let Err(e) = crate::local_hosts::write_script(&state.dir, &domain_names) {
         wlog!("локальные домены: скрипт hosts — {e:#}");
     }
-    if !domain_names.is_empty() {
-        match crate::local_tls::build_store(&state.dir, &domain_names) {
-            Ok(store) => {
-                let cfg = crate::local_tls::server_config(Arc::new(store));
-                if let Ok(mut slot) = state.tls_config.lock() {
-                    *slot = Some(Arc::new(tokio::sync::RwLock::new(cfg)));
-                }
-                if let Ok(mut err) = state.local_https_error.lock() {
-                    *err = None;
-                }
+    // Слот TLS создаём всегда, даже без доменов: иначе добавленный позже домен
+    // не сможет горячо подменить конфиг и HTTPS будет рвать соединения.
+    match crate::local_tls::build_store(&state.dir, &domain_names) {
+        Ok(store) => {
+            let cfg = crate::local_tls::server_config(Arc::new(store));
+            if let Ok(mut slot) = state.tls_config.lock() {
+                *slot = Some(Arc::new(tokio::sync::RwLock::new(cfg)));
             }
-            Err(e) => {
-                if let Ok(mut err) = state.local_https_error.lock() {
-                    *err = Some(format!("{e:#}"));
-                }
-                wlog!("локальный HTTPS: сертификаты не созданы — {e:#}");
+            if let Ok(mut err) = state.local_https_error.lock() {
+                *err = None;
             }
+        }
+        Err(e) => {
+            if let Ok(mut err) = state.local_https_error.lock() {
+                *err = Some(format!("{e:#}"));
+            }
+            wlog!("локальный HTTPS: сертификаты не созданы — {e:#}");
         }
     }
 

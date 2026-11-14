@@ -111,6 +111,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool, hidden: bool) -> anyhow::Result<()> {
+    let dir = std::path::absolute(&dir).unwrap_or(dir);
     let requested_port = panel_port;
     let panel_port = pick_panel_port(requested_port);
     let _instance = match single_instance::acquire(&dir)? {
@@ -127,6 +128,11 @@ fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool, hidden: bool) -> an
     if panel_port != requested_port {
         wlog!("порт {requested_port} занят — панель на {panel_port}");
     }
+    // Движки запускаются относительным именем (.\wireproxy.exe): Windows
+    // разрешает его от cwd родителя, поэтому переходим в каталог данных.
+    std::env::set_current_dir(&dir).map_err(|e| {
+        anyhow::anyhow!("не удалось перейти в каталог данных {}: {e}", dir.display())
+    })?;
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

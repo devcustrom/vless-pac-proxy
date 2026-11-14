@@ -80,14 +80,16 @@ fn app_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// Каталог данных приоритетнее папки exe: рядом с exe могут лежать старые
+/// бинарники, а конфиги (wireproxy.conf/xray-config.json) живут в данных.
 pub fn find_engine(kind: EngineKind) -> Option<PathBuf> {
-    for dir in app_dirs() {
+    if let Some(dir) = DATA_DIR.get() {
         let candidate = dir.join(kind.exe_name());
         if candidate.is_file() {
             return Some(candidate);
         }
     }
-    if let Some(dir) = DATA_DIR.get() {
+    for dir in app_dirs() {
         let candidate = dir.join(kind.exe_name());
         if candidate.is_file() {
             return Some(candidate);
@@ -227,13 +229,43 @@ fn build_command(kind: EngineKind) -> Command {
     }
 }
 
-fn spawn_engine(kind: EngineKind) -> Result<tokio::process::Child> {
-    let dir = engine_dir(kind).with_context(|| {
+/// Рабочий каталог движка: каталог данных (там конфиги). Если бинарник лежит
+/// только рядом с exe — копируем его в данные, чтобы `-c wireproxy.conf`
+/// и `-c xray-config.json` находились в текущей папке.
+fn work_dir(kind: EngineKind) -> Result<PathBuf> {
+    if let Some(data) = DATA_DIR.get() {
+        let local = data.join(kind.exe_name());
+        if !local.is_file() {
+            if let Some(found) = find_engine(kind) {
+                std::fs::copy(&found, &local).with_context(|| {
+                    format!(
+                        "не удалось скопировать {} в каталог данных",
+                        kind.exe_name()
+                    )
+                })?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ =
+                        std::fs::set_permissions(&local, std::fs::Permissions::from_mode(0o755));
+                }
+                wlog!("{}: скопирован в каталог данных", kind.exe_name());
+            }
+        }
+        if local.is_file() {
+            return Ok(data.to_path_buf());
+        }
+    }
+    engine_dir(kind).with_context(|| {
         format!(
             "{} не найден рядом с приложением (скачайте движки)",
             kind.exe_name()
         )
-    })?;
+    })
+}
+
+fn spawn_engine(kind: EngineKind) -> Result<tokio::process::Child> {
+    let dir = work_dir(kind)?;
     if !dir.is_dir() {
         bail!("каталог движка не найден");
     }

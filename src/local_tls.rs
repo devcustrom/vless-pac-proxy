@@ -143,12 +143,17 @@ pub fn trust_script_name() -> &'static str {
     }
 }
 
+/// Создаёт CA, если его ещё нет (нужно до появления локальных доменов).
+pub fn ensure_ca_ready(dir: &Path) -> Result<()> {
+    ensure_ca(dir).map(|_| ())
+}
+
 /// Установка CA в доверенные: пишет готовый скрипт и печатает инструкцию
 /// (сам бинарник права не повышает — этим занимается скрипт/трей).
 pub fn trust_certs(dir: &Path) -> Result<()> {
     let ca = ca_path(dir);
     if !ca.is_file() {
-        bail!("CA ещё не создан — запустите приложение один раз");
+        ensure_ca_ready(dir).context("не удалось создать локальный CA")?;
     }
     #[cfg(windows)]
     {
@@ -209,5 +214,17 @@ mod tests {
         let store2 = build_store(&dir, &["app.localhost".into()]).unwrap();
         assert!(store2.map.contains_key("app.localhost"));
         let _ = server_config(Arc::new(store));
+    }
+
+    #[test]
+    fn trust_without_domains_creates_ca() {
+        let dir = std::env::temp_dir().join(format!("wpc-tls-empty-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("certs")).unwrap();
+        assert!(!ca_path(&dir).is_file());
+        trust_certs(&dir).unwrap();
+        assert!(ca_path(&dir).is_file());
+        assert!(dir.join("certs").join("ca.key").is_file());
+        assert!(dir.join(trust_script_name()).is_file());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
