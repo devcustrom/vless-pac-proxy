@@ -323,11 +323,20 @@ function renderPool(s) {
 
   const el = $('poollist');
   el.innerHTML = '';
-  (s.pool || []).slice(0, 25).forEach((p) => {
+  const working = (s.pool || []).filter((p) => p.ok);
+  if (!working.length) {
+    const li = document.createElement('li');
+    li.className = 'muted';
+    li.textContent = (s.pool || []).length
+      ? 'рабочих конфигов нет — запустите проверку заново'
+      : 'пул ещё не проверялся';
+    el.append(li);
+  }
+  working.slice(0, 25).forEach((p) => {
     const li = document.createElement('li');
     const span = document.createElement('span');
-    span.innerHTML = `<span class="dot ${p.ok ? 'ok' : 'bad'}" style="width:8px;height:8px;margin-right:6px"></span>` +
-      `${String(p.name).slice(0, 40)} <span class="muted">${p.protocol} ${p.address}:${p.port}${p.ok && p.ms ? ' · ' + p.ms + ' мс' : ''}</span>`;
+    span.innerHTML = `<span class="dot ok" style="width:8px;height:8px;margin-right:6px"></span>` +
+      `${String(p.name).slice(0, 40)} <span class="muted">${p.protocol} ${p.address}:${p.port}${p.ms ? ' · ' + p.ms + ' мс' : ''}</span>`;
     const btn = document.createElement('button'); btn.textContent = 'использовать';
     btn.onclick = async () => { try { await post('/api/pool/use', { index: p.i }); status(); msg('Конфиг применён: ' + p.name); } catch (e) { msg(e.message, true); } };
     li.append(span, btn); el.append(li);
