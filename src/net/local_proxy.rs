@@ -1,9 +1,11 @@
 //! Плагин локальных доменов: HTTP :80 и HTTPS :443 (rustls, SNI), реверс-прокси
 //! по Host на локальные порты, WebSocket-upgrade. Паритет с legacy local-domains.js.
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use futures_util::future::{select, Either};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
@@ -12,6 +14,14 @@ use crate::state::AppState;
 use crate::wlog;
 
 const HEAD_LIMIT: usize = 65536;
+
+/// Backend может слушать только 127.0.0.1 или только ::1 (часто второй).
+/// Запоминаем рабочее семейство, чтобы не платить таймаутом на каждое соединение.
+static PREFERRED_ADDR: OnceLock<Mutex<HashMap<u16, &'static str>>> = OnceLock::new();
+
+fn preferred_addr() -> &'static Mutex<HashMap<u16, &'static str>> {
+    PREFERRED_ADDR.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalDomain {
@@ -93,17 +103,55 @@ fn find_sub(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
+async fn try_connect(host: &'static str, port: u16) -> Option<TcpStream> {
+    tokio::time::timeout(Duration::from_secs(2), TcpStream::connect((host, port)))
+        .await
+        .ok()
+        .and_then(|result| result.ok())
+}
+
 async fn connect_local(port: u16) -> Result<TcpStream> {
-    for host in ["127.0.0.1", "::1"] {
-        let attempt =
-            tokio::time::timeout(Duration::from_secs(5), TcpStream::connect((host, port)))
-                .await
-                .unwrap_or(Err(std::io::Error::other("timeout")));
-        if let Ok(s) = attempt {
-            return Ok(s);
+    // 1) пробуем уже известное семейство адреса — без задержек
+    let cached = preferred_addr()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(&port).copied());
+    if let Some(host) = cached {
+        if let Some(stream) = try_connect(host, port).await {
+            return Ok(stream);
+        }
+        if let Ok(mut map) = preferred_addr().lock() {
+            map.remove(&port);
         }
     }
-    bail!("локальный сервис на порту {port} недоступен");
+
+    // 2) оба семейства одновременно: если backend слушает только ::1,
+    //    не ждём таймаут на 127.0.0.1
+    let v4 = Box::pin(TcpStream::connect(("127.0.0.1", port)));
+    let v6 = Box::pin(TcpStream::connect(("::1", port)));
+    let chosen = tokio::time::timeout(Duration::from_secs(5), async {
+        match select(v4, v6).await {
+            Either::Left((result, v6)) => match result {
+                Ok(stream) => Some((stream, "127.0.0.1")),
+                Err(_) => v6.await.ok().map(|stream| (stream, "::1")),
+            },
+            Either::Right((result, v4)) => match result {
+                Ok(stream) => Some((stream, "::1")),
+                Err(_) => v4.await.ok().map(|stream| (stream, "127.0.0.1")),
+            },
+        }
+    })
+    .await
+    .ok()
+    .flatten();
+
+    let Some((stream, host)) = chosen else {
+        bail!("локальный сервис на порту {port} недоступен");
+    };
+    if let Ok(mut map) = preferred_addr().lock() {
+        map.insert(port, host);
+    }
+    Ok(stream)
 }
 
 pub async fn serve(state: Arc<AppState>) -> Result<()> {
@@ -216,6 +264,7 @@ where
     let mut parts = req_line.split_whitespace();
     let method = parts.next().unwrap_or("").to_string();
     let target = parts.next().unwrap_or("/").to_string();
+    let version = parts.next().unwrap_or("HTTP/1.1").to_string();
 
     let mut headers: Vec<(String, String)> = Vec::new();
     for line in lines {
@@ -229,9 +278,6 @@ where
         .map(|(_, v)| v.clone())
         .unwrap_or_default();
     let domain = host.split(':').next().unwrap_or("").to_ascii_lowercase();
-    let is_upgrade = headers.iter().any(|(k, v)| {
-        k.eq_ignore_ascii_case("upgrade") && v.to_ascii_lowercase().contains("websocket")
-    });
 
     let Some(port) = find_port(&state, &domain) else {
         let names = {
@@ -279,34 +325,22 @@ where
         }
     };
 
-    let mut out = format!("{method} {target} HTTP/1.1\r\n");
+    // Прозрачно пробрасываем запрос как есть: сохраняем Connection/keep-alive,
+    // Transfer-Encoding и Upgrade. После первого запроса copy_bidirectional
+    // держит соединение — браузер переиспользует TLS и backend keep-alive.
+    let mut out = format!("{method} {target} {version}\r\n");
     let mut has_host = false;
     for (k, v) in &headers {
-        let lower = k.to_ascii_lowercase();
-        if !is_upgrade
-            && matches!(
-                lower.as_str(),
-                "proxy-connection"
-                    | "connection"
-                    | "keep-alive"
-                    | "te"
-                    | "trailer"
-                    | "transfer-encoding"
-                    | "upgrade"
-            )
-        {
+        if k.eq_ignore_ascii_case("proxy-connection") {
             continue;
         }
-        if lower == "host" {
+        if k.eq_ignore_ascii_case("host") {
             has_host = true;
         }
         out.push_str(&format!("{k}: {v}\r\n"));
     }
     if !has_host {
         out.push_str(&format!("Host: {host}\r\n"));
-    }
-    if !is_upgrade {
-        out.push_str("Connection: close\r\n");
     }
     out.push_str("\r\n");
 

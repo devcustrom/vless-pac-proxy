@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use rcgen::{BasicConstraints, Certificate, CertificateParams, DnType, IsCa};
+use rcgen::{
+    BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
+    KeyUsagePurpose,
+};
 use rustls::crypto::ring::sign::any_supported_type;
 use rustls::pki_types::CertificateDer;
 use rustls::server::{ClientHello, ResolvesServerCert};
@@ -59,6 +62,8 @@ fn ensure_ca(dir: &Path) -> Result<Certificate> {
         .push(DnType::CommonName, "wireproxy-control local CA");
     params.not_before = rcgen::date_time_ymd(2024, 1, 1);
     params.not_after = rcgen::date_time_ymd(2036, 1, 1);
+    params.use_authority_key_identifier_extension = true;
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
     let ca = Certificate::from_params(params)?;
     let tmp_key = key_path.with_extension("key.tmp");
     let tmp_crt = crt_path.with_extension("crt.tmp");
@@ -83,6 +88,11 @@ fn domain_cert(ca: &Certificate, dir: &Path, domain: &str) -> Result<(String, St
     params.distinguished_name.push(DnType::CommonName, domain);
     params.not_before = rcgen::date_time_ymd(2024, 1, 1);
     params.not_after = rcgen::date_time_ymd(2028, 1, 1);
+    // Authority Key Identifier: без него OpenSSL/Node строго отвергают leaf
+    // («Missing Authority Key Identifier»), даже если браузер принимает.
+    params.use_authority_key_identifier_extension = true;
+    params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     let leaf = Certificate::from_params(params)?;
     let cert_pem = leaf.serialize_pem_with_signer(ca)?;
     let key_pem = leaf.serialize_private_key_pem();
@@ -107,8 +117,35 @@ fn certified(cert_pem: &str, key_pem: &str) -> Result<Arc<CertifiedKey>> {
     Ok(Arc::new(CertifiedKey::new(certs, signing)))
 }
 
+const LEAF_VERSION: &str = "3";
+
+/// Один раз перегенерирует листовые сертификаты (CA и доверие сохраняются).
+fn migrate_leaves(dir: &Path) {
+    let base = certs_dir(dir);
+    let marker = base.join("leaf.version");
+    if std::fs::read_to_string(&marker)
+        .map(|value| value.trim() == LEAF_VERSION)
+        .unwrap_or(false)
+    {
+        return;
+    }
+    if let Ok(entries) = std::fs::read_dir(&base) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == "ca.crt" || name == "ca.key" {
+                continue;
+            }
+            if name.ends_with(".crt") || name.ends_with(".key") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+    let _ = std::fs::write(marker, format!("{LEAF_VERSION}\n"));
+}
+
 /// Собирает стор сертификатов для списка доменов (CA переиспользуется).
 pub fn build_store(dir: &Path, domains: &[String]) -> Result<CertStore> {
+    migrate_leaves(dir);
     let ca = ensure_ca(dir)?;
     let mut store = CertStore::default();
     for domain in domains {
