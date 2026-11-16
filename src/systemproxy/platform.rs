@@ -5,7 +5,27 @@ use anyhow::Result;
 
 pub const PROXY_ADDR: &str = "127.0.0.1:8081";
 pub const PROXY_OVERRIDE: &str =
-    "localhost;127.0.0.1;*.local;192.168.*;10.*;172.16.*;<local>;zcode.z.ai;*.z.ai";
+    "localhost;127.0.0.1;*.localhost;*.local;192.168.*;10.*;172.16.*;<local>;zcode.z.ai;*.z.ai";
+
+/// Базовые исключения + домены локального плагина: их нельзя отправлять
+/// в системный прокси, они живут на loopback.
+pub fn override_list(local_domains: &[String]) -> String {
+    let mut items: Vec<String> = PROXY_OVERRIDE
+        .split(';')
+        .filter(|item| !item.is_empty())
+        .map(ToString::to_string)
+        .collect();
+    for domain in local_domains {
+        let domain = domain.trim();
+        if domain.is_empty() {
+            continue;
+        }
+        if !items.iter().any(|item| item.eq_ignore_ascii_case(domain)) {
+            items.push(domain.to_string());
+        }
+    }
+    items.join(";")
+}
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct ProxyState {
@@ -20,7 +40,7 @@ mod imp {
     use winreg::enums::{HKEY_CURRENT_USER, KEY_ALL_ACCESS, KEY_READ};
     use winreg::RegKey;
 
-    use super::{ProxyState, PROXY_ADDR, PROXY_OVERRIDE};
+    use super::{override_list, ProxyState, PROXY_ADDR};
 
     const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 
@@ -42,13 +62,13 @@ mod imp {
         }
     }
 
-    pub fn set_system_proxy(enabled: bool) -> Result<ProxyState> {
+    pub fn set_system_proxy(enabled: bool, local_domains: &[String]) -> Result<ProxyState> {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let key = hkcu.open_subkey_with_flags(KEY, KEY_ALL_ACCESS)?;
         if enabled {
             key.set_value("ProxyEnable", &1u32)?;
             key.set_value("ProxyServer", &PROXY_ADDR)?;
-            key.set_value("ProxyOverride", &PROXY_OVERRIDE)?;
+            key.set_value("ProxyOverride", &override_list(local_domains))?;
             let _ = key.delete_value("AutoConfigURL");
         } else {
             key.set_value("ProxyEnable", &0u32)?;
@@ -99,7 +119,7 @@ mod imp {
     use anyhow::{bail, Result};
     use std::process::Command;
 
-    use super::{ProxyState, PROXY_ADDR, PROXY_OVERRIDE};
+    use super::{override_list, ProxyState, PROXY_ADDR};
 
     /// Активные сетевые сервисы (Wi-Fi, Ethernet…), кроме отключённых (`*`).
     fn services() -> Result<Vec<String>> {
@@ -131,7 +151,7 @@ mod imp {
         Ok(())
     }
 
-    pub fn set_system_proxy(enabled: bool) -> Result<ProxyState> {
+    pub fn set_system_proxy(enabled: bool, local_domains: &[String]) -> Result<ProxyState> {
         let (host, port) = match PROXY_ADDR.split_once(':') {
             Some((h, p)) => (h.to_string(), p.to_string()),
             None => (PROXY_ADDR.to_string(), "8081".to_string()),
@@ -153,9 +173,9 @@ mod imp {
                 let mut bypass: Vec<String> =
                     vec!["-setproxybypassdomains".into(), service.clone()];
                 bypass.extend(
-                    PROXY_OVERRIDE
+                    override_list(local_domains)
                         .split(';')
-                        .filter(|item| !item.is_empty())
+                        .filter(|item| !item.is_empty() && *item != "<local>")
                         .map(ToString::to_string),
                 );
                 run(&bypass)?;
@@ -206,7 +226,7 @@ mod imp {
     }
 
     pub fn disable_on_exit() {
-        let _ = set_system_proxy(false);
+        let _ = set_system_proxy(false, &[]);
     }
 }
 
@@ -216,7 +236,7 @@ mod imp {
 
     use super::ProxyState;
 
-    pub fn set_system_proxy(_enabled: bool) -> Result<ProxyState> {
+    pub fn set_system_proxy(_enabled: bool, _local_domains: &[String]) -> Result<ProxyState> {
         anyhow::bail!("системный прокси поддерживается на Windows и macOS")
     }
 
@@ -231,8 +251,8 @@ mod imp {
     pub fn disable_on_exit() {}
 }
 
-pub fn set_system_proxy(enabled: bool) -> Result<ProxyState> {
-    imp::set_system_proxy(enabled)
+pub fn set_system_proxy(enabled: bool, local_domains: &[String]) -> Result<ProxyState> {
+    imp::set_system_proxy(enabled, local_domains)
 }
 
 pub fn get_system_proxy() -> Result<ProxyState> {

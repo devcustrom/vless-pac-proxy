@@ -177,6 +177,10 @@ base64). Менеджер:
 `settings.json`) и проксирует запросы по заголовку `Host`/SNI на
 `localhost:<порт>`. Поддерживаются WebSocket (Vite HMR и т.п.).
 
+Домены из `local-domains.txt` автоматически попадают в исключения системного
+прокси (`ProxyOverride` на Windows, bypass-список на macOS): при включённом
+системном прокси браузер ходит к ним напрямую, а не через 8081.
+
 - `*.localhost` браузеры резолвят в `127.0.0.1` сами — правка hosts не нужна.
 - Для «настоящих» имён запустите `wireproxy-control.exe sync-hosts` и затем
   созданный `local-domains-hosts.bat` от администратора (macOS — `.command`).

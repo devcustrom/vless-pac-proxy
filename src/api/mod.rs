@@ -727,12 +727,17 @@ async fn restart_proxy(State(st): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({ "ok": true }))
 }
 
-async fn system_proxy(State(_st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+async fn system_proxy(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
     let enabled = body
         .get("enabled")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    match crate::systemproxy::set_system_proxy(enabled) {
+    let domains: Vec<String> = st
+        .local_domains
+        .lock()
+        .map(|list| list.iter().map(|item| item.domain.clone()).collect())
+        .unwrap_or_default();
+    match crate::systemproxy::set_system_proxy(enabled, &domains) {
         Ok(state) => Json(json!({ "ok": true, "state": state })).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -833,6 +838,15 @@ async fn local_domains_post(State(st): State<Arc<AppState>>, Json(body): Json<Va
                 *d = list.clone();
             }
             reload_local_tls(&st).await;
+            if crate::systemproxy::get_system_proxy()
+                .map(|state| state.enabled)
+                .unwrap_or(false)
+            {
+                let names: Vec<String> = list.iter().map(|item| item.domain.clone()).collect();
+                if let Err(e) = crate::systemproxy::set_system_proxy(true, &names) {
+                    wlog!("системный прокси: локальные домены в исключения — {e:#}");
+                }
+            }
             Json(json!({ "ok": true, "domains": list.iter().map(|d| json!({ "domain": d.domain, "port": d.port })).collect::<Vec<_>>() })).into_response()
         }
         Err(e) => (

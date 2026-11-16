@@ -165,6 +165,16 @@ pub async fn serve(state: Arc<AppState>) -> Result<()> {
     if let Err(e) = crate::local_hosts::write_script(&state.dir, &domain_names) {
         wlog!("локальные домены: скрипт hosts — {e:#}");
     }
+    // Если системный прокси уже включён, локальные домены должны быть в его
+    // исключениях — иначе браузер отправит их в 8081 и они не откроются.
+    if crate::systemproxy::get_system_proxy()
+        .map(|proxy| proxy.enabled)
+        .unwrap_or(false)
+    {
+        if let Err(e) = crate::systemproxy::set_system_proxy(true, &domain_names) {
+            wlog!("системный прокси: исключения локальных доменов — {e:#}");
+        }
+    }
     // Слот TLS создаём всегда, даже без доменов: иначе добавленный позже домен
     // не сможет горячо подменить конфиг и HTTPS будет рвать соединения.
     match crate::local_tls::build_store(&state.dir, &domain_names) {
