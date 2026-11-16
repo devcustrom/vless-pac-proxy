@@ -1,8 +1,9 @@
 //! Пул конфигов из подписок: безопасная загрузка, разбор vless/ss,
 //! проверка `xray -test`, мульти-inbound тест с реальными пробами, применение
 //! и авто-ротация. Паритет с legacy/vless-pool.js.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -20,8 +21,29 @@ use crate::vless::link;
 use crate::wlog;
 
 pub const MAX_TEST: usize = 120;
-const TEST_BASE_PORT: u16 = 26100;
+const TEST_BATCH: usize = 10;
+const TEST_PORT_START: u16 = 30000;
+const TEST_PORT_END: u16 = 60000;
 const PROBE_TIMEOUT_MS: u64 = 8000;
+
+/// Один тестовый xray на всех: не даём фоновой перепроверке и ручному
+/// применению запускать тесты одновременно.
+static TESTING_POOL: AtomicBool = AtomicBool::new(false);
+
+struct TestGuard;
+
+impl Drop for TestGuard {
+    fn drop(&mut self) {
+        TESTING_POOL.store(false, Ordering::SeqCst);
+    }
+}
+
+fn claim_test_slot() -> Result<TestGuard> {
+    if TESTING_POOL.swap(true, Ordering::SeqCst) {
+        bail!("идёт проверка пула конфигов — попробуйте через минуту");
+    }
+    Ok(TestGuard)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoolEntry {
@@ -239,23 +261,54 @@ async fn validate_one(dir: &PathBuf, candidate: &Candidate) -> Result<bool> {
     Ok(ok)
 }
 
-async fn wait_port(ports: &[u16], deadline: Duration) -> bool {
+async fn wait_ports(ports: &[u16], deadline: Duration) -> bool {
     let started = Instant::now();
     while started.elapsed() < deadline {
+        let mut all = true;
         for port in ports {
-            if TcpStream::connect(("127.0.0.1", *port)).await.is_ok() {
-                return true;
+            if TcpStream::connect(("127.0.0.1", *port)).await.is_err() {
+                all = false;
+                break;
             }
         }
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        if all {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(120)).await;
     }
     false
+}
+
+/// Свободный диапазон портов под батч тестовых inbound.
+fn free_port_base(count: usize) -> Option<u16> {
+    let count = count.max(1) as u16;
+    let mut base = TEST_PORT_START;
+    while base.saturating_add(count) <= TEST_PORT_END {
+        let mut listeners = Vec::with_capacity(count as usize);
+        let mut ok = true;
+        for offset in 0..count {
+            match std::net::TcpListener::bind(("127.0.0.1", base + offset)) {
+                Ok(listener) => listeners.push(listener),
+                Err(_) => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        drop(listeners);
+        if ok {
+            return Some(base);
+        }
+        base = base.saturating_add(20);
+    }
+    None
 }
 
 async fn probe_via_port(port: u16) -> Option<(u64, String)> {
     let client = reqwest::Client::builder()
         .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{port}")).ok()?)
         .timeout(Duration::from_millis(PROBE_TIMEOUT_MS))
+        .pool_max_idle_per_host(0)
         .build()
         .ok()?;
     let started = Instant::now();
@@ -267,6 +320,59 @@ async fn probe_via_port(port: u16) -> Option<(u64, String)> {
     } else {
         Some((started.elapsed().as_millis() as u64, ip))
     }
+}
+
+pub async fn revalidate_ok(state: &Arc<AppState>) {
+    let Ok(_guard) = claim_test_slot() else {
+        return;
+    };
+    let links: Vec<String> = {
+        let Ok(pool) = state.pool.lock() else {
+            return;
+        };
+        pool.entries
+            .iter()
+            .filter(|entry| entry.ok)
+            .map(|entry| entry.link.clone())
+            .collect()
+    };
+    if links.is_empty() {
+        return;
+    }
+    let Ok(dir) = xray_dir() else {
+        return;
+    };
+    let fresh = test_links(&dir, links.clone()).await;
+    if fresh.is_empty() {
+        wlog!("пул: live-проверка не дала результатов — статусы не меняю");
+        return;
+    }
+    let by_link: HashMap<String, (bool, Option<u64>, Option<String>)> = fresh
+        .iter()
+        .map(|entry| (entry.link.clone(), (entry.ok, entry.ms, entry.ip.clone())))
+        .collect();
+    let mut alive = 0usize;
+    if let Ok(mut pool) = state.pool.lock() {
+        for entry in pool.entries.iter_mut().filter(|entry| entry.ok) {
+            match by_link.get(&entry.link) {
+                Some((ok, ms, ip)) => {
+                    entry.ok = *ok;
+                    entry.ms = *ms;
+                    entry.ip = ip.clone();
+                    if *ok {
+                        alive += 1;
+                    }
+                }
+                None => {
+                    entry.ok = false;
+                    entry.ms = None;
+                    entry.ip = None;
+                }
+            }
+        }
+    }
+    save_pool_state(state);
+    wlog!("пул: live-проверка — рабочих {alive} из {}", links.len());
 }
 
 async fn test_links(dir: &PathBuf, links: Vec<String>) -> Vec<PoolEntry> {
@@ -285,79 +391,107 @@ async fn test_links(dir: &PathBuf, links: Vec<String>) -> Vec<PoolEntry> {
         return Vec::new();
     }
 
-    // 2) один тестовый xray: по inbound на каждый конфиг
-    let mut inbounds = Vec::new();
-    let mut outbounds = Vec::new();
-    let mut rules = Vec::new();
-    for (i, cand) in prepared.iter().enumerate() {
-        inbounds.push(serde_json::json!({
-            "listen": "127.0.0.1",
-            "port": TEST_BASE_PORT + i as u16,
-            "protocol": "http",
-            "tag": format!("in{i}")
-        }));
-        let outbound = link::build_outbound(&cand.parsed, &format!("out{i}"));
-        outbounds.push(outbound);
-        rules.push(serde_json::json!({
-            "type": "field",
-            "inboundTag": [format!("in{i}")],
-            "outboundTag": format!("out{i}")
-        }));
-    }
-    let config = serde_json::json!({
-        "log": { "loglevel": "none" },
-        "inbounds": inbounds,
-        "outbounds": outbounds,
-        "routing": { "rules": rules }
-    });
-    let test_cfg = dir.join("xray-pool-test.json");
-    if std::fs::write(
-        &test_cfg,
-        serde_json::to_string(&config).unwrap_or_default(),
-    )
-    .is_err()
-    {
-        return Vec::new();
-    }
-    let mut child = match cmd_run()
-        .current_dir(dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            wlog!("пул: не удалось запустить тестовый xray — {e}");
-            let _ = std::fs::remove_file(&test_cfg);
-            return Vec::new();
+    // 2) батчи по TEST_BATCH: ограниченное число inbound/outbound и свежие
+    // свободные порты на каждый батч — старые/зависшие тестовые xray не мешают.
+    let mut results: Vec<PoolEntry> = Vec::with_capacity(prepared.len());
+    let total_batches = prepared.len().div_ceil(TEST_BATCH);
+    for (batch_no, chunk) in prepared.chunks(TEST_BATCH).enumerate() {
+        let Some(base) = free_port_base(chunk.len()) else {
+            wlog!("пул: нет свободных портов для теста");
+            results.extend(chunk.iter().map(failed_entry));
+            continue;
+        };
+        let ports: Vec<u16> = (0..chunk.len()).map(|i| base + i as u16).collect();
+        let mut inbounds = Vec::new();
+        let mut outbounds = Vec::new();
+        let mut rules = Vec::new();
+        for (i, cand) in chunk.iter().enumerate() {
+            inbounds.push(serde_json::json!({
+                "listen": "127.0.0.1",
+                "port": ports[i],
+                "protocol": "http",
+                "tag": format!("in{i}")
+            }));
+            outbounds.push(link::build_outbound(&cand.parsed, &format!("out{i}")));
+            rules.push(serde_json::json!({
+                "type": "field",
+                "inboundTag": [format!("in{i}")],
+                "outboundTag": format!("out{i}")
+            }));
         }
-    };
-    let ports: Vec<u16> = (0..prepared.len())
-        .map(|i| TEST_BASE_PORT + i as u16)
-        .collect();
-    let ready = wait_port(&ports, Duration::from_secs(6)).await;
-    let mut results = Vec::new();
-    if ready {
-        let probes = futures_util::future::join_all(ports.iter().map(|p| probe_via_port(*p))).await;
-        for (i, cand) in prepared.iter().enumerate() {
-            let probe = probes.get(i).cloned().flatten();
-            results.push(PoolEntry {
-                link: cand.link.clone(),
-                name: cand.parsed.name.clone(),
-                protocol: cand.parsed.protocol.clone(),
-                address: cand.parsed.address.clone(),
-                port: cand.parsed.port,
-                ok: probe.is_some(),
-                ms: probe.as_ref().map(|(ms, _)| *ms),
-                ip: probe.map(|(_, ip)| ip),
-            });
+        let config = serde_json::json!({
+            "log": { "loglevel": "none" },
+            "inbounds": inbounds,
+            "outbounds": outbounds,
+            "routing": { "rules": rules }
+        });
+        let test_cfg = dir.join("xray-pool-test.json");
+        if std::fs::write(
+            &test_cfg,
+            serde_json::to_string(&config).unwrap_or_default(),
+        )
+        .is_err()
+        {
+            results.extend(chunk.iter().map(failed_entry));
+            continue;
         }
-    } else {
-        wlog!("пул: тестовый xray не поднял порты");
+        let mut child = match cmd_run()
+            .current_dir(dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(e) => {
+                wlog!("пул: не удалось запустить тестовый xray — {e}");
+                let _ = std::fs::remove_file(&test_cfg);
+                results.extend(chunk.iter().map(failed_entry));
+                continue;
+            }
+        };
+        if wait_ports(&ports, Duration::from_secs(8)).await {
+            let probes =
+                futures_util::future::join_all(ports.iter().map(|p| probe_via_port(*p))).await;
+            for (cand, probe) in chunk.iter().zip(probes) {
+                results.push(entry_from_probe(cand, probe));
+            }
+        } else {
+            wlog!("пул: батч {}/{total_batches} не поднял порты", batch_no + 1);
+            results.extend(chunk.iter().map(failed_entry));
+        }
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        let _ = std::fs::remove_file(&test_cfg);
+        tokio::time::sleep(Duration::from_millis(150)).await;
     }
-    let _ = child.kill().await;
-    let _ = std::fs::remove_file(&test_cfg);
     results
+}
+
+fn failed_entry(candidate: &Candidate) -> PoolEntry {
+    PoolEntry {
+        link: candidate.link.clone(),
+        name: candidate.parsed.name.clone(),
+        protocol: candidate.parsed.protocol.clone(),
+        address: candidate.parsed.address.clone(),
+        port: candidate.parsed.port,
+        ok: false,
+        ms: None,
+        ip: None,
+    }
+}
+
+fn entry_from_probe(candidate: &Candidate, probe: Option<(u64, String)>) -> PoolEntry {
+    PoolEntry {
+        link: candidate.link.clone(),
+        name: candidate.parsed.name.clone(),
+        protocol: candidate.parsed.protocol.clone(),
+        address: candidate.parsed.address.clone(),
+        port: candidate.parsed.port,
+        ok: probe.is_some(),
+        ms: probe.as_ref().map(|(ms, _)| *ms),
+        ip: probe.map(|(_, ip)| ip),
+    }
 }
 
 // ---------------- обновление пула ----------------
@@ -384,6 +518,7 @@ pub async fn refresh(state: &Arc<AppState>) -> Result<()> {
 }
 
 async fn refresh_inner(state: &Arc<AppState>) -> Result<()> {
+    let _guard = claim_test_slot()?;
     let subs = read_subscriptions(&state.dir);
     if subs.is_empty() {
         bail!("нет подписок: добавьте URL");
@@ -530,6 +665,46 @@ pub fn apply_entry(state: &Arc<AppState>, index: usize) -> Result<link::LinkInfo
     Ok(info)
 }
 
+/// Применяет конфиг только после live-проверки трафика через него.
+pub async fn apply_entry_checked(state: &Arc<AppState>, index: usize) -> Result<link::LinkInfo> {
+    let (link_url, name) = {
+        let pool = state.pool.lock().unwrap();
+        let entry = pool
+            .entries
+            .get(index)
+            .context("нет такого конфига в пуле")?;
+        (entry.link.clone(), entry.name.clone())
+    };
+    let dir = xray_dir()?;
+    let guard = claim_test_slot()?;
+    let fresh = test_links(&dir, vec![link_url.clone()]).await;
+    drop(guard);
+    if fresh.is_empty() {
+        bail!("не удалось проверить конфиг — тестовый xray не запустился");
+    }
+    let probe = &fresh[0];
+    if !probe.ok {
+        if let Ok(mut pool) = state.pool.lock() {
+            if let Some(entry) = pool.entries.get_mut(index) {
+                entry.ok = false;
+                entry.ms = None;
+                entry.ip = None;
+            }
+        }
+        save_pool_state(state);
+        wlog!("пул: конфиг «{name}» не проходит трафик — убран из доступных");
+        bail!("конфиг не проходит трафик — убран из доступных");
+    }
+    if let Ok(mut pool) = state.pool.lock() {
+        if let Some(entry) = pool.entries.get_mut(index) {
+            entry.ok = true;
+            entry.ms = probe.ms;
+            entry.ip = probe.ip.clone();
+        }
+    }
+    apply_entry(state, index)
+}
+
 /// Автовосстановление: при мёртвом VLESS применить рабочий конфиг из пула.
 /// Не чаще раза в минуту; после исчерпания кандидатов — перекачать подписки.
 pub async fn maybe_auto_recover(state: &Arc<AppState>, reason: &str) -> bool {
@@ -626,6 +801,7 @@ pub fn spawn_scheduler(state: Arc<AppState>) {
         tokio::time::sleep(Duration::from_secs(40)).await;
         loop {
             let settings = state.settings_snapshot();
+            let mut refreshed = false;
             if settings.auto_pool_refresh_hours > 0.0 {
                 let now = chrono::Utc::now();
                 let due = {
@@ -642,9 +818,15 @@ pub fn spawn_scheduler(state: Arc<AppState>) {
                     if let Err(e) = refresh(&state).await {
                         wlog!("плановое обновление пула: {e}");
                     }
+                    refreshed = true;
                 }
             }
-            tokio::time::sleep(Duration::from_secs(10 * 60)).await;
+            // Даже без полного обновления подписок проверяем, что уже
+            // найденные рабочие конфиги всё ещё пропускают трафик.
+            if !refreshed {
+                revalidate_ok(&state).await;
+            }
+            tokio::time::sleep(Duration::from_secs(5 * 60)).await;
         }
     });
 }

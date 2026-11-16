@@ -85,7 +85,7 @@ async function toggleRotate(value) {
 <template>
   <Card
     title="Пул конфигов"
-    description="Подписки проверяются через xray -test и реальные пробы; здесь только рабочие."
+    description="Список строится по живому трафику: рабочие конфиги перепроверяются каждые 5 минут, а перед применением выбранный проверяется ещё раз."
   >
     <template #icon>
       <Gauge class="h-4 w-4 text-primary" />

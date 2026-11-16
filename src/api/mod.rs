@@ -1073,7 +1073,7 @@ async fn pool_use(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> R
         .get("index")
         .and_then(|v| v.as_u64())
         .unwrap_or(u64::MAX) as usize;
-    match crate::vless::pool::apply_entry(&st, index) {
+    match crate::vless::pool::apply_entry_checked(&st, index).await {
         Ok(info) => Json(json!({ "ok": true, "info": info })).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
