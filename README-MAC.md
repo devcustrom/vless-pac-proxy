@@ -10,20 +10,23 @@
 
 ## Установка
 
-1. Скачайте `wireproxy-control-macos-universal.zip` из Releases и распакуйте.
-2. Снимите карантин (Gatekeeper блокирует неподписанные бинарники):
+1. Скачайте бинарник `wireproxy-control-macos-universal` из Releases (без
+   архива).
+2. Снимите карантин (Gatekeeper блокирует неподписанные бинарники) и сделайте
+   файл исполняемым:
 
    ```bash
-   xattr -dr com.apple.quarantine wireproxy-control
-   chmod +x wireproxy-control
+   chmod +x wireproxy-control-macos-universal
+   xattr -dr com.apple.quarantine wireproxy-control-macos-universal
    ```
 
-   Либо: ПКМ → «Открыть» → «Открыть» в Finder.
+   Либо: ПКМ → «Открыть» → «Открыть» в Finder. Для удобства можно
+   переименовать файл в `wireproxy-control` — команды ниже используют это имя.
 
 3. Запустите:
 
    ```bash
-   ./wireproxy-control
+   ./wireproxy-control-macos-universal
    ```
 
    При первом запуске скачаются `wireproxy` и `xray` (проверка sha256),

@@ -1,6 +1,6 @@
 <script setup>
-import { computed, onMounted } from 'vue'
-import { RefreshCw, ShieldCheck } from 'lucide-vue-next'
+import { computed, onMounted, ref } from 'vue'
+import { BookOpen, RefreshCw, ShieldCheck } from 'lucide-vue-next'
 import { store, refresh, startPolling } from '@/lib/store'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
@@ -14,13 +14,29 @@ import ListsCard from '@/components/ListsCard.vue'
 import CheckCard from '@/components/CheckCard.vue'
 import VisitedCard from '@/components/VisitedCard.vue'
 import ExtraDomainsCard from '@/components/ExtraDomainsCard.vue'
+import UpdateCard from '@/components/UpdateCard.vue'
+import DocsDialog from '@/components/DocsDialog.vue'
 import Toast from '@/components/Toast.vue'
 
 const s = computed(() => store.status)
 const pacUrl = computed(() => `${window.location.origin}/proxy.pac`)
 const online = computed(() => !!s.value && (s.value.wgUp || s.value.vlessUp))
+const docsOpen = ref(false)
 
-onMounted(startPolling)
+function closeDocs() {
+  docsOpen.value = false
+  if (window.location.hash === '#docs') {
+    history.replaceState(null, '', window.location.pathname + window.location.search)
+  }
+}
+
+onMounted(() => {
+  startPolling()
+  if (window.location.hash === '#docs') docsOpen.value = true
+  window.addEventListener('hashchange', () => {
+    if (window.location.hash === '#docs') docsOpen.value = true
+  })
+})
 </script>
 
 <template>
@@ -49,6 +65,10 @@ onMounted(startPolling)
             <RefreshCw class="h-3.5 w-3.5" />
             Обновить
           </Button>
+          <Button variant="outline" size="sm" @click="docsOpen = true">
+            <BookOpen class="h-3.5 w-3.5" />
+            Документация
+          </Button>
         </div>
       </div>
     </header>
@@ -72,6 +92,7 @@ onMounted(startPolling)
             <LocalDomainsCard :s="s" />
           </div>
           <div class="space-y-4">
+            <UpdateCard />
             <ListsCard :s="s" />
             <CheckCard :s="s" />
             <VisitedCard :s="s" />
@@ -85,6 +106,7 @@ onMounted(startPolling)
       </div>
     </main>
 
+    <DocsDialog :open="docsOpen" @close="closeDocs" />
     <Toast />
   </div>
 </template>

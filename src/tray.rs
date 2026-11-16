@@ -67,6 +67,7 @@ impl ApplicationHandler for App {
 fn build_tray() -> Result<TrayIcon> {
     let menu = Menu::with_items(&[
         &MenuItem::with_id("open", "Открыть панель", true, None),
+        &MenuItem::with_id("docs", "Документация", true, None),
         &MenuItem::with_id("certs", "Установить сертификаты…", true, None),
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("refresh", "Обновить списки доменов", true, None),
@@ -115,6 +116,12 @@ impl App {
                 let url = panel_url(&self.ctx);
                 if let Err(e) = crate::shell::open_url(&url) {
                     wlog!("трей: открыть панель — {e:#}");
+                }
+            }
+            "docs" => {
+                let url = format!("{}#docs", panel_url(&self.ctx));
+                if let Err(e) = crate::shell::open_url(&url) {
+                    wlog!("трей: документация — {e:#}");
                 }
             }
             "certs" => match crate::local_tls::trust_certs(&self.ctx.state.dir) {

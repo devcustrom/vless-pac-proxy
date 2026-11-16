@@ -25,15 +25,11 @@ jobs:
       - name: Упаковка
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/wireproxy-control.exe dist/
-          Copy-Item README.md dist/
-          Copy-Item README-MAC.md dist/
-          Compress-Archive -Path dist/* -DestinationPath "wireproxy-control-${{ github.ref_name }}-windows-x64.zip"
+          Copy-Item target/release/wireproxy-control.exe wireproxy-control-windows-x64.exe
       - uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: wireproxy-control-*-windows-x64.zip
+          path: wireproxy-control-windows-x64.exe
 
   macos:
     runs-on: macos-latest
@@ -55,19 +51,16 @@ jobs:
         run: |
           cargo build --release --target aarch64-apple-darwin
           cargo build --release --target x86_64-apple-darwin
-      - name: Universal + упаковка
+      - name: Universal
         run: |
-          lipo -create -output wireproxy-control \
+          lipo -create -output wireproxy-control-macos-universal \
             target/aarch64-apple-darwin/release/wireproxy-control \
             target/x86_64-apple-darwin/release/wireproxy-control
-          chmod +x wireproxy-control
-          mkdir -p dist
-          cp wireproxy-control README.md README-MAC.md dist/
-          (cd dist && zip -r "../wireproxy-control-${GITHUB_REF_NAME}-macos-universal.zip" .)
+          chmod +x wireproxy-control-macos-universal
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: wireproxy-control-*-macos-universal.zip
+          path: wireproxy-control-macos-universal
 
   release:
     needs: [windows, macos]
@@ -81,4 +74,6 @@ jobs:
           path: artifacts
       - uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/**/*.zip
+          files: |
+            artifacts/windows/wireproxy-control-windows-x64.exe
+            artifacts/macos/wireproxy-control-macos-universal

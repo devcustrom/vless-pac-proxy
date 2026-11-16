@@ -109,6 +109,8 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/api/subscriptions", post(subscriptions))
         .route("/api/engines/ensure", post(engines_ensure))
         .route("/api/trust-certs", post(trust_certs_handler))
+        .route("/api/docs", get(docs))
+        .route("/api/update", get(update_check))
         .fallback(ui_fallback)
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state.clone(), guard));
@@ -196,6 +198,132 @@ async fn wg_config(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> 
         .unwrap_or_default();
     wlog!("wg.conf: сохранён (Endpoint {endpoint})");
     Json(json!({ "ok": true, "configured": true, "endpoint": endpoint })).into_response()
+}
+
+async fn docs() -> Json<Value> {
+    Json(json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "readme": include_str!("../../README.md"),
+        "readmeMac": include_str!("../../README-MAC.md"),
+    }))
+}
+
+fn version_tuple(value: &str) -> (u64, u64, u64) {
+    let mut parts = value.trim_start_matches('v').split('.').map(|part| {
+        part.chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse::<u64>()
+            .unwrap_or(0)
+    });
+    (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    )
+}
+
+/// Проверка последнего релиза на GitHub; ссылка ведёт на готовый бинарник.
+async fn update_check() -> Response {
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(12))
+        .user_agent(format!("wireproxy-control/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+    {
+        Ok(client) => client,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("{e:#}") })),
+            )
+                .into_response()
+        }
+    };
+    let response = client
+        .get("https://api.github.com/repos/devcustrom/vless-pac-proxy/releases/latest")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": format!("GitHub недоступен: {e}") })),
+            )
+                .into_response()
+        }
+    };
+    if !response.status().is_success() {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("GitHub вернул {}", response.status()) })),
+        )
+            .into_response();
+    }
+    let data: Value = match response.json().await {
+        Ok(data) => data,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": format!("некорректный ответ GitHub: {e}") })),
+            )
+                .into_response()
+        }
+    };
+    let latest = data
+        .get("tag_name")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim_start_matches('v')
+        .to_string();
+    if latest.is_empty() {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": "в релизе нет tag_name" })),
+        )
+            .into_response();
+    }
+    let asset_name = if cfg!(windows) {
+        "wireproxy-control-windows-x64.exe"
+    } else if cfg!(target_os = "macos") {
+        "wireproxy-control-macos-universal"
+    } else {
+        ""
+    };
+    let assets = data
+        .get("assets")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let asset = assets
+        .iter()
+        .find(|item| item.get("name").and_then(|value| value.as_str()) == Some(asset_name));
+    let url = asset
+        .and_then(|item| item.get("browser_download_url"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let name = asset
+        .and_then(|item| item.get("name"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let size = asset
+        .and_then(|item| item.get("size"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let current = env!("CARGO_PKG_VERSION");
+    let available = version_tuple(&latest) > version_tuple(current);
+    Json(json!({
+        "current": current,
+        "latest": latest,
+        "available": available,
+        "url": url,
+        "asset": name,
+        "size": size,
+        "publishedAt": data.get("published_at"),
+        "page": data.get("html_url"),
+    }))
+    .into_response()
 }
 
 async fn engines_ensure(State(st): State<Arc<AppState>>) -> Response {
@@ -446,6 +574,7 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
             "domains": local_domains.iter().map(|d| json!({ "domain": d.domain, "port": d.port })).collect::<Vec<_>>(),
         },
         "vpnDefault": settings.vpn_default,
+        "version": env!("CARGO_PKG_VERSION"),
         "autostart": crate::autostart::installed(),
         "caTrusted": crate::trust_status::is_trusted(&st.dir),
         "enginesReady": engines_ready,
@@ -1140,5 +1269,18 @@ async fn exit_ip(client: &reqwest::Client) -> Option<String> {
         None
     } else {
         Some(ip.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::version_tuple;
+
+    #[test]
+    fn compares_versions() {
+        assert!(version_tuple("v0.2.1") > version_tuple("0.2.0"));
+        assert!(version_tuple("1.0.0") > version_tuple("0.9.9"));
+        assert_eq!(version_tuple("v0.2.0"), (0, 2, 0));
+        assert_eq!(version_tuple("bad"), (0, 0, 0));
     }
 }

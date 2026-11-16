@@ -35,16 +35,22 @@ VLESS-канал умирает — подписки перепроверяют�
 
 ## Установка (Windows 10/11, x64)
 
-1. Скачайте `wireproxy-control-windows-x64.zip` со страницы Releases и
-   распакуйте в любую папку (например, `C:\Tools\wireproxy-control`).
+1. Скачайте готовый бинарник `wireproxy-control-windows-x64.exe` со страницы
+   [Releases](../../releases/latest) и положите в любую папку (например,
+   `C:\Tools\wireproxy-control`). Архивов нет — файл запускается сразу.
 2. Запустите `wireproxy-control.exe`.
 3. При первом запуске бинарник:
    - скачает `wireproxy.exe` и `xray.exe` (с проверкой контрольных сумм);
    - создаст папку данных и сертификаты;
    - откроет панель в браузере.
-4. В панели в блоке **«Быстрый старт»** добавьте канал: положите `wg.conf`
-   рядом с программой или вставьте `vless://`-ссылку, затем включите
-   системный прокси.
+4. В панели в блоке **«Быстрый старт»** добавьте канал: вставьте `wg.conf`
+   в карточке WireGuard или `vless://`-ссылку, затем включите системный
+   прокси.
+
+Документация (этот README и macOS-инструкция) встроена в приложение:
+кнопка **«Документация»** в панели или пункт меню трея. Проверить обновления
+можно в карточке **«Обновление»** — она ведёт на прямой бинарник последнего
+релиза.
 
 Консольное окно при обычном запуске не нужно: приложение живёт в трее
 (иконка рядом с часами). Меню трея: открыть панель, установить сертификаты,
@@ -67,10 +73,18 @@ wireproxy-control.exe install
 
 ## Установка (macOS, universal: Intel и Apple Silicon)
 
-1. Скачайте `wireproxy-control-macos-universal.zip` и распакуйте.
-2. Запустите `wireproxy-control` из терминала или Finder.
-   Gatekeeper: ПКМ → «Открыть» → «Открыть» (бинарник не подписан).
-3. Автозапуск: `./wireproxy-control install` — создаёт
+1. Скачайте бинарник `wireproxy-control-macos-universal` со страницы
+   [Releases](../../releases/latest) (без архива).
+2. Сделайте исполняемым и снимите карантин:
+
+   ```bash
+   chmod +x wireproxy-control-macos-universal
+   xattr -dr com.apple.quarantine wireproxy-control-macos-universal
+   ./wireproxy-control-macos-universal
+   ```
+
+   Либо ПКМ → «Открыть» в Finder (бинарник не подписан).
+3. Автозапуск: `./wireproxy-control-macos-universal install` — создаёт
    `~/Library/LaunchAgents/com.wireproxy-control.plist`.
 
 macOS-часть (трей, системный прокси через `networksetup`, LaunchAgent)
@@ -183,6 +197,27 @@ base64). Менеджер:
 
 PAC-файл: <http://127.0.0.1:8080/proxy.pac> — `PROXY 127.0.0.1:8081` для
 доменов списков, остальное `DIRECT`.
+
+## Обновление
+
+В Releases лежат только готовые бинарники с постоянными именами:
+
+- `wireproxy-control-windows-x64.exe`
+- `wireproxy-control-macos-universal`
+
+Их можно скачивать напрямую (в том числе по ссылке
+`https://github.com/devcustrom/vless-pac-proxy/releases/latest/download/<имя>`).
+Карточка **«Обновление»** в панели сверяет версию с последним релизом и
+открывает прямую ссылку.
+
+Порядок замены:
+
+1. Остановите менеджер: «Выход» в трее или `wireproxy-control stop`.
+2. Замените файл бинарника новым (Windows — `wireproxy-control.exe`).
+3. Запустите снова; автозапуск продолжит указывать на тот же путь.
+
+На macOS после скачивания: `chmod +x wireproxy-control-macos-universal` и при
+необходимости `xattr -dr com.apple.quarantine <файл>`.
 
 ## Команды
 
