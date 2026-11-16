@@ -1,13 +1,10 @@
 <script setup>
-import { computed } from 'vue'
 import { ListChecks, RefreshCw, RotateCcw } from 'lucide-vue-next'
 import { fmtTime, notify, post } from '@/lib/store'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
-
-const pacUrl = computed(() => `${window.location.origin}/proxy.pac`)
 
 async function refreshLists() {
   try {
@@ -64,13 +61,6 @@ async function restartProxy() {
           <RotateCcw class="h-3.5 w-3.5" />
           Перезапустить движки
         </Button>
-        <a
-          :href="pacUrl"
-          target="_blank"
-          class="inline-flex h-8 items-center rounded-md px-3 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-        >
-          proxy.pac
-        </a>
       </div>
     </div>
   </Card>

@@ -18,8 +18,12 @@ pub struct Settings {
     pub local_proxy_port: u16,
     #[serde(rename = "localHttpsPort", default = "default_https_port")]
     pub local_https_port: u16,
-    #[serde(rename = "localDomainsEnabled", default = "default_true")]
+    #[serde(rename = "localDomainsEnabled", default)]
     pub local_domains_enabled: bool,
+    #[serde(rename = "wireguardEnabled", default = "default_true")]
+    pub wireguard_enabled: bool,
+    #[serde(rename = "xrayEnabled", default = "default_true")]
+    pub xray_enabled: bool,
 }
 
 fn default_vpn() -> String {
@@ -46,7 +50,9 @@ impl Default for Settings {
             auto_pool_refresh_hours: default_hours(),
             local_proxy_port: default_http_port(),
             local_https_port: default_https_port(),
-            local_domains_enabled: true,
+            local_domains_enabled: false,
+            wireguard_enabled: true,
+            xray_enabled: true,
         }
     }
 }
@@ -93,6 +99,8 @@ mod tests {
             local_proxy_port: 8080,
             local_https_port: 8443,
             local_domains_enabled: false,
+            wireguard_enabled: true,
+            xray_enabled: true,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"vpnDefault\":\"vless\""));
@@ -107,5 +115,8 @@ mod tests {
         assert_eq!(s.vpn_default, "wireguard");
         assert!(s.auto_rotate);
         assert_eq!(s.local_proxy_port, 80);
+        assert!(!s.local_domains_enabled);
+        assert!(s.wireguard_enabled);
+        assert!(s.xray_enabled);
     }
 }

@@ -42,8 +42,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
                     }
                 }
             }
-            st.wg.start();
-            st.xr.start();
+            start_enabled_engines(&st);
             if missing && st.interactive {
                 let url = format!("http://127.0.0.1:{}/", st.panel_port);
                 wlog!("первый запуск: открываю панель {url}");
@@ -93,12 +92,17 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/api/system-proxy", post(system_proxy))
         .route("/api/quit", post(quit))
         .route("/api/auto", post(auto))
+        .route("/api/channels", post(channels))
         .route(
             "/api/local-domains",
             get(local_domains_get).post(local_domains_post),
         )
         .route("/api/local-domains/probe", post(local_domains_probe))
         .route("/api/local-domains/hosts", post(local_domains_hosts))
+        .route(
+            "/api/local-domains/hosts/edit",
+            post(local_domains_hosts_edit),
+        )
         .route("/api/local-ports", get(local_ports))
         .route("/api/check", post(check))
         .route("/api/pool/refresh", post(pool_refresh))
@@ -460,8 +464,7 @@ async fn engines_ensure(State(st): State<Arc<AppState>>) -> Response {
                 wlog!("движки: {} — {e:#}", kind.label());
             }
         }
-        st.wg.start();
-        st.xr.start();
+        start_enabled_engines(&st);
     });
     Json(json!({ "ok": true, "message": "загрузка началась" })).into_response()
 }
@@ -655,15 +658,23 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
             next,
         )
     };
-    let visited: Vec<Value> = {
+    let (visited, visited_total) = {
         let v = st.visited.lock().unwrap();
-        let mut items = v.items.clone();
+        let cutoff = chrono::Utc::now().timestamp() - 86_400;
+        let mut items: Vec<(String, u64, i64)> = v
+            .items
+            .iter()
+            .filter(|(_, _, last)| *last >= cutoff)
+            .cloned()
+            .collect();
         items.sort_by_key(|(_, _, ts)| std::cmp::Reverse(*ts));
-        items
+        let total = items.len();
+        let view: Vec<Value> = items
             .into_iter()
-            .take(60)
+            .take(300)
             .map(|(domain, count, last)| json!({ "domain": domain, "count": count, "last": last }))
-            .collect()
+            .collect();
+        (view, total)
     };
     let engines_ready = crate::engines::find_engine(EngineKind::Wireproxy).is_some()
         && crate::engines::find_engine(EngineKind::Xray).is_some();
@@ -704,6 +715,10 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         "plugins": {
             "localDomains": settings.local_domains_enabled,
         },
+        "channels": {
+            "wireguard": settings.wireguard_enabled,
+            "xray": settings.xray_enabled,
+        },
         "autostart": crate::autostart::installed(),
         "caTrusted": crate::trust_status::is_trusted(&st.dir),
         "enginesReady": engines_ready,
@@ -720,6 +735,7 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         "extra": extra,
         "checks": checks,
         "visited": visited,
+        "visitedTotal": visited_total,
     }))
 }
 
@@ -911,6 +927,83 @@ async fn system_proxy(State(st): State<Arc<AppState>>, Json(body): Json<Value>) 
     }
 }
 
+fn start_enabled_engines(state: &Arc<AppState>) {
+    let settings = state.settings_snapshot();
+    if settings.wireguard_enabled {
+        state.wg.start();
+    }
+    if settings.xray_enabled {
+        state.xr.start();
+    }
+}
+
+async fn channels(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let channel = body
+        .get("channel")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if channel != "wireguard" && channel != "xray" {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "channel должен быть wireguard|xray" })),
+        )
+            .into_response();
+    }
+    let enabled = body.get("enabled").and_then(|value| value.as_bool());
+    let restart = body
+        .get("restart")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    let current = st.settings_snapshot();
+    let target = enabled.unwrap_or(if channel == "wireguard" {
+        current.wireguard_enabled
+    } else {
+        current.xray_enabled
+    });
+    if enabled.is_some() {
+        let mut settings = st.settings.lock().unwrap();
+        if channel == "wireguard" {
+            settings.wireguard_enabled = target;
+        } else {
+            settings.xray_enabled = target;
+        }
+        let _ = settings.save(&st.dir);
+    }
+    let engine = if channel == "wireguard" {
+        &st.wg
+    } else {
+        &st.xr
+    };
+    if enabled.is_some() {
+        if target {
+            engine.start();
+        } else {
+            engine.stop();
+        }
+        wlog!(
+            "канал {channel}: {}",
+            if target {
+                "включён"
+            } else {
+                "выключен"
+            }
+        );
+    }
+    if restart && target {
+        engine.restart();
+        wlog!("канал {channel}: перезапуск");
+    }
+    let settings = st.settings_snapshot();
+    Json(json!({
+        "ok": true,
+        "channels": {
+            "wireguard": settings.wireguard_enabled,
+            "xray": settings.xray_enabled,
+        }
+    }))
+    .into_response()
+}
+
 async fn auto(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
     let mut s = st.settings.lock().unwrap();
     if let Some(v) = body.get("autoRotate").and_then(|v| v.as_bool()) {
@@ -1065,6 +1158,21 @@ async fn local_domains_hosts(State(st): State<Arc<AppState>>) -> Response {
     match crate::local_hosts::write_script(&st.dir, &names) {
         Ok(path) => {
             Json(json!({ "ok": true, "script": path.display().to_string() })).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("{e:#}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn local_domains_hosts_edit(State(st): State<Arc<AppState>>) -> Response {
+    match crate::local_hosts::edit_script(&st.dir)
+        .and_then(|script| crate::shell::run_elevated(&script).map(|_| script))
+    {
+        Ok(script) => {
+            Json(json!({ "ok": true, "script": script.display().to_string() })).into_response()
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1288,6 +1396,7 @@ async fn subscriptions(State(st): State<Arc<AppState>>, Json(body): Json<Value>)
         .trim()
         .to_string();
     let mut list = crate::vless::pool::read_subscriptions(&st.dir);
+    let mut imported = false;
     match action {
         "add" => {
             if let Err(e) = crate::vless::pool::validate_subscription_url(&url).await {
@@ -1301,11 +1410,26 @@ async fn subscriptions(State(st): State<Arc<AppState>>, Json(body): Json<Value>)
                 list.push(url);
             }
         }
+        "import-igareck" => {
+            let mut added = 0;
+            for candidate in crate::vless::pool::igareck_urls() {
+                if crate::vless::pool::validate_subscription_url(&candidate)
+                    .await
+                    .is_ok()
+                    && !list.contains(&candidate)
+                {
+                    list.push(candidate);
+                    added += 1;
+                }
+            }
+            imported = true;
+            wlog!("подписки: импортировано из igareck — {added}");
+        }
         "remove" => list.retain(|u| *u != url),
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "action должен быть add|remove" })),
+                Json(json!({ "error": "action должен быть add|remove|import-igareck" })),
             )
                 .into_response();
         }
@@ -1316,6 +1440,14 @@ async fn subscriptions(State(st): State<Arc<AppState>>, Json(body): Json<Value>)
             Json(json!({ "error": e.to_string() })),
         )
             .into_response();
+    }
+    if imported {
+        let st = st.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::vless::pool::refresh(&st).await {
+                wlog!("импорт igareck: проверка пула — {e}");
+            }
+        });
     }
     Json(json!({ "ok": true, "subscriptions": crate::vless::pool::read_subscriptions(&st.dir) }))
         .into_response()
@@ -1395,8 +1527,10 @@ fn spawn_health_probes(state: Arc<AppState>) {
         loop {
             probe_once(&state).await;
             let (wg_ok, vless_ok) = state.health_snapshot();
-            let wg_needed = crate::engines::wireproxy::is_configured(&state.dir);
-            let xr_needed = crate::engines::xray::has_config(&state.dir);
+            let settings = state.settings_snapshot();
+            let wg_needed =
+                settings.wireguard_enabled && crate::engines::wireproxy::is_configured(&state.dir);
+            let xr_needed = settings.xray_enabled && crate::engines::xray::has_config(&state.dir);
             let healthy = (!wg_needed || wg_ok) && (!xr_needed || vless_ok);
             // Пока канал не поднялся — проверяем чаще, чтобы панель не висела
             // красной минуту после старта.
@@ -1407,9 +1541,16 @@ fn spawn_health_probes(state: Arc<AppState>) {
 }
 
 async fn probe_once(state: &Arc<AppState>) {
+    let settings = state.settings_snapshot();
+    let wg_enabled = settings.wireguard_enabled;
+    let xr_enabled = settings.xray_enabled;
     let wg_client = crate::state::probe_client(crate::vless::WIREPROXY_HTTP_PORT);
-    let wg_ip = exit_ip(&wg_client).await;
-    let xr_configured = crate::engines::xray::has_config(&state.dir);
+    let wg_ip = if wg_enabled {
+        exit_ip(&wg_client).await
+    } else {
+        None
+    };
+    let xr_configured = xr_enabled && crate::engines::xray::has_config(&state.dir);
     let xr_client = crate::state::probe_client(crate::vless::XRAY_HTTP_PORT);
     let xr_ip = if xr_configured {
         exit_ip(&xr_client).await
@@ -1422,7 +1563,11 @@ async fn probe_once(state: &Arc<AppState>) {
         .map(|h| (h.wg_ok, h.vless_ok))
         .unwrap_or((false, false));
     let (wg_now, xr_now) = if let Ok(mut h) = state.health.lock() {
-        if let Some(ip) = &wg_ip {
+        if !wg_enabled {
+            h.wg_ok = false;
+            h.exit_ip = None;
+            h.wg_fail = 0;
+        } else if let Some(ip) = &wg_ip {
             h.wg_ok = true;
             h.exit_ip = Some(ip.clone());
             h.wg_fail = 0;
@@ -1433,7 +1578,11 @@ async fn probe_once(state: &Arc<AppState>) {
                 h.exit_ip = None;
             }
         }
-        if let Some(ip) = &xr_ip {
+        if !xr_enabled {
+            h.vless_ok = false;
+            h.exit_ip_vless = None;
+            h.vless_fail = 0;
+        } else if let Some(ip) = &xr_ip {
             h.vless_ok = true;
             h.exit_ip_vless = Some(ip.clone());
             h.vless_fail = 0;
@@ -1452,17 +1601,21 @@ async fn probe_once(state: &Arc<AppState>) {
     if wg_was != wg_now {
         wlog!(
             "WireGuard канал: {}",
-            if wg_now {
+            if !wg_enabled {
+                "отключён"
+            } else if wg_now {
                 "работает"
             } else {
                 "не проходит трафик"
             }
         );
     }
-    if xr_configured && xr_was != xr_now {
+    if xr_was != xr_now && (xr_enabled || xr_configured) {
         wlog!(
-            "VLESS канал: {}",
-            if xr_now {
+            "Xray канал: {}",
+            if !xr_enabled {
+                "отключён"
+            } else if xr_now {
                 "работает"
             } else {
                 "не проходит трафик"

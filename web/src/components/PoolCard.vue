@@ -13,6 +13,7 @@ const props = defineProps({ s: { type: Object, required: true } })
 
 const subscription = ref('')
 const busy = ref(false)
+const importing = ref(false)
 
 const working = computed(() => (props.s.pool || []).filter((item) => item.ok))
 const autoPool = ref((props.s.autoPoolRefreshHours || 0) > 0)
@@ -48,6 +49,18 @@ async function refreshPool() {
     /* тост уже показан */
   } finally {
     busy.value = false
+  }
+}
+
+async function importIgareck() {
+  importing.value = true
+  try {
+    const result = await post('/api/subscriptions', { action: 'import-igareck' })
+    notify(`Подписки igareck добавлены (${result.subscriptions?.length || 0})`)
+  } catch {
+    /* тост уже показан */
+  } finally {
+    importing.value = false
   }
 }
 
@@ -119,6 +132,20 @@ async function toggleRotate(value) {
             Добавить
           </Button>
         </form>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-xs">
+        <a
+          href="https://github.com/igareck/vpn-configs-for-russia"
+          target="_blank"
+          class="text-primary underline underline-offset-4"
+        >
+          igareck/vpn-configs-for-russia
+        </a>
+        <span class="text-muted-foreground">BLACK/WHITE-списки</span>
+        <Button size="sm" variant="outline" :disabled="importing" @click="importIgareck">
+          Импортировать конфиги
+        </Button>
       </div>
 
       <div class="flex flex-wrap items-center gap-2">

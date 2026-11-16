@@ -16,6 +16,7 @@ import ListsCard from '@/components/ListsCard.vue'
 import CheckCard from '@/components/CheckCard.vue'
 import VisitedCard from '@/components/VisitedCard.vue'
 import UpdateCard from '@/components/UpdateCard.vue'
+import SettingsCard from '@/components/SettingsCard.vue'
 import DocsDialog from '@/components/DocsDialog.vue'
 import Toast from '@/components/Toast.vue'
 
@@ -23,10 +24,10 @@ const TABS = [
   { value: 'overview', label: 'Обзор' },
   { value: 'configs', label: 'Конфиги' },
   { value: 'domains', label: 'Домены' },
+  { value: 'settings', label: 'Настройки' },
 ]
 
 const s = computed(() => store.status)
-const pacUrl = computed(() => `${window.location.origin}/proxy.pac`)
 const online = computed(() => !!s.value && (s.value.wgUp || s.value.vlessUp))
 const docsOpen = ref(false)
 const tab = ref('overview')
@@ -71,13 +72,6 @@ onMounted(() => {
           <Badge :variant="online ? 'success' : 'destructive'">
             {{ online ? 'VPN активен' : 'VPN не активен' }}
           </Badge>
-          <a
-            :href="pacUrl"
-            target="_blank"
-            class="hidden text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline sm:inline"
-          >
-            proxy.pac
-          </a>
           <Button variant="outline" size="sm" @click="refresh">
             <RefreshCw class="h-3.5 w-3.5" />
             Обновить
@@ -127,13 +121,24 @@ onMounted(() => {
           </div>
         </template>
 
-        <template v-else>
+        <template v-else-if="tab === 'domains'">
           <div class="grid items-start gap-4 lg:grid-cols-2">
             <div class="space-y-4">
               <LocalDomainsCard :s="s" />
             </div>
             <div class="space-y-4">
               <DomainRoutingCard :s="s" />
+            </div>
+          </div>
+        </template>
+
+        <template v-else>
+          <div class="grid items-start gap-4 lg:grid-cols-2">
+            <div class="space-y-4">
+              <SettingsCard :s="s" />
+            </div>
+            <div class="space-y-4">
+              <UpdateCard />
             </div>
           </div>
         </template>

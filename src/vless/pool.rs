@@ -26,6 +26,21 @@ const TEST_PORT_START: u16 = 30000;
 const TEST_PORT_END: u16 = 60000;
 const PROBE_TIMEOUT_MS: u64 = 8000;
 
+pub const IGARECK_REPO: &str = "https://github.com/igareck/vpn-configs-for-russia";
+
+/// Готовые подписки из репозитория igareck (BLACK/WHITE списки).
+pub fn igareck_urls() -> Vec<String> {
+    [
+        "BLACK_VLESS_RUS.txt",
+        "BLACK_SS+All_RUS.txt",
+        "BLACK_VLESS_RUS_mobile.txt",
+        "Vless-Reality-White-Lists-Rus-Mobile.txt",
+    ]
+    .iter()
+    .map(|name| format!("https://raw.githack.com/igareck/vpn-configs-for-russia/main/{name}"))
+    .collect()
+}
+
 /// Один тестовый xray на всех: не даём фоновой перепроверке и ручному
 /// применению запускать тесты одновременно.
 static TESTING_POOL: AtomicBool = AtomicBool::new(false);

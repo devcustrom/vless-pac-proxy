@@ -159,6 +159,34 @@ pub fn sync_hosts(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Скрипт, открывающий системный hosts в редакторе с повышением прав.
+pub fn edit_script(dir: &Path) -> Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        let script = dir.join("edit-local-hosts.bat");
+        let content = "@echo off\r\n\
+             net session >nul 2>&1\r\n\
+             if errorlevel 1 (\r\n\
+               powershell -NoProfile -Command \"Start-Process -FilePath '%~f0' -Verb RunAs\"\r\n\
+               exit /b\r\n\
+             )\r\n\
+             notepad.exe \"%SystemRoot%\\System32\\drivers\\etc\\hosts\"\r\n";
+        std::fs::write(&script, content)?;
+        Ok(script)
+    }
+    #[cfg(not(windows))]
+    {
+        let script = dir.join("edit-local-hosts.command");
+        std::fs::write(&script, "#!/bin/sh\nsudo nano /etc/hosts\n")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755));
+        }
+        Ok(script)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,11 +195,11 @@ mod tests {
     fn filters_localhost_and_dupes() {
         let list = vec![
             "panel.localhost".to_string(),
-            "local.stage.stich.su".to_string(),
-            "LOCAL.stage.stich.su".to_string(),
+            "app.example.com".to_string(),
+            "APP.example.com".to_string(),
             "bad domain".to_string(),
         ];
-        assert_eq!(entries(&list), vec!["127.0.0.1 local.stage.stich.su"]);
+        assert_eq!(entries(&list), vec!["127.0.0.1 app.example.com"]);
     }
 
     #[test]

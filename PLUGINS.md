@@ -8,13 +8,15 @@
 
 | Плагин | Что делает | Флаг в settings.json |
 | --- | --- | --- |
-| Локальные домены | HTTP :80 / HTTPS :443, SNI, WebSocket, свой CA | `localDomainsEnabled` (по умолчанию `true`) |
+| Локальные домены | HTTP :80 / HTTPS :443, SNI, WebSocket, свой CA | `localDomainsEnabled` (по умолчанию `false`) |
+| WireGuard-канал | wireproxy, несколько конфигов | `wireguardEnabled` (по умолчанию `true`) |
+| Xray-канал | VLESS/VMess/Trojan/SS | `xrayEnabled` (по умолчанию `true`) |
 | Умный прокси | маршрутизация по доменам на :8081 | всегда включён (ядро) |
 | Списки доменов | itdog + Re-filter RKN, PAC | всегда включён (ядро) |
 | Пул VLESS/VMess/Trojan/SS | подписки, live-проверка, ротация | всегда включён (ядро) |
 
-Отключить плагин можно в панели: вкладка **«Домены»** → переключатель
-«Плагин локальных доменов», либо через API:
+Отключить плагин можно в панели: вкладка **«Настройки»** → «Плагины»,
+либо через API:
 
 ```bash
 curl -X POST -H "X-WPC: 1" -H "Content-Type: application/json" \
@@ -65,7 +67,8 @@ crate::net::local_proxy::stop(&state);  // закрывает слушатели
    `StatusCode::BAD_REQUEST` + `{"error": "..."}`.
 5. **Плагины.** В `/api/status` добавьте `plugins.myPlugin`.
    В `/api/plugins` обработайте `myPlugin` так же, как `localDomains`:
-   сохраните настройку, вызовите `start`/`stop`.
+   сохраните настройку, вызовите `start`/`stop`. Переключатели живут во
+   вкладке «Настройки», а не в карточке самого плагина.
 6. **UI.** Создайте карточку в `web/src/components/`, подключите её во вкладке
    `App.vue`, читайте состояние из `store.status.plugins`.
 7. **Безопасность.** Внешние запросы — только http/https, проверяйте host через

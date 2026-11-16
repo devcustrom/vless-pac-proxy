@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { Activity, Shield } from 'lucide-vue-next'
-import { post } from '@/lib/store'
+import { Activity, RotateCcw, Shield } from 'lucide-vue-next'
+import { notify, post } from '@/lib/store'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
@@ -43,6 +43,23 @@ async function setDefault(value) {
     /* тост показан */
   }
 }
+
+async function setChannel(channel, enabled) {
+  try {
+    await post('/api/channels', { channel, enabled })
+  } catch {
+    /* тост показан */
+  }
+}
+
+async function restartChannel(channel) {
+  try {
+    await post('/api/channels', { channel, restart: true })
+    notify(channel === 'wireguard' ? 'WireGuard перезапускается' : 'Xray перезапускается')
+  } catch {
+    /* тост показан */
+  }
+}
 </script>
 
 <template>
@@ -64,6 +81,21 @@ async function setDefault(value) {
             {{ s.wgEndpoint || 'конфиг не задан' }}
           </div>
         </div>
+        <div class="flex shrink-0 items-center gap-2">
+          <Button
+            size="icon"
+            variant="ghost"
+            :disabled="s.channels?.wireguard === false"
+            title="Перезапустить WireGuard"
+            @click="restartChannel('wireguard')"
+          >
+            <RotateCcw class="h-4 w-4" />
+          </Button>
+          <Switch
+            :model-value="s.channels?.wireguard !== false"
+            @update:model-value="(value) => setChannel('wireguard', value)"
+          />
+        </div>
       </div>
 
       <div class="flex items-start gap-3">
@@ -81,6 +113,21 @@ async function setDefault(value) {
           <div class="mt-1 text-xs text-muted-foreground">
             основной канал: {{ s.vpnDefault === 'vless' ? 'VLESS' : 'WireGuard' }}
           </div>
+        </div>
+        <div class="flex shrink-0 items-center gap-2">
+          <Button
+            size="icon"
+            variant="ghost"
+            :disabled="s.channels?.xray === false"
+            title="Перезапустить Xray"
+            @click="restartChannel('xray')"
+          >
+            <RotateCcw class="h-4 w-4" />
+          </Button>
+          <Switch
+            :model-value="s.channels?.xray !== false"
+            @update:model-value="(value) => setChannel('xray', value)"
+          />
         </div>
       </div>
 
