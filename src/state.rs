@@ -16,6 +16,8 @@ pub struct Health {
     pub exit_ip: Option<String>,
     pub exit_ip_vless: Option<String>,
     pub at: Option<DateTime<Utc>>,
+    pub wg_fail: u8,
+    pub vless_fail: u8,
 }
 
 #[derive(Default)]
@@ -196,4 +198,18 @@ impl AppState {
         }
         client
     }
+}
+
+/// Клиент для health-проб: без переиспользования idle-соединений.
+/// wireproxy/xray закрывают простаивающие соединения, и кэшированный клиент
+/// даёт ложные «канал не проходит трафик» через одну пробу.
+pub fn probe_client(proxy_port: u16) -> reqwest::Client {
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent("wireproxy-control/1.0")
+        .pool_max_idle_per_host(0);
+    if let Ok(proxy) = reqwest::Proxy::all(format!("http://127.0.0.1:{proxy_port}")) {
+        builder = builder.proxy(proxy);
+    }
+    builder.build().unwrap_or_else(|_| reqwest::Client::new())
 }

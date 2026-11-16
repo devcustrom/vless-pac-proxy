@@ -1211,45 +1211,70 @@ fn spawn_health_probes(state: Arc<AppState>) {
 }
 
 async fn probe_once(state: &Arc<AppState>) {
-    let wg_client = state.client("probe-wg", Some(crate::vless::WIREPROXY_HTTP_PORT));
+    let wg_client = crate::state::probe_client(crate::vless::WIREPROXY_HTTP_PORT);
     let wg_ip = exit_ip(&wg_client).await;
-    let xr_client = state.client("probe-xr", Some(crate::vless::XRAY_HTTP_PORT));
-    let xr_ip = if crate::engines::xray::has_config(&state.dir) {
+    let xr_configured = crate::engines::xray::has_config(&state.dir);
+    let xr_client = crate::state::probe_client(crate::vless::XRAY_HTTP_PORT);
+    let xr_ip = if xr_configured {
         exit_ip(&xr_client).await
     } else {
         None
     };
-    let wg_was = state.health.lock().map(|h| h.wg_ok).unwrap_or(false);
-    let xr_was = state.health.lock().map(|h| h.vless_ok).unwrap_or(false);
-    if let Ok(mut h) = state.health.lock() {
-        h.wg_ok = wg_ip.is_some();
-        h.exit_ip = wg_ip.clone();
-        h.vless_ok = xr_ip.is_some();
-        h.exit_ip_vless = xr_ip.clone();
+    let (wg_was, xr_was) = state
+        .health
+        .lock()
+        .map(|h| (h.wg_ok, h.vless_ok))
+        .unwrap_or((false, false));
+    let (wg_now, xr_now) = if let Ok(mut h) = state.health.lock() {
+        if let Some(ip) = &wg_ip {
+            h.wg_ok = true;
+            h.exit_ip = Some(ip.clone());
+            h.wg_fail = 0;
+        } else {
+            h.wg_fail = h.wg_fail.saturating_add(1);
+            if h.wg_fail >= 2 {
+                h.wg_ok = false;
+                h.exit_ip = None;
+            }
+        }
+        if let Some(ip) = &xr_ip {
+            h.vless_ok = true;
+            h.exit_ip_vless = Some(ip.clone());
+            h.vless_fail = 0;
+        } else if xr_configured {
+            h.vless_fail = h.vless_fail.saturating_add(1);
+            if h.vless_fail >= 2 {
+                h.vless_ok = false;
+                h.exit_ip_vless = None;
+            }
+        }
         h.at = Some(chrono::Utc::now());
-    }
-    if wg_was != wg_ip.is_some() {
+        (h.wg_ok, h.vless_ok)
+    } else {
+        (wg_was, xr_was)
+    };
+    if wg_was != wg_now {
         wlog!(
             "WireGuard канал: {}",
-            if wg_ip.is_some() {
+            if wg_now {
                 "работает"
             } else {
                 "не проходит трафик"
             }
         );
     }
-    if xr_was != xr_ip.is_some() && crate::engines::xray::has_config(&state.dir) {
+    if xr_configured && xr_was != xr_now {
         wlog!(
             "VLESS канал: {}",
-            if xr_ip.is_some() {
+            if xr_now {
                 "работает"
             } else {
                 "не проходит трафик"
             }
         );
     }
-    if crate::engines::xray::has_config(&state.dir) {
-        if xr_ip.is_none() {
+    if xr_configured {
+        if !xr_now {
             // автовосстановление: применить рабочий конфиг из пула
             crate::vless::pool::maybe_auto_recover(state, "VLESS мёртв").await;
         } else if let Ok(mut p) = state.pool.lock() {
