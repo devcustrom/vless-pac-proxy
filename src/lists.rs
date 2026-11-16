@@ -188,6 +188,9 @@ pub async fn refresh(state: &Arc<AppState>) -> Result<()> {
     let vless_only: HashSet<String> = read_domain_file(&state.dir, "vless-domains.txt")
         .into_iter()
         .collect();
+    let wg_only: HashSet<String> = read_domain_file(&state.dir, "wg-domains.txt")
+        .into_iter()
+        .collect();
 
     if ok_sources == 0 && extra.is_empty() {
         let mut lists = state.lists.lock().unwrap();
@@ -207,6 +210,7 @@ pub async fn refresh(state: &Arc<AppState>) -> Result<()> {
         lists.proxied = proxied;
         lists.direct = direct;
         lists.vless_only = vless_only;
+        lists.wg_only = wg_only;
         lists.last_update = Some(chrono::Utc::now());
         lists.error = None;
         lists.refreshing = false;

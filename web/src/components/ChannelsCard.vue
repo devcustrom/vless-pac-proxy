@@ -4,6 +4,7 @@ import { Activity, Shield } from 'lucide-vue-next'
 import { post } from '@/lib/store'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
+import Button from '@/components/ui/Button.vue'
 import Switch from '@/components/ui/Switch.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
@@ -32,6 +33,14 @@ async function setSystemProxy(value) {
     await post('/api/system-proxy', { enabled: value })
   } catch {
     sysProxy.value = !value
+  }
+}
+
+async function setDefault(value) {
+  try {
+    await post('/api/vless', { action: 'set-default', value })
+  } catch {
+    /* тост показан */
   }
 }
 </script>
@@ -72,6 +81,26 @@ async function setSystemProxy(value) {
           <div class="mt-1 text-xs text-muted-foreground">
             основной канал: {{ s.vpnDefault === 'vless' ? 'VLESS' : 'WireGuard' }}
           </div>
+        </div>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2">
+        <span class="text-sm text-muted-foreground">VPN-домены идут через:</span>
+        <div class="flex gap-1">
+          <Button
+            size="sm"
+            :variant="s.vpnDefault === 'wireguard' ? 'default' : 'outline'"
+            @click="setDefault('wireguard')"
+          >
+            WireGuard
+          </Button>
+          <Button
+            size="sm"
+            :variant="s.vpnDefault === 'vless' ? 'default' : 'outline'"
+            @click="setDefault('vless')"
+          >
+            VLESS
+          </Button>
         </div>
       </div>
 

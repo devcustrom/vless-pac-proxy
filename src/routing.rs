@@ -12,6 +12,7 @@ pub struct Routing {
     pub proxied: HashSet<String>,
     pub direct_override: HashSet<String>,
     pub vless_only: HashSet<String>,
+    pub wg_only: HashSet<String>,
     pub vpn_default: Channel,
     pub wg_healthy: bool,
     pub vless_healthy: bool,
@@ -36,6 +37,9 @@ impl Routing {
             }
             if self.vless_only.contains(current) {
                 return Some(self.available(Channel::Vless));
+            }
+            if self.wg_only.contains(current) {
+                return Some(self.available(Channel::Wireguard));
             }
             if self.proxied.contains(current) {
                 return Some(self.available(self.vpn_default));
@@ -80,6 +84,7 @@ mod tests {
             proxied: set(&["example.com", "claude.ai"]),
             direct_override: set(&["gosuslugi.ru"]),
             vless_only: set(&["vlessonly.test"]),
+            wg_only: set(&["wronly.test"]),
             vpn_default: Channel::Wireguard,
             wg_healthy: true,
             vless_healthy: true,
@@ -115,6 +120,15 @@ mod tests {
         // Оба мертвы — остаёмся на предпочтении (WireGuard)
         r.vless_healthy = false;
         assert_eq!(r.route_for("example.com"), Some(Channel::Wireguard));
+    }
+
+    #[test]
+    fn wg_only_and_fallbacks() {
+        let mut r = routing();
+        assert_eq!(r.route_for("wronly.test"), Some(Channel::Wireguard));
+        // WireGuard умер — домен уходит на VLESS, если он жив
+        r.wg_healthy = false;
+        assert_eq!(r.route_for("wronly.test"), Some(Channel::Vless));
     }
 
     #[test]

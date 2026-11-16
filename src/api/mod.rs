@@ -61,13 +61,8 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
             }
         });
     }
-    {
-        let st = state.clone();
-        tokio::spawn(async move {
-            if let Err(e) = crate::net::local_proxy::serve(st).await {
-                wlog!("локальные домены остановлены: {e}");
-            }
-        });
+    if state.settings_snapshot().local_domains_enabled {
+        crate::net::local_proxy::start(&state);
     }
     crate::lists::spawn_scheduler(state.clone());
     crate::vless::pool::spawn_scheduler(state.clone());
@@ -92,6 +87,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/api/extra", post(extra))
         .route("/api/vless", post(vless))
         .route("/api/wg", post(wg_config))
+        .route("/api/wg/configs", get(wg_configs_get).post(wg_configs_post))
         .route("/api/refresh", post(refresh_lists))
         .route("/api/restart-proxy", post(restart_proxy))
         .route("/api/system-proxy", post(system_proxy))
@@ -102,6 +98,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
             get(local_domains_get).post(local_domains_post),
         )
         .route("/api/local-domains/probe", post(local_domains_probe))
+        .route("/api/local-domains/hosts", post(local_domains_hosts))
         .route("/api/local-ports", get(local_ports))
         .route("/api/check", post(check))
         .route("/api/pool/refresh", post(pool_refresh))
@@ -109,6 +106,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/api/subscriptions", post(subscriptions))
         .route("/api/engines/ensure", post(engines_ensure))
         .route("/api/trust-certs", post(trust_certs_handler))
+        .route("/api/plugins", get(plugins_get).post(plugins_set))
         .route("/api/docs", get(docs))
         .route("/api/update", get(update_check))
         .fallback(ui_fallback)
@@ -141,63 +139,189 @@ async fn quit(State(st): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({ "ok": true }))
 }
 
+async fn plugins_get(State(st): State<Arc<AppState>>) -> Json<Value> {
+    let settings = st.settings_snapshot();
+    Json(json!({ "localDomains": settings.local_domains_enabled }))
+}
+
+async fn plugins_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let Some(enabled) = body.get("localDomains").and_then(|value| value.as_bool()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "нужно localDomains: true|false" })),
+        )
+            .into_response();
+    };
+    {
+        let mut settings = st.settings.lock().unwrap();
+        settings.local_domains_enabled = enabled;
+        let _ = settings.save(&st.dir);
+    }
+    if enabled {
+        crate::net::local_proxy::start(&st);
+    } else {
+        crate::net::local_proxy::stop(&st);
+    }
+    let domains: Vec<String> = st
+        .local_domains
+        .lock()
+        .map(|list| list.iter().map(|item| item.domain.clone()).collect())
+        .unwrap_or_default();
+    if crate::systemproxy::get_system_proxy()
+        .map(|proxy| proxy.enabled)
+        .unwrap_or(false)
+    {
+        let bypass: &[String] = if enabled { &domains } else { &[] };
+        if let Err(e) = crate::systemproxy::set_system_proxy(true, bypass) {
+            wlog!("системный прокси: исключения плагина — {e:#}");
+        }
+    }
+    wlog!(
+        "плагин локальных доменов: {}",
+        if enabled {
+            "включён"
+        } else {
+            "выключен"
+        }
+    );
+    Json(json!({ "ok": true, "localDomains": enabled })).into_response()
+}
+
+async fn wg_configs_get(State(st): State<Arc<AppState>>) -> Response {
+    match crate::engines::wg_configs::list(&st.dir) {
+        Ok(configs) => Json(json!({ "configs": configs })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn wg_configs_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let action = body
+        .get("action")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let slug = body
+        .get("slug")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    match action {
+        "add" => {
+            let name = body
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .trim();
+            let content = body
+                .get("content")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            if name.is_empty() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "нужно имя конфига" })),
+                )
+                    .into_response();
+            }
+            match crate::engines::wg_configs::add(&st.dir, name, content) {
+                Ok(slug) => {
+                    let active = crate::engines::wg_configs::list(&st.dir)
+                        .ok()
+                        .and_then(|list| list.into_iter().find(|item| item.active));
+                    if active
+                        .as_ref()
+                        .map(|item| item.slug == slug)
+                        .unwrap_or(false)
+                    {
+                        st.wg.restart();
+                    }
+                    wlog!("WireGuard: добавлен конфиг «{name}»");
+                    Json(json!({ "ok": true, "slug": slug })).into_response()
+                }
+                Err(e) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response(),
+            }
+        }
+        "use" => match crate::engines::wg_configs::activate(&st.dir, slug) {
+            Ok(()) => {
+                st.wg.restart();
+                crate::engines::wg_configs::log_active(&st.dir, slug);
+                Json(json!({ "ok": true })).into_response()
+            }
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("{e:#}") })),
+            )
+                .into_response(),
+        },
+        "remove" => match crate::engines::wg_configs::remove(&st.dir, slug) {
+            Ok(was_active) => {
+                if was_active {
+                    st.wg.stop();
+                }
+                wlog!("WireGuard: конфиг «{slug}» удалён");
+                Json(json!({ "ok": true })).into_response()
+            }
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("{e:#}") })),
+            )
+                .into_response(),
+        },
+        "test" => match crate::engines::wg_configs::test(&st.dir, slug).await {
+            Ok((ms, ip)) => Json(json!({ "ok": true, "ms": ms, "ip": ip })).into_response(),
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("{e:#}") })),
+            )
+                .into_response(),
+        },
+        _ => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "action должен быть add|use|remove|test" })),
+        )
+            .into_response(),
+    }
+}
+
 async fn wg_config(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
     let action = body.get("action").and_then(|v| v.as_str()).unwrap_or("set");
-    let path = match crate::paths::in_dir(&st.dir, "wg.conf") {
-        Ok(path) => path,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
-            )
-                .into_response()
-        }
-    };
     if action == "clear" {
-        let _ = std::fs::remove_file(&path);
+        let active = crate::engines::wg_configs::list(&st.dir)
+            .ok()
+            .and_then(|list| list.into_iter().find(|item| item.active))
+            .map(|item| item.slug);
+        if let Some(slug) = active {
+            let _ = crate::engines::wg_configs::remove(&st.dir, &slug);
+        }
+        let _ = std::fs::remove_file(st.dir.join("wg.conf"));
         let _ = std::fs::remove_file(st.dir.join("wireproxy.conf"));
         st.wg.stop();
         wlog!("wg.conf: удалён пользователем");
         return Json(json!({ "ok": true, "configured": false })).into_response();
     }
     let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
-    if let Err(e) = crate::engines::wireproxy::validate(content) {
-        return (
+    match crate::engines::wg_configs::add(&st.dir, "main", content)
+        .and_then(|slug| crate::engines::wg_configs::activate(&st.dir, &slug).map(|_| slug))
+    {
+        Ok(slug) => {
+            st.wg.restart();
+            let endpoint = crate::engines::wireproxy::endpoint(&st.dir).unwrap_or_default();
+            wlog!("wg.conf: сохранён (Endpoint {endpoint})");
+            Json(json!({ "ok": true, "configured": true, "slug": slug, "endpoint": endpoint }))
+                .into_response()
+        }
+        Err(e) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": format!("{e:#}") })),
         )
-            .into_response();
+            .into_response(),
     }
-    let tmp = path.with_extension("conf.tmp");
-    if let Err(e) = std::fs::write(&tmp, content) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response();
-    }
-    if path.exists() {
-        let _ = std::fs::remove_file(&path);
-    }
-    if let Err(e) = std::fs::rename(&tmp, &path) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response();
-    }
-    if let Err(e) = crate::engines::wireproxy::ensure_config(&st.dir) {
-        wlog!("wg.conf: wireproxy.conf — {e:#}");
-    }
-    st.wg.restart();
-    let endpoint = content
-        .lines()
-        .find(|line| line.trim_start().to_lowercase().starts_with("endpoint"))
-        .and_then(|line| line.split_once('='))
-        .map(|(_, value)| value.trim().to_string())
-        .unwrap_or_default();
-    wlog!("wg.conf: сохранён (Endpoint {endpoint})");
-    Json(json!({ "ok": true, "configured": true, "endpoint": endpoint })).into_response()
 }
 
 async fn docs() -> Json<Value> {
@@ -205,6 +329,7 @@ async fn docs() -> Json<Value> {
         "version": env!("CARGO_PKG_VERSION"),
         "readme": include_str!("../../README.md"),
         "readmeMac": include_str!("../../README-MAC.md"),
+        "plugins": include_str!("../../PLUGINS.md"),
     }))
 }
 
@@ -472,7 +597,7 @@ async fn pac(State(st): State<Arc<AppState>>) -> Response {
 async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
     let settings = st.settings_snapshot();
     let health = st.health.lock().map(|h| h.clone()).unwrap_or_default();
-    let (lists_counts, last_update, update_error, refreshing, vless_only) = {
+    let (lists_counts, last_update, update_error, refreshing, vless_only, wg_only) = {
         let l = st.lists.lock().unwrap();
         (
             (l.proxied.len(), l.direct.len()),
@@ -480,6 +605,7 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
             l.error.clone(),
             l.refreshing,
             l.vless_only.clone(),
+            l.wg_only.clone(),
         )
     };
     let extra = read_domains(&st.dir, "extra-domains.txt");
@@ -575,11 +701,15 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         },
         "vpnDefault": settings.vpn_default,
         "version": env!("CARGO_PKG_VERSION"),
+        "plugins": {
+            "localDomains": settings.local_domains_enabled,
+        },
         "autostart": crate::autostart::installed(),
         "caTrusted": crate::trust_status::is_trusted(&st.dir),
         "enginesReady": engines_ready,
         "engineDownloads": downloads,
         "vlessDomains": vless_only.into_iter().collect::<Vec<_>>(),
+        "wgDomains": wg_only.into_iter().collect::<Vec<_>>(),
         "proxied": lists_counts.0,
         "direct": lists_counts.1,
         "lastUpdate": last_update,
@@ -703,6 +833,40 @@ async fn vless(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
                 l.vless_only = list.iter().cloned().collect();
             }
             Json(json!({ "ok": true, "vlessDomains": list })).into_response()
+        }
+        "add-wg-domain" | "remove-wg-domain" => {
+            let Some(domain) = body
+                .get("domain")
+                .and_then(|v| v.as_str())
+                .and_then(crate::lists::normalize_domain)
+            else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "некорректный домен" })),
+                )
+                    .into_response();
+            };
+            let mut list = read_domains(&st.dir, "wg-domains.txt");
+            if action == "add-wg-domain" {
+                if !list.contains(&domain) {
+                    list.push(domain);
+                }
+            } else {
+                list.retain(|d| *d != domain);
+            }
+            list.sort();
+            list.dedup();
+            if let Err(e) = write_domains(&st.dir, "wg-domains.txt", &list) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": e.to_string() })),
+                )
+                    .into_response();
+            }
+            if let Ok(mut l) = st.lists.lock() {
+                l.wg_only = list.iter().cloned().collect();
+            }
+            Json(json!({ "ok": true, "wgDomains": list })).into_response()
         }
         "restart" => {
             st.xr.restart();
@@ -889,6 +1053,24 @@ async fn reload_local_tls(st: &Arc<AppState>) {
             wlog!("локальный HTTPS: сертификаты — {e:#}");
         }
         Err(e) => wlog!("локальный HTTPS: задача сборки сертификатов упала — {e}"),
+    }
+}
+
+async fn local_domains_hosts(State(st): State<Arc<AppState>>) -> Response {
+    let names: Vec<String> = st
+        .local_domains
+        .lock()
+        .map(|list| list.iter().map(|item| item.domain.clone()).collect())
+        .unwrap_or_default();
+    match crate::local_hosts::write_script(&st.dir, &names) {
+        Ok(path) => {
+            Json(json!({ "ok": true, "script": path.display().to_string() })).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("{e:#}") })),
+        )
+            .into_response(),
     }
 }
 

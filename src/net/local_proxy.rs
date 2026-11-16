@@ -154,7 +154,7 @@ async fn connect_local(port: u16) -> Result<TcpStream> {
     Ok(stream)
 }
 
-pub async fn serve(state: Arc<AppState>) -> Result<()> {
+pub async fn serve(state: Arc<AppState>, stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
     let settings = state.settings_snapshot();
     // TLS: собираем стор сертификатов и кладём в общий слот (горячая замена)
     let domain_names: Vec<String> = state
@@ -198,19 +198,25 @@ pub async fn serve(state: Arc<AppState>) -> Result<()> {
     // HTTP
     let http_state = state.clone();
     let http_port = settings.local_proxy_port;
+    let mut http_stop = stop.clone();
     tokio::spawn(async move {
-        match TcpListener::bind(("127.0.0.1", http_port)).await {
+        match bind_retry(http_port).await {
             Ok(listener) => {
                 if let Ok(mut err) = http_state.local_http_error.lock() {
                     *err = None;
                 }
                 wlog!("локальные домены: http://127.0.0.1:{http_port}");
                 loop {
-                    if let Ok((sock, _)) = listener.accept().await {
-                        let st = http_state.clone();
-                        tokio::spawn(async move {
-                            handle_stream(sock, st).await;
-                        });
+                    tokio::select! {
+                        _ = http_stop.changed() => break,
+                        accepted = listener.accept() => {
+                            if let Ok((sock, _)) = accepted {
+                                let st = http_state.clone();
+                                tokio::spawn(async move {
+                                    handle_stream(sock, st).await;
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -226,8 +232,9 @@ pub async fn serve(state: Arc<AppState>) -> Result<()> {
     // HTTPS
     let https_state = state.clone();
     let https_port = settings.local_https_port;
+    let mut https_stop = stop.clone();
     tokio::spawn(async move {
-        let listener = match TcpListener::bind(("127.0.0.1", https_port)).await {
+        let listener = match bind_retry(https_port).await {
             Ok(l) => l,
             Err(e) => {
                 if let Ok(mut err) = https_state.local_https_error.lock() {
@@ -239,26 +246,80 @@ pub async fn serve(state: Arc<AppState>) -> Result<()> {
         };
         wlog!("локальные домены: https://127.0.0.1:{https_port}");
         loop {
-            if let Ok((sock, _)) = listener.accept().await {
-                let st = https_state.clone();
-                let cfg = https_state
-                    .tls_config
-                    .lock()
-                    .ok()
-                    .and_then(|slot| slot.clone());
-                tokio::spawn(async move {
-                    let Some(cfg) = cfg else { return };
-                    let cfg_now = cfg.read().await.clone();
-                    let acceptor = TlsAcceptor::from(cfg_now);
-                    match acceptor.accept(sock).await {
-                        Ok(tls) => handle_stream(tls, st).await,
-                        Err(_) => { /* TLS-рукопожатие не прошло */ }
+            tokio::select! {
+                _ = https_stop.changed() => break,
+                accepted = listener.accept() => {
+                    if let Ok((sock, _)) = accepted {
+                        let st = https_state.clone();
+                        let cfg = https_state
+                            .tls_config
+                            .lock()
+                            .ok()
+                            .and_then(|slot| slot.clone());
+                        tokio::spawn(async move {
+                            let Some(cfg) = cfg else { return };
+                            let cfg_now = cfg.read().await.clone();
+                            let acceptor = TlsAcceptor::from(cfg_now);
+                            match acceptor.accept(sock).await {
+                                Ok(tls) => handle_stream(tls, st).await,
+                                Err(_) => { /* TLS-рукопожатие не прошло */ }
+                            }
+                        });
                     }
-                });
+                }
             }
         }
     });
+
+    // Ждём сигнал отключения плагина; задачи слушателей завершатся сами.
+    let mut wait = stop;
+    let _ = wait.changed().await;
     Ok(())
+}
+
+async fn bind_retry(port: u16) -> std::io::Result<TcpListener> {
+    let mut last = None;
+    for _ in 0..10 {
+        match TcpListener::bind(("127.0.0.1", port)).await {
+            Ok(listener) => return Ok(listener),
+            Err(e) => {
+                last = Some(e);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("bind failed")))
+}
+
+/// Включает плагин локальных доменов (идемпотентно).
+pub fn start(state: &Arc<AppState>) {
+    let Ok(mut guard) = state.local_proxy_stop.lock() else {
+        return;
+    };
+    if guard.is_some() {
+        return;
+    }
+    let (tx, rx) = tokio::sync::watch::channel(false);
+    *guard = Some(tx);
+    drop(guard);
+    let st = state.clone();
+    tokio::spawn(async move {
+        if let Err(e) = serve(st.clone(), rx).await {
+            wlog!("локальные домены остановлены: {e}");
+        }
+        if let Ok(mut guard) = st.local_proxy_stop.lock() {
+            guard.take();
+        }
+    });
+}
+
+/// Выключает плагин локальных доменов.
+pub fn stop(state: &Arc<AppState>) {
+    if let Ok(mut guard) = state.local_proxy_stop.lock() {
+        if let Some(tx) = guard.take() {
+            let _ = tx.send(true);
+        }
+    }
 }
 
 async fn handle_stream<S>(mut stream: S, state: Arc<AppState>)

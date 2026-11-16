@@ -14,7 +14,11 @@ const error = ref('')
 const tab = ref('readme')
 
 const html = computed(() => {
-  const text = tab.value === 'readme' ? docs.value?.readme : docs.value?.readmeMac
+  const text = tab.value === 'readme'
+    ? docs.value?.readme
+    : tab.value === 'mac'
+      ? docs.value?.readmeMac
+      : docs.value?.plugins
   if (!text) return ''
   return marked.parse(text, { mangle: false, headerIds: false })
 })
@@ -77,6 +81,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             @click="tab = 'mac'"
           >
             macOS
+          </Button>
+          <Button
+            size="sm"
+            :variant="tab === 'plugins' ? 'secondary' : 'ghost'"
+            @click="tab = 'plugins'"
+          >
+            Плагины и протоколы
           </Button>
         </div>
 

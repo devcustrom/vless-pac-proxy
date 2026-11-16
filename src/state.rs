@@ -38,6 +38,7 @@ pub struct Lists {
     pub proxied: std::collections::HashSet<String>,
     pub direct: std::collections::HashSet<String>,
     pub vless_only: std::collections::HashSet<String>,
+    pub wg_only: std::collections::HashSet<String>,
     pub last_update: Option<DateTime<Utc>>,
     pub error: Option<String>,
     pub refreshing: bool,
@@ -92,6 +93,7 @@ pub struct AppState {
     pub downloads: Mutex<HashMap<String, DownloadInfo>>,
     pub tls_config:
         Mutex<Option<std::sync::Arc<tokio::sync::RwLock<std::sync::Arc<rustls::ServerConfig>>>>>,
+    pub local_proxy_stop: Mutex<Option<tokio::sync::watch::Sender<bool>>>,
     pub settings: Mutex<Settings>,
     pub wg: Engine,
     pub xr: Engine,
@@ -129,6 +131,7 @@ impl AppState {
             local_https_error: Mutex::new(None),
             downloads: Mutex::new(HashMap::new()),
             tls_config: Mutex::new(None),
+            local_proxy_stop: Mutex::new(None),
             settings: Mutex::new(settings),
             wg,
             xr,
@@ -159,14 +162,20 @@ impl AppState {
         let settings = self.settings_snapshot();
         let (wg_ok, vless_ok) = self.health_snapshot();
         let lists = self.lists.lock().ok();
-        let (proxied, direct, vless_only) = match &lists {
-            Some(l) => (l.proxied.clone(), l.direct.clone(), l.vless_only.clone()),
+        let (proxied, direct, vless_only, wg_only) = match &lists {
+            Some(l) => (
+                l.proxied.clone(),
+                l.direct.clone(),
+                l.vless_only.clone(),
+                l.wg_only.clone(),
+            ),
             None => Default::default(),
         };
         crate::routing::Routing {
             proxied,
             direct_override: direct,
             vless_only,
+            wg_only,
             vpn_default: if settings.vpn_default == "vless" {
                 crate::routing::Channel::Vless
             } else {

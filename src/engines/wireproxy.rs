@@ -90,6 +90,11 @@ pub fn endpoint(dir: &Path) -> Option<String> {
     endpoint_value(&text).map(str::to_string)
 }
 
+/// Endpoint из произвольного текста wg.conf (для списка конфигов).
+pub fn endpoint_from_text(text: &str) -> Option<String> {
+    endpoint_value(text).map(str::to_string)
+}
+
 fn desired_config(dir: &Path) -> Result<String> {
     let base = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
     Ok(format!(

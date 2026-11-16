@@ -209,7 +209,11 @@ pub fn parse_subscription_links(text: &str) -> Vec<String> {
             continue;
         }
         let lower = s.to_ascii_lowercase();
-        if lower.starts_with("vless://") || lower.starts_with("ss://") {
+        if lower.starts_with("vless://")
+            || lower.starts_with("vmess://")
+            || lower.starts_with("trojan://")
+            || lower.starts_with("ss://")
+        {
             out.push(s.to_string());
         }
     }
@@ -843,9 +847,10 @@ mod tests {
 
     #[test]
     fn parses_plain_and_base64_subs() {
-        let plain = "# c\nvless://a@b:1?x=1#n\nss://YWVzOnA@1.2.3.4:1#x\nvmess://skip\n";
+        let plain =
+            "# c\nvless://a@b:1?x=1#n\nss://YWVzOnA@1.2.3.4:1#x\nvmess://skip\ntrojan://skip\nhysteria2://no\n";
         let links = parse_subscription_links(plain);
-        assert_eq!(links.len(), 2);
+        assert_eq!(links.len(), 4);
         assert!(links[0].starts_with("vless://"));
 
         use base64::Engine;

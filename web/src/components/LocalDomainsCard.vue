@@ -1,5 +1,5 @@
 <script setup>
-import { reactive, ref } from 'vue'
+import { reactive, ref, watch } from 'vue'
 import { ExternalLink, Globe, LockKeyhole, Plus, ShieldCheck, Trash2 } from 'lucide-vue-next'
 import { api, installCerts, notify, post } from '@/lib/store'
 import Card from '@/components/ui/Card.vue'
@@ -7,12 +7,36 @@ import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
 import Input from '@/components/ui/Input.vue'
 import Label from '@/components/ui/Label.vue'
+import Switch from '@/components/ui/Switch.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
 
 const domain = ref('')
 const port = ref('')
 const probes = reactive({})
+const pluginOn = ref(props.s.plugins?.localDomains !== false)
+watch(() => props.s.plugins?.localDomains, (value) => {
+  pluginOn.value = value !== false
+})
+
+async function togglePlugin(value) {
+  pluginOn.value = value
+  try {
+    await post('/api/plugins', { localDomains: value })
+    notify(value ? 'Плагин локальных доменов включён' : 'Плагин локальных доменов выключен')
+  } catch {
+    pluginOn.value = !value
+  }
+}
+
+async function prepareHosts() {
+  try {
+    const result = await api('/api/local-domains/hosts', {})
+    notify('Скрипт hosts: ' + result.script)
+  } catch (error) {
+    notify(error.message, 'error')
+  }
+}
 
 const lp = () => props.s.localProxy || {}
 const httpPort = () => (lp().port === 80 ? '' : `:${lp().port}`)
@@ -65,6 +89,16 @@ async function probe(name) {
     </template>
 
     <div class="space-y-3">
+      <div class="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2">
+        <div>
+          <div class="text-sm font-medium">Плагин локальных доменов</div>
+          <div class="text-xs text-muted-foreground">
+            {{ pluginOn ? 'включён: порты ' + lp().port + '/' + lp().httpsPort : 'выключен: слушатели остановлены' }}
+          </div>
+        </div>
+        <Switch :model-value="pluginOn" @update:model-value="togglePlugin" />
+      </div>
+
       <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <Badge variant="outline">HTTP :{{ lp().port ?? '—' }}</Badge>
         <Badge variant="outline">HTTPS :{{ lp().httpsPort ?? '—' }}</Badge>
@@ -128,11 +162,19 @@ async function probe(name) {
         </Button>
       </form>
 
-      <p class="text-xs text-muted-foreground">
-        Для имён не из <code>*.localhost</code> запустите
-        <code>{{ lp().hostsScript || 'local-domains-hosts.bat' }}</code> от администратора.
-        <ShieldCheck class="inline h-3 w-3 align-text-bottom" />
-      </p>
+      <div class="space-y-1 rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+        <p>
+          <code>*.localhost</code> браузеры резолвят сами — hosts не нужен.
+          Для настоящих имён (например, <code>local.stage.stich.su</code>) нужна
+          запись <code>127.0.0.1</code> в hosts: запустите
+          <code>{{ lp().hostsScript || 'local-domains-hosts.bat' }}</code> от
+          администратора.
+        </p>
+        <Button size="sm" variant="outline" @click="prepareHosts">
+          <ShieldCheck class="h-3.5 w-3.5" />
+          Подготовить скрипт hosts
+        </Button>
+      </div>
     </div>
   </Card>
 </template>

@@ -17,6 +17,7 @@ use tokio::sync::mpsc;
 use crate::wlog;
 
 pub mod downloads;
+pub mod wg_configs;
 pub mod wireproxy;
 pub mod xray;
 

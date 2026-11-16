@@ -1,0 +1,319 @@
+//! Несколько WireGuard-конфигов: хранение, выбор активного, live-проверка
+//! трафика через временный wireproxy.
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
+use tokio::net::TcpStream;
+
+use crate::engines::wireproxy;
+use crate::wlog;
+
+const TEST_HTTP_PORT: u16 = 26250;
+const TEST_SOCKS_PORT: u16 = 26249;
+const TEST_PROBE_MS: u64 = 8000;
+
+static TESTING: AtomicBool = AtomicBool::new(false);
+
+struct TestGuard;
+
+impl Drop for TestGuard {
+    fn drop(&mut self) {
+        TESTING.store(false, Ordering::SeqCst);
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WgConfigInfo {
+    pub slug: String,
+    pub name: String,
+    pub endpoint: Option<String>,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct Meta {
+    #[serde(default)]
+    active: Option<String>,
+    #[serde(default)]
+    names: HashMap<String, String>,
+}
+
+fn configs_dir(dir: &Path) -> PathBuf {
+    dir.join("wg-configs")
+}
+
+fn meta_path(dir: &Path) -> PathBuf {
+    dir.join("wg-configs.json")
+}
+
+fn read_meta(dir: &Path) -> Meta {
+    std::fs::read_to_string(meta_path(dir))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn write_meta(dir: &Path, meta: &Meta) -> Result<()> {
+    let text = serde_json::to_string_pretty(meta)?;
+    let tmp = meta_path(dir).with_extension("json.tmp");
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(tmp, meta_path(dir))?;
+    Ok(())
+}
+
+fn slugify(name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if (ch.is_whitespace() || ch == '-' || ch == '_') && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() {
+        format!("wg-{}", chrono::Utc::now().timestamp())
+    } else {
+        out
+    }
+}
+
+fn config_path(dir: &Path, slug: &str) -> Result<PathBuf> {
+    if slug.is_empty() || slug.contains(['/', '\\']) || slug == "." || slug == ".." {
+        bail!("некорректное имя конфига");
+    }
+    Ok(configs_dir(dir).join(format!("{slug}.conf")))
+}
+
+/// Импортирует текущий wg.conf как конфиг «Основной», если список пуст.
+pub fn ensure_imported(dir: &Path) -> Result<()> {
+    let base = configs_dir(dir);
+    std::fs::create_dir_all(&base)?;
+    let has_files = std::fs::read_dir(&base)
+        .map(|entries| {
+            entries
+                .flatten()
+                .any(|entry| entry.path().extension().is_some_and(|ext| ext == "conf"))
+        })
+        .unwrap_or(false);
+    if has_files {
+        return Ok(());
+    }
+    let wg = dir.join("wg.conf");
+    let Ok(content) = std::fs::read_to_string(&wg) else {
+        return Ok(());
+    };
+    if !wireproxy::is_configured(dir) {
+        return Ok(());
+    }
+    std::fs::write(base.join("default.conf"), content)?;
+    let mut meta = read_meta(dir);
+    meta.active = Some("default".to_string());
+    meta.names
+        .entry("default".to_string())
+        .or_insert_with(|| "Основной".to_string());
+    write_meta(dir, &meta)?;
+    Ok(())
+}
+
+pub fn list(dir: &Path) -> Result<Vec<WgConfigInfo>> {
+    ensure_imported(dir)?;
+    let meta = read_meta(dir);
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(configs_dir(dir)) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map(|ext| ext != "conf").unwrap_or(true) {
+                continue;
+            }
+            let Some(slug) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let name = meta
+                .names
+                .get(slug)
+                .cloned()
+                .unwrap_or_else(|| slug.to_string());
+            out.push(WgConfigInfo {
+                slug: slug.to_string(),
+                name,
+                endpoint: wireproxy::endpoint_from_text(&text),
+                active: meta.active.as_deref() == Some(slug),
+            });
+        }
+    }
+    out.sort_by(|a, b| {
+        b.active
+            .cmp(&a.active)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    Ok(out)
+}
+
+pub fn add(dir: &Path, name: &str, content: &str) -> Result<String> {
+    wireproxy::validate(content)?;
+    ensure_imported(dir)?;
+    let slug = slugify(name);
+    let path = config_path(dir, &slug)?;
+    std::fs::write(&path, content)?;
+    let mut meta = read_meta(dir);
+    meta.names.insert(slug.clone(), name.trim().to_string());
+    let first = meta.active.is_none();
+    if first {
+        meta.active = Some(slug.clone());
+    }
+    write_meta(dir, &meta)?;
+    if first {
+        activate(dir, &slug)?;
+    }
+    Ok(slug)
+}
+
+pub fn activate(dir: &Path, slug: &str) -> Result<()> {
+    let path = config_path(dir, slug)?;
+    let content =
+        std::fs::read_to_string(&path).with_context(|| format!("конфиг {slug} не найден"))?;
+    wireproxy::validate(&content)?;
+    let wg = crate::paths::in_dir(dir, "wg.conf")?;
+    let tmp = wg.with_extension("conf.tmp");
+    std::fs::write(&tmp, content)?;
+    if wg.exists() {
+        let _ = std::fs::remove_file(&wg);
+    }
+    std::fs::rename(tmp, &wg)?;
+    wireproxy::ensure_config(dir)?;
+    let mut meta = read_meta(dir);
+    meta.active = Some(slug.to_string());
+    write_meta(dir, &meta)?;
+    Ok(())
+}
+
+pub fn remove(dir: &Path, slug: &str) -> Result<bool> {
+    let path = config_path(dir, slug)?;
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    let mut meta = read_meta(dir);
+    meta.names.remove(slug);
+    let was_active = meta.active.as_deref() == Some(slug);
+    if was_active {
+        meta.active = None;
+        let _ = std::fs::remove_file(dir.join("wg.conf"));
+        let _ = std::fs::remove_file(dir.join("wireproxy.conf"));
+    }
+    write_meta(dir, &meta)?;
+    Ok(was_active)
+}
+
+fn test_config(dir: &Path, slug: &str) -> Result<String> {
+    let path = config_path(dir, slug)?;
+    if !path.is_file() {
+        bail!("конфиг {slug} не найден");
+    }
+    let abs = std::path::absolute(&path).unwrap_or(path);
+    Ok(format!(
+        "WGConfig = {}\n\n[Socks5]\nBindAddress = 127.0.0.1:{TEST_SOCKS_PORT}\n\n[http]\nBindAddress = 127.0.0.1:{TEST_HTTP_PORT}\n",
+        abs.display()
+    ))
+}
+
+#[cfg(windows)]
+fn cmd_test() -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(".\\wireproxy.exe");
+    cmd.args(["-c", "wg-test.conf"]);
+    cmd.creation_flags(0x08000000);
+    cmd
+}
+
+#[cfg(not(windows))]
+fn cmd_test() -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("./wireproxy");
+    cmd.args(["-c", "wg-test.conf"]);
+    cmd
+}
+
+async fn wait_port(port: u16, deadline: Duration) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < deadline {
+        if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    false
+}
+
+async fn probe() -> Option<(u64, String)> {
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{TEST_HTTP_PORT}")).ok()?)
+        .timeout(Duration::from_millis(TEST_PROBE_MS))
+        .pool_max_idle_per_host(0)
+        .build()
+        .ok()?;
+    let started = Instant::now();
+    let resp = client.get("https://api.ipify.org").send().await.ok()?;
+    let ip = resp.text().await.ok()?.trim().to_string();
+    if ip.is_empty() {
+        None
+    } else {
+        Some((started.elapsed().as_millis() as u64, ip))
+    }
+}
+
+/// Поднимает временный wireproxy на этом конфиге и проверяет реальный трафик.
+pub async fn test(dir: &Path, slug: &str) -> Result<(u64, String)> {
+    if TESTING.swap(true, Ordering::SeqCst) {
+        bail!("проверка WireGuard уже идёт");
+    }
+    let _guard = TestGuard;
+    if !dir
+        .join(if cfg!(windows) {
+            "wireproxy.exe"
+        } else {
+            "wireproxy"
+        })
+        .is_file()
+    {
+        bail!("wireproxy не найден в каталоге данных");
+    }
+    let conf = test_config(dir, slug)?;
+    let test_path = dir.join("wg-test.conf");
+    std::fs::write(&test_path, conf)?;
+    let mut child = cmd_test()
+        .current_dir(dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .context("не удалось запустить wireproxy для теста")?;
+    let result = if wait_port(TEST_HTTP_PORT, Duration::from_secs(8)).await {
+        probe().await
+    } else {
+        None
+    };
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    let _ = std::fs::remove_file(&test_path);
+    match result {
+        Some(value) => Ok(value),
+        None => bail!("трафик через конфиг не прошёл"),
+    }
+}
+
+/// Небольшая обёртка для логов API.
+pub fn log_active(dir: &Path, slug: &str) {
+    if let Ok(list) = list(dir) {
+        if let Some(item) = list.iter().find(|item| item.slug == slug) {
+            wlog!(
+                "WireGuard: активен конфиг «{}» ({:?})",
+                item.name,
+                item.endpoint
+            );
+        }
+    }
+}

@@ -18,6 +18,9 @@ pub struct ParsedLink {
     // vless
     pub id: String,
     pub flow: Option<String>,
+    // vmess
+    pub alter_id: u32,
+    pub vmess_security: String,
     pub sni: Option<String>,
     pub fingerprint: Option<String>,
     pub public_key: Option<String>,
@@ -114,6 +117,8 @@ pub fn parse_vless(raw: &str) -> Result<ParsedLink> {
         security,
         id,
         flow: query_param(&pairs, "flow").filter(|v| !v.is_empty()),
+        alter_id: 0,
+        vmess_security: String::new(),
         sni: query_param(&pairs, "sni").or_else(|| query_param(&pairs, "host")),
         fingerprint: lower("fp", None),
         public_key: query_param(&pairs, "pbk"),
@@ -169,6 +174,8 @@ pub fn parse_ss(raw: &str) -> Result<ParsedLink> {
         security: "none".into(),
         id: String::new(),
         flow: None,
+        alter_id: 0,
+        vmess_security: String::new(),
         sni: None,
         fingerprint: None,
         public_key: None,
@@ -177,6 +184,159 @@ pub fn parse_ss(raw: &str) -> Result<ParsedLink> {
         service_name: None,
         host_header: None,
         method: method.to_lowercase(),
+        password,
+    })
+}
+
+/// vmess://base64(json) — формат v2rayN.
+pub fn parse_vmess(raw: &str) -> Result<ParsedLink> {
+    let trimmed = raw.trim();
+    let payload = trimmed
+        .strip_prefix("vmess://")
+        .or_else(|| trimmed.strip_prefix("VMESS://"))
+        .context("ссылка должна начинаться с vmess://")?;
+    let text = decode_b64(payload).context("не удалось разобрать vmess base64")?;
+    let value: Value = serde_json::from_str(&text).context("vmess: некорректный JSON")?;
+    let address = value
+        .get("add")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty())
+        .context("vmess: нет адреса")?
+        .to_string();
+    let port = value
+        .get("port")
+        .and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+        })
+        .context("vmess: нет порта")? as u16;
+    let id = value
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if !uuid_ok(&id) {
+        bail!("vmess: uuid выглядит некорректно");
+    }
+    let alter_id = value
+        .get("aid")
+        .and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+        })
+        .unwrap_or(0) as u32;
+    let network = value
+        .get("net")
+        .and_then(|v| v.as_str())
+        .unwrap_or("tcp")
+        .to_lowercase();
+    let tls = value
+        .get("tls")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let security = if tls == "tls" { "tls" } else { "none" };
+    let host = value
+        .get("host")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+    let path = value
+        .get("path")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+    let sni = value
+        .get("sni")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .or_else(|| host.clone());
+    let name = value
+        .get("ps")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty())
+        .unwrap_or(&address)
+        .to_string();
+    Ok(ParsedLink {
+        protocol: "vmess".into(),
+        address,
+        port,
+        name,
+        network,
+        security: security.to_string(),
+        id,
+        flow: None,
+        alter_id,
+        vmess_security: value
+            .get("scy")
+            .and_then(|v| v.as_str())
+            .unwrap_or("auto")
+            .to_string(),
+        sni,
+        fingerprint: value
+            .get("fp")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .map(str::to_string),
+        public_key: None,
+        short_id: None,
+        path,
+        service_name: None,
+        host_header: host,
+        method: String::new(),
+        password: String::new(),
+    })
+}
+
+/// trojan://password@host:port?security=tls&type=ws&path=...&host=...
+pub fn parse_trojan(raw: &str) -> Result<ParsedLink> {
+    let u = Url::parse(raw.trim()).context("некорректная trojan-ссылка")?;
+    if u.scheme() != "trojan" {
+        bail!("ссылка должна начинаться с trojan://");
+    }
+    let password = percent_decode(u.username());
+    if password.is_empty() {
+        bail!("trojan: нет пароля");
+    }
+    let address = u.host_str().context("trojan: нет хоста")?.to_string();
+    let port = u.port().context("trojan: нет порта")?;
+    let name = u
+        .fragment()
+        .map(percent_decode)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| address.clone());
+    let pairs: Vec<(String, String)> = u.query_pairs().into_owned().collect();
+    let lower = |key: &str| -> Option<String> {
+        query_param(&pairs, key)
+            .map(|v| v.to_lowercase())
+            .filter(|v| !v.is_empty())
+    };
+    let network = lower("type").unwrap_or_else(|| "tcp".into());
+    let security = lower("security").unwrap_or_else(|| "tls".into());
+    let host = query_param(&pairs, "host").filter(|v| !v.is_empty());
+    let sni = query_param(&pairs, "sni")
+        .filter(|v| !v.is_empty())
+        .or_else(|| host.clone());
+    Ok(ParsedLink {
+        protocol: "trojan".into(),
+        address,
+        port,
+        name,
+        network,
+        security,
+        id: String::new(),
+        flow: None,
+        alter_id: 0,
+        vmess_security: String::new(),
+        sni,
+        fingerprint: lower("fp"),
+        public_key: None,
+        short_id: None,
+        path: query_param(&pairs, "path").filter(|v| !v.is_empty()),
+        service_name: query_param(&pairs, "serviceName").filter(|v| !v.is_empty()),
+        host_header: host,
+        method: String::new(),
         password,
     })
 }
@@ -190,7 +350,8 @@ fn split_host_port(hostport: &str) -> Result<(String, u16)> {
 
 fn decode_b64(s: &str) -> Result<String> {
     use base64::Engine;
-    let normalized = s.trim().trim_end_matches('=');
+    let normalized = s.trim().replace('-', "+").replace('_', "/");
+    let normalized = normalized.trim_end_matches('=');
     let padded = match normalized.len() % 4 {
         2 => format!("{normalized}=="),
         3 => format!("{normalized}="),
@@ -208,8 +369,12 @@ pub fn parse_any(raw: &str) -> Result<ParsedLink> {
         parse_vless(s)
     } else if s.to_ascii_lowercase().starts_with("ss://") {
         parse_ss(s)
+    } else if s.to_ascii_lowercase().starts_with("vmess://") {
+        parse_vmess(s)
+    } else if s.to_ascii_lowercase().starts_with("trojan://") {
+        parse_trojan(s)
     } else {
-        bail!("поддерживаются только vless:// и ss:// ссылки");
+        bail!("поддерживаются vless://, vmess://, trojan:// и ss:// ссылки");
     }
 }
 
@@ -224,50 +389,89 @@ pub fn link_info(p: &ParsedLink) -> LinkInfo {
     }
 }
 
-/// Outbound для xray (vless или shadowsocks).
+fn stream_settings(p: &ParsedLink) -> Value {
+    let mut stream = json!({ "network": p.network, "security": p.security });
+    if p.security == "reality" {
+        stream["realitySettings"] = json!({
+            "serverName": p.sni.clone().unwrap_or_default(),
+            "fingerprint": p.fingerprint.clone().unwrap_or_else(|| "chrome".into()),
+            "publicKey": p.public_key.clone().unwrap_or_default(),
+            "shortId": p.short_id.clone().unwrap_or_default(),
+            "spiderX": "/"
+        });
+    } else if p.security == "tls" {
+        stream["tlsSettings"] = json!({
+            "serverName": p.sni.clone().unwrap_or_default(),
+            "fingerprint": p.fingerprint.clone().unwrap_or_else(|| "chrome".into()),
+            "allowInsecure": false
+        });
+    }
+    if p.network == "ws" {
+        let mut ws = json!({ "path": p.path.clone().unwrap_or_else(|| "/".into()) });
+        if let Some(host) = &p.host_header {
+            ws["headers"] = json!({ "Host": host });
+        }
+        stream["wsSettings"] = ws;
+    } else if p.network == "grpc" {
+        stream["grpcSettings"] =
+            json!({ "serviceName": p.service_name.clone().unwrap_or_default() });
+    }
+    stream
+}
+
+/// Outbound для xray: vless, vmess, trojan или shadowsocks.
 pub fn build_outbound(p: &ParsedLink, tag: &str) -> Value {
-    if p.protocol == "vless" {
-        let mut user = json!({ "id": p.id, "encryption": "none", "level": 0 });
-        if p.security == "reality" {
-            if let Some(flow) = &p.flow {
-                user["flow"] = json!(flow);
+    let stream = stream_settings(p);
+    match p.protocol.as_str() {
+        "vless" => {
+            let mut user = json!({ "id": p.id, "encryption": "none", "level": 0 });
+            if p.security == "reality" {
+                if let Some(flow) = &p.flow {
+                    user["flow"] = json!(flow);
+                }
             }
+            json!({
+                "tag": tag,
+                "protocol": "vless",
+                "settings": { "vnext": [{ "address": p.address, "port": p.port, "users": [user] }] },
+                "streamSettings": stream,
+                "mux": { "enabled": false, "concurrency": -1 }
+            })
         }
-        let mut stream = json!({ "network": p.network, "security": p.security });
-        if p.security == "reality" {
-            stream["realitySettings"] = json!({
-                "serverName": p.sni.clone().unwrap_or_default(),
-                "fingerprint": p.fingerprint.clone().unwrap_or_else(|| "chrome".into()),
-                "publicKey": p.public_key.clone().unwrap_or_default(),
-                "shortId": p.short_id.clone().unwrap_or_default(),
-                "spiderX": "/"
-            });
-        } else if p.security == "tls" {
-            stream["tlsSettings"] = json!({
-                "serverName": p.sni.clone().unwrap_or_default(),
-                "fingerprint": p.fingerprint.clone().unwrap_or_else(|| "chrome".into()),
-                "allowInsecure": false
-            });
+        "vmess" => {
+            let security = if p.vmess_security.is_empty() {
+                "auto".to_string()
+            } else {
+                p.vmess_security.clone()
+            };
+            json!({
+                "tag": tag,
+                "protocol": "vmess",
+                "settings": { "vnext": [{
+                    "address": p.address,
+                    "port": p.port,
+                    "users": [{
+                        "id": p.id,
+                        "alterId": p.alter_id,
+                        "security": security
+                    }]
+                }]},
+                "streamSettings": stream,
+                "mux": { "enabled": false, "concurrency": -1 }
+            })
         }
-        if p.network == "ws" {
-            let mut ws = json!({ "path": p.path.clone().unwrap_or_else(|| "/".into()) });
-            if let Some(host) = &p.host_header {
-                ws["headers"] = json!({ "Host": host });
-            }
-            stream["wsSettings"] = ws;
-        } else if p.network == "grpc" {
-            stream["grpcSettings"] =
-                json!({ "serviceName": p.service_name.clone().unwrap_or_default() });
-        }
-        json!({
+        "trojan" => json!({
             "tag": tag,
-            "protocol": "vless",
-            "settings": { "vnext": [{ "address": p.address, "port": p.port, "users": [user] }] },
+            "protocol": "trojan",
+            "settings": { "servers": [{
+                "address": p.address,
+                "port": p.port,
+                "password": p.password
+            }]},
             "streamSettings": stream,
             "mux": { "enabled": false, "concurrency": -1 }
-        })
-    } else {
-        json!({
+        }),
+        _ => json!({
             "tag": tag,
             "protocol": "shadowsocks",
             "settings": { "servers": [{
@@ -277,7 +481,7 @@ pub fn build_outbound(p: &ParsedLink, tag: &str) -> Value {
                 "password": p.password
             }]},
             "mux": { "enabled": false, "concurrency": -1 }
-        })
+        }),
     }
 }
 
@@ -286,10 +490,11 @@ pub fn generate_config(raw: &str) -> Result<(Value, ParsedLink)> {
     let parsed = parse_any(raw)?;
     let outbound = build_outbound(
         &parsed,
-        if parsed.protocol == "vless" {
-            "vless-out"
-        } else {
-            "ss-out"
+        match parsed.protocol.as_str() {
+            "vless" => "vless-out",
+            "vmess" => "vmess-out",
+            "trojan" => "trojan-out",
+            _ => "ss-out",
         },
     );
     let config = json!({
@@ -388,6 +593,42 @@ mod tests {
         assert_eq!(p.method, "chacha20-ietf-poly1305");
         assert_eq!(p.address, "5.6.7.8");
         assert_eq!(p.port, 8389);
+    }
+
+    #[test]
+    fn parses_vmess() {
+        let payload = {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(
+                r#"{"v":"2","ps":"VM","add":"1.2.3.4","port":"443","id":"a1b2c3d4-1111-2222-3333-444455556666","aid":"0","net":"ws","path":"/ws","host":"front.example.com","tls":"tls","scy":"auto"}"#,
+            )
+        };
+        let p = parse_any(&format!("vmess://{payload}")).unwrap();
+        assert_eq!(p.protocol, "vmess");
+        assert_eq!(p.address, "1.2.3.4");
+        assert_eq!(p.port, 443);
+        assert_eq!(p.network, "ws");
+        assert_eq!(p.security, "tls");
+        assert_eq!(p.host_header.as_deref(), Some("front.example.com"));
+        let out = build_outbound(&p, "out0");
+        assert_eq!(out["protocol"], "vmess");
+        assert_eq!(out["settings"]["vnext"][0]["users"][0]["id"], p.id);
+    }
+
+    #[test]
+    fn parses_trojan() {
+        let p = parse_any(
+            "trojan://secret@example.com:443?security=tls&type=ws&path=%2Fws&host=front.example.com#T",
+        )
+        .unwrap();
+        assert_eq!(p.protocol, "trojan");
+        assert_eq!(p.password, "secret");
+        assert_eq!(p.network, "ws");
+        assert_eq!(p.security, "tls");
+        assert_eq!(p.path.as_deref(), Some("/ws"));
+        let out = build_outbound(&p, "out0");
+        assert_eq!(out["protocol"], "trojan");
+        assert_eq!(out["settings"]["servers"][0]["password"], "secret");
     }
 
     #[test]

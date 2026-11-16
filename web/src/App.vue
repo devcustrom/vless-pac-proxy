@@ -4,24 +4,43 @@ import { BookOpen, RefreshCw, ShieldCheck } from 'lucide-vue-next'
 import { store, refresh, startPolling } from '@/lib/store'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
+import Tabs from '@/components/ui/Tabs.vue'
 import OnboardingCard from '@/components/OnboardingCard.vue'
 import ChannelsCard from '@/components/ChannelsCard.vue'
 import WireGuardCard from '@/components/WireGuardCard.vue'
 import VlessCard from '@/components/VlessCard.vue'
 import PoolCard from '@/components/PoolCard.vue'
 import LocalDomainsCard from '@/components/LocalDomainsCard.vue'
+import DomainRoutingCard from '@/components/DomainRoutingCard.vue'
 import ListsCard from '@/components/ListsCard.vue'
 import CheckCard from '@/components/CheckCard.vue'
 import VisitedCard from '@/components/VisitedCard.vue'
-import ExtraDomainsCard from '@/components/ExtraDomainsCard.vue'
 import UpdateCard from '@/components/UpdateCard.vue'
 import DocsDialog from '@/components/DocsDialog.vue'
 import Toast from '@/components/Toast.vue'
+
+const TABS = [
+  { value: 'overview', label: 'Обзор' },
+  { value: 'configs', label: 'Конфиги' },
+  { value: 'domains', label: 'Домены' },
+]
 
 const s = computed(() => store.status)
 const pacUrl = computed(() => `${window.location.origin}/proxy.pac`)
 const online = computed(() => !!s.value && (s.value.wgUp || s.value.vlessUp))
 const docsOpen = ref(false)
+const tab = ref('overview')
+
+function syncTabFromHash() {
+  const hash = window.location.hash.replace('#', '')
+  if (TABS.some((item) => item.value === hash)) tab.value = hash
+  if (hash === 'docs') docsOpen.value = true
+}
+
+function setTab(value) {
+  tab.value = value
+  history.replaceState(null, '', `#${value}`)
+}
 
 function closeDocs() {
   docsOpen.value = false
@@ -32,10 +51,8 @@ function closeDocs() {
 
 onMounted(() => {
   startPolling()
-  if (window.location.hash === '#docs') docsOpen.value = true
-  window.addEventListener('hashchange', () => {
-    if (window.location.hash === '#docs') docsOpen.value = true
-  })
+  syncTabFromHash()
+  window.addEventListener('hashchange', syncTabFromHash)
 })
 </script>
 
@@ -48,7 +65,7 @@ onMounted(() => {
         </div>
         <div class="min-w-0">
           <h1 class="text-lg font-semibold leading-tight">wireproxy-control</h1>
-          <p class="text-xs text-muted-foreground">WireGuard + VLESS · умная маршрутизация по доменам</p>
+          <p class="text-xs text-muted-foreground">WireGuard + Xray · умная маршрутизация по доменам</p>
         </div>
         <div class="ml-auto flex flex-wrap items-center gap-2">
           <Badge :variant="online ? 'success' : 'destructive'">
@@ -71,6 +88,7 @@ onMounted(() => {
           </Button>
         </div>
       </div>
+      <Tabs :model-value="tab" :tabs="TABS" @update:model-value="setTab" />
     </header>
 
     <main class="container space-y-4 py-5">
@@ -82,23 +100,43 @@ onMounted(() => {
       </div>
 
       <template v-if="s">
-        <OnboardingCard :s="s" />
-        <div class="grid items-start gap-4 lg:grid-cols-2">
-          <div class="space-y-4">
-            <ChannelsCard :s="s" />
-            <WireGuardCard :s="s" />
-            <VlessCard :s="s" />
-            <PoolCard :s="s" />
-            <LocalDomainsCard :s="s" />
+        <template v-if="tab === 'overview'">
+          <OnboardingCard :s="s" />
+          <div class="grid items-start gap-4 lg:grid-cols-2">
+            <div class="space-y-4">
+              <ChannelsCard :s="s" />
+              <ListsCard :s="s" />
+              <CheckCard :s="s" />
+            </div>
+            <div class="space-y-4">
+              <UpdateCard />
+              <VisitedCard :s="s" />
+            </div>
           </div>
-          <div class="space-y-4">
-            <UpdateCard />
-            <ListsCard :s="s" />
-            <CheckCard :s="s" />
-            <VisitedCard :s="s" />
-            <ExtraDomainsCard :s="s" />
+        </template>
+
+        <template v-else-if="tab === 'configs'">
+          <div class="grid items-start gap-4 lg:grid-cols-2">
+            <div class="space-y-4">
+              <WireGuardCard :s="s" />
+              <VlessCard :s="s" />
+            </div>
+            <div class="space-y-4">
+              <PoolCard :s="s" />
+            </div>
           </div>
-        </div>
+        </template>
+
+        <template v-else>
+          <div class="grid items-start gap-4 lg:grid-cols-2">
+            <div class="space-y-4">
+              <LocalDomainsCard :s="s" />
+            </div>
+            <div class="space-y-4">
+              <DomainRoutingCard :s="s" />
+            </div>
+          </div>
+        </template>
       </template>
 
       <div v-else class="py-20 text-center text-sm text-muted-foreground">

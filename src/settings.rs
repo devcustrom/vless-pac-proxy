@@ -18,6 +18,8 @@ pub struct Settings {
     pub local_proxy_port: u16,
     #[serde(rename = "localHttpsPort", default = "default_https_port")]
     pub local_https_port: u16,
+    #[serde(rename = "localDomainsEnabled", default = "default_true")]
+    pub local_domains_enabled: bool,
 }
 
 fn default_vpn() -> String {
@@ -44,6 +46,7 @@ impl Default for Settings {
             auto_pool_refresh_hours: default_hours(),
             local_proxy_port: default_http_port(),
             local_https_port: default_https_port(),
+            local_domains_enabled: true,
         }
     }
 }
@@ -89,6 +92,7 @@ mod tests {
             auto_pool_refresh_hours: 1.0,
             local_proxy_port: 8080,
             local_https_port: 8443,
+            local_domains_enabled: false,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"vpnDefault\":\"vless\""));
