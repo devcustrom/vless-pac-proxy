@@ -3,11 +3,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Request, State};
-use axum::http::{Method, StatusCode};
+use axum::http::{header, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use include_dir::{include_dir, Dir};
 use serde_json::{json, Value};
 
 use crate::engines::EngineKind;
@@ -16,7 +17,9 @@ use crate::wlog;
 
 pub const SMART_PROXY_PORT: u16 = 8081;
 pub const PANEL_PORT: u16 = 8080;
-const UI_HTML: &str = include_str!("../../ui.html");
+
+/// Собранный фронтенд (Vue + Tailwind + shadcn): `npm --prefix web run build`.
+static UI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
 
 pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
     let panel_port = state.panel_port;
@@ -106,6 +109,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/api/subscriptions", post(subscriptions))
         .route("/api/engines/ensure", post(engines_ensure))
         .route("/api/trust-certs", post(trust_certs_handler))
+        .fallback(ui_fallback)
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state.clone(), guard));
 
@@ -269,8 +273,58 @@ async fn guard(State(st): State<Arc<AppState>>, req: Request, next: Next) -> Res
 
 // ---------------- handlers ----------------
 
-async fn index() -> Html<&'static str> {
-    Html(UI_HTML)
+async fn index() -> Response {
+    serve_ui("index.html")
+}
+
+fn content_type(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or("") {
+        "html" => "text/html; charset=utf-8",
+        "js" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" | "map" => "application/json",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "ico" => "image/x-icon",
+        "woff2" => "font/woff2",
+        "woff" => "font/woff",
+        "txt" => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
+fn serve_ui(path: &str) -> Response {
+    let Some(file) = UI.get_file(path) else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    let cache = if path.starts_with("assets/") {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+    (
+        [
+            (header::CONTENT_TYPE, content_type(path)),
+            (header::CACHE_CONTROL, cache),
+        ],
+        file.contents().to_vec(),
+    )
+        .into_response()
+}
+
+/// Отдаёт собранный фронтенд; неизвестные пути — index.html (SPA).
+async fn ui_fallback(uri: Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+    if path.starts_with("api/") {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    if path.is_empty() {
+        return serve_ui("index.html");
+    }
+    if UI.get_file(path).is_some() {
+        return serve_ui(path);
+    }
+    serve_ui("index.html")
 }
 
 async fn pac(State(st): State<Arc<AppState>>) -> Response {
@@ -1015,7 +1069,14 @@ fn spawn_health_probes(state: Arc<AppState>) {
         tokio::time::sleep(Duration::from_secs(3)).await;
         loop {
             probe_once(&state).await;
-            tokio::time::sleep(Duration::from_secs(60)).await;
+            let (wg_ok, vless_ok) = state.health_snapshot();
+            let wg_needed = crate::engines::wireproxy::is_configured(&state.dir);
+            let xr_needed = crate::engines::xray::has_config(&state.dir);
+            let healthy = (!wg_needed || wg_ok) && (!xr_needed || vless_ok);
+            // Пока канал не поднялся — проверяем чаще, чтобы панель не висела
+            // красной минуту после старта.
+            let delay = if healthy { 60 } else { 10 };
+            tokio::time::sleep(Duration::from_secs(delay)).await;
         }
     });
 }

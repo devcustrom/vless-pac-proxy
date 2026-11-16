@@ -235,18 +235,53 @@ PAC-файл: <http://127.0.0.1:8080/proxy.pac> — `PROXY 127.0.0.1:8081` дл�
 | 25346 | HTTP xray |
 | 80 / 443 | локальные домены (HTTP/HTTPS) |
 
-## Сборка из исходников
+## Интерфейс (Vue 3 + Tailwind + shadcn-стиль)
 
-Нужен Rust (stable) и git:
+Исходники панели — в `web/`, это обычный Vite-проект, который можно править:
+
+```
+web/
+  src/App.vue                 # компоновка и заголовок
+  src/components/*.vue        # карточки: каналы, WireGuard, VLESS, пул, домены…
+  src/components/ui/*.vue     # примитивы в стиле shadcn: Button, Card, Input…
+  src/lib/store.js            # запросы к /api, тосты, опрос статуса
+  src/lib/utils.js            # cn() для классов
+  src/style.css               # тема shadcn (CSS-переменные)
+```
+
+Разработка (менеджер должен быть запущен на 8080):
 
 ```bash
+cd web
+npm install
+npm run dev        # http://127.0.0.1:5173, /api проксируется на 8080
+```
+
+Сборка и встраивание в бинарник:
+
+```bash
+npm --prefix web run build   # создаёт web/dist
+cargo build --release        # dist попадает внутрь exe
+```
+
+`web/dist` в git не хранится. Если собрать Rust без `npm run build`, бинарник
+покажет страницу «UI не собрана». Старый `ui.html` больше не используется —
+актуальная панель только в `web/`.
+
+## Сборка из исходников
+
+Нужны Rust (stable), Node.js 20+ и git:
+
+```bash
+npm --prefix web install
+npm --prefix web run build
 cargo build --release
 cargo test
 ```
 
 Бинарник: `target/release/wireproxy-control` (`wireproxy-control.exe` на
-Windows). CI (GitHub Actions) собирает Windows x64 и macOS universal и
-запускает `cargo fmt --check`, `clippy -D warnings`, тесты.
+Windows). CI (GitHub Actions) собирает фронтенд, затем Windows x64 и macOS
+universal, и запускает `cargo fmt --check`, `clippy -D warnings`, тесты.
 
 Движки не входят в бинарник: версии закреплены в `src/engines/downloads.rs`
 (wireproxy v1.1.3, Xray v26.11.9) вместе с sha256. Скачивание идёт с GitHub

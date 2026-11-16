@@ -37,3 +37,7 @@ wireproxy.conf
 
 # Rust
 /target/
+
+# Frontend
+web/node_modules/
+web/dist/

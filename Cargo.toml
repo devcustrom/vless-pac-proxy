@@ -1,6 +1,6 @@
 [package]
 name = "wireproxy-control"
-version = "0.1.7"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.80"
 description = "Умный прокси-стек: WireGuard (wireproxy) + VLESS/SS (xray) с панелью, треем и локальными доменами"
@@ -42,6 +42,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 futures-util = "0.3"
+include_dir = "0.7"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
