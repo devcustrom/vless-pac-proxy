@@ -73,51 +73,97 @@ jobs:
         shell: pwsh
         working-directory: sidecar/tgws
         run: ./build.ps1
-      - name: Манифест обновления
+      - name: Упаковка
         shell: pwsh
         run: |
-          $version = (Get-Content sidecar/tgws/VERSION -Raw).Trim()
-          $file = "tgws-proxy-windows-x64.exe"
-          Copy-Item sidecar/tgws/dist/tgws-proxy.exe $file
-          $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
-          $size = (Get-Item $file).Length
-          $url = "https://github.com/devcustrom/vless-pac-proxy/releases/latest/download/$file"
-          $manifest = @{
-            version = $version
-            assets = @{
-              "windows-x64" = @{
-                url = $url
-                sha256 = $hash
-                size = $size
-              }
-            }
-          } | ConvertTo-Json -Depth 5
-          [System.IO.File]::WriteAllText(
-            (Join-Path $PWD "tgws-manifest.json"),
-            $manifest,
-            (New-Object System.Text.UTF8Encoding($false))
-          )
+          Copy-Item sidecar/tgws/dist/tgws-proxy.exe tgws-proxy-windows-x64.exe
       - uses: actions/upload-artifact@v4
         with:
-          name: sidecar
-          path: |
-            tgws-proxy-windows-x64.exe
-            tgws-manifest.json
+          name: sidecar-windows
+          path: tgws-proxy-windows-x64.exe
+
+  sidecar-macos-arm64:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Сборка headless sidecar
+        run: bash sidecar/tgws/build.sh
+      - name: Упаковка
+        run: |
+          cp sidecar/tgws/dist/tgws-proxy tgws-proxy-macos-arm64
+          chmod +x tgws-proxy-macos-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-macos-arm64
+          path: tgws-proxy-macos-arm64
+
+  sidecar-macos-x64:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Сборка headless sidecar
+        run: bash sidecar/tgws/build.sh
+      - name: Упаковка
+        run: |
+          cp sidecar/tgws/dist/tgws-proxy tgws-proxy-macos-x64
+          chmod +x tgws-proxy-macos-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-macos-x64
+          path: tgws-proxy-macos-x64
 
   release:
-    needs: [windows, macos, sidecar-windows]
+    needs:
+      [
+        windows,
+        macos,
+        sidecar-windows,
+        sidecar-macos-arm64,
+        sidecar-macos-x64,
+      ]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+      - name: Манифест sidecar
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          version = open('sidecar/tgws/VERSION', encoding='utf-8').read().strip()
+          base = 'https://github.com/devcustrom/vless-pac-proxy/releases/latest/download'
+          names = {
+              'windows-x64': ('artifacts/sidecar-windows/tgws-proxy-windows-x64.exe', 'tgws-proxy-windows-x64.exe'),
+              'macos-arm64': ('artifacts/sidecar-macos-arm64/tgws-proxy-macos-arm64', 'tgws-proxy-macos-arm64'),
+              'macos-x64': ('artifacts/sidecar-macos-x64/tgws-proxy-macos-x64', 'tgws-proxy-macos-x64'),
+          }
+          assets = {}
+          for key, (path, asset) in names.items():
+              data = open(path, 'rb').read()
+              assets[key] = {
+                  'url': f'{base}/{asset}',
+                  'sha256': hashlib.sha256(data).hexdigest(),
+                  'size': len(data),
+              }
+          with open('artifacts/tgws-manifest.json', 'w', encoding='utf-8') as fh:
+              json.dump({'version': version, 'assets': assets}, fh, ensure_ascii=False, indent=2)
+          PY
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             artifacts/windows/wireproxy-control-windows-x64.exe
             artifacts/macos/wireproxy-control-macos-universal
-            artifacts/sidecar/tgws-proxy-windows-x64.exe
-            artifacts/sidecar/tgws-manifest.json
+            artifacts/sidecar-windows/tgws-proxy-windows-x64.exe
+            artifacts/sidecar-macos-arm64/tgws-proxy-macos-arm64
+            artifacts/sidecar-macos-x64/tgws-proxy-macos-x64
+            artifacts/tgws-manifest.json

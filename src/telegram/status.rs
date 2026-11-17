@@ -84,6 +84,7 @@ pub fn status_json(st: &AppState) -> Value {
         "enabled": settings.telegram_enabled,
         "running": running,
         "installed": installed,
+        "platform": std::env::consts::OS,
         "sidecarPath": sidecar_path(&st.dir).file_name().and_then(|n| n.to_str()).unwrap_or("tgws-proxy"),
         "pid": pid,
         "host": settings.telegram_host,

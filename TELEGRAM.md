@@ -24,22 +24,27 @@ Telegram Desktop
 
 ## Сборка sidecar
 
-В релизе sidecar `tgws-proxy.exe` скачивается автоматически по манифесту.
-Для разработки его можно собрать самому на Windows:
+В релизе sidecar скачивается автоматически по манифесту:
+`windows-x64`, `macos-arm64`, `macos-x64`. Для разработки его можно собрать
+самому.
+
+Windows:
 
 ```powershell
 cd sidecar\tgws
 .\build.ps1
 ```
 
-Нужен Python 3.11+. Результат: `sidecar\tgws\dist\tgws-proxy.exe`.
-Положите его в каталог данных `wireproxy-control`:
+macOS/Linux:
 
-```text
-%LOCALAPPDATA%\wireproxy-control\tgws-proxy.exe
+```bash
+cd sidecar/tgws
+./build.sh
 ```
 
-macOS/Linux: `./build.sh`, бинарник `dist/tgws-proxy`.
+Нужен Python 3.11+. Результат: `sidecar/tgws/dist/tgws-proxy.exe` или
+`sidecar/tgws/dist/tgws-proxy`. Для ручной установки положите файл в каталог
+данных `wireproxy-control`.
 
 ## Включение и подключение Telegram
 

@@ -86,17 +86,35 @@ mod job {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+mod job {
+    /// Процессная группа PyInstaller onefile: bootloader и child.
+    pub struct Job(i32);
+
+    impl Job {
+        pub fn attach(pid: u32) -> Option<Self> {
+            (pid > 0).then_some(Self(pid as i32))
+        }
+
+        pub fn terminate(&self) {
+            unsafe {
+                libc::kill(-self.0, libc::SIGKILL);
+            }
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            self.terminate();
+        }
+    }
+}
+
+#[cfg(not(any(windows, unix)))]
 mod job {
     pub struct Job;
 
     impl Job {
-        pub fn create() -> Option<Self> {
-            None
-        }
-        pub fn assign(&self, _pid: u32) -> bool {
-            false
-        }
         pub fn terminate(&self) {}
     }
 }
@@ -143,14 +161,28 @@ fn spawn_child(st: &AppState, cfg: &TelegramConfig) -> Result<(Child, Option<job
     {
         cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
+    #[cfg(unix)]
+    {
+        // PyInstaller onefile порождает child; держим всё в отдельной группе,
+        // чтобы останавливать оба процесса.
+        cmd.process_group(0);
+    }
     let mut child = cmd.spawn().context("не удалось запустить tgws-proxy")?;
     let pid = child.id();
-    let job = job::Job::create();
-    if let (Some(job), Some(pid)) = (job.as_ref(), pid) {
-        if !job.assign(pid) {
-            wlog!("telegram: не удалось назначить sidecar в job-объект");
+    #[cfg(windows)]
+    let job = {
+        let job = job::Job::create();
+        if let (Some(job), Some(pid)) = (job.as_ref(), pid) {
+            if !job.assign(pid) {
+                wlog!("telegram: не удалось назначить sidecar в job-объект");
+            }
         }
-    }
+        job
+    };
+    #[cfg(unix)]
+    let job = job::Job::attach(pid.unwrap_or(0));
+    #[cfg(not(any(windows, unix)))]
+    let job: Option<job::Job> = None;
     if let Some(out) = child.stdout.take() {
         relay("stdout", out, cfg.secret.clone());
     }
