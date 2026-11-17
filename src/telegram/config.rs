@@ -33,6 +33,7 @@ pub struct TelegramConfig {
     pub vless_proxy: String,
     pub upstream_timeout: f64,
     pub verbose: bool,
+    pub parent_pid: u32,
 }
 
 pub fn generate_secret() -> String {
@@ -176,6 +177,7 @@ impl TelegramConfig {
             vless_proxy: format!("127.0.0.1:{}", crate::vless::XRAY_HTTP_PORT),
             upstream_timeout: 8.0,
             verbose: settings.telegram_verbose,
+            parent_pid: std::process::id(),
         })
     }
 

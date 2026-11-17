@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { Blocks, Info } from 'lucide-vue-next'
+import { Blocks, Info, Power } from 'lucide-vue-next'
 import { api, notify } from '@/lib/store'
 import { useActionMutation } from '@/lib/queries'
 import Card from '@/components/ui/Card.vue'
@@ -14,6 +14,13 @@ const setupOpen = ref(false)
 const localDomains = computed(() => !!props.s.plugins?.localDomains)
 const telegram = computed(() => !!props.s.plugins?.telegram)
 const zapret = computed(() => !!props.s.plugins?.zapret)
+const zapretSupported = computed(() => props.s.zapret?.supported !== false)
+const autostart = computed(() => !!props.s.autostart)
+const autostartAction = useActionMutation(
+  (enabled) => api('/api/autostart', { enabled }),
+  [['status']],
+)
+const autostartLoading = computed(() => autostartAction.isLoading.value)
 const disableAction = useActionMutation(
   () => api('/api/plugins', { localDomains: false }),
   [['status']],
@@ -79,6 +86,15 @@ async function toggleZapret(value) {
     /* тост показан */
   }
 }
+
+async function toggleAutostart(value) {
+  try {
+    await autostartAction.mutateAsync(value)
+    notify(value ? 'Автозапуск включён' : 'Автозапуск выключен')
+  } catch {
+    /* тост показан */
+  }
+}
 </script>
 
 <template>
@@ -131,7 +147,10 @@ async function toggleZapret(value) {
         />
       </div>
 
-      <div class="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-3">
+      <div
+        v-if="zapretSupported"
+        class="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-3"
+      >
         <div class="min-w-0">
           <div class="flex flex-wrap items-center gap-2">
             <span class="text-sm font-medium">Zapret</span>
@@ -174,6 +193,35 @@ async function toggleZapret(value) {
       </p>
     </div>
   </Card>
+
+  <Card
+    title="Приложение"
+    description="Запуск менеджера при входе в систему — чтобы прокси и трей были доступны сразу."
+  >
+    <template #icon>
+      <Power class="h-4 w-4 text-primary" />
+    </template>
+    <div class="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-3">
+      <div class="min-w-0">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-sm font-medium">Запускать при входе</span>
+          <Badge :variant="autostart ? 'success' : 'secondary'">
+            {{ autostart ? 'включено' : 'выключено' }}
+          </Badge>
+        </div>
+        <p class="mt-1 text-xs text-muted-foreground">
+          Windows — HKCU Run, macOS — LaunchAgent. Панель и трей поднимутся
+          автоматически после входа.
+        </p>
+      </div>
+      <Switch
+        :model-value="autostart"
+        :disabled="autostartLoading"
+        @update:model-value="toggleAutostart"
+      />
+    </div>
+  </Card>
+
   <PluginSetupDialog
     :open="setupOpen"
     :s="s"

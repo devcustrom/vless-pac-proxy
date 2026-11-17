@@ -67,7 +67,7 @@ pub fn status_json(state: &AppState) -> Value {
     };
     json!({
         "supported": supported(),
-        "enabled": settings.zapret_enabled,
+        "enabled": settings.zapret_enabled && supported(),
         "bundleInstalled": installed,
         "bundlePath": bundle.display().to_string(),
         "engine": preset::engine_label(&state.dir),

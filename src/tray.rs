@@ -104,11 +104,13 @@ fn build_tray() -> Result<(TrayIcon, MenuHandles)> {
         &exit,
     ])?;
     let icon = Icon::from_rgba(icon_rgba(), 32, 32)?;
-    let tray = TrayIconBuilder::new()
+    let builder = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("wireproxy-control — умный прокси")
-        .with_icon(icon)
-        .build()?;
+        .with_icon(icon);
+    #[cfg(target_os = "macos")]
+    let builder = builder.with_icon_as_template(true);
+    let tray = builder.build()?;
     Ok((
         tray,
         MenuHandles {

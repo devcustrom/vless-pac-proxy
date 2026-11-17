@@ -198,15 +198,11 @@ pub fn trust_certs(dir: &Path) -> Result<()> {
         let content = "@echo off\r\n\
              net session >nul 2>&1\r\n\
              if errorlevel 1 (\r\n\
-               echo Requesting administrator rights...\r\n\
                powershell -NoProfile -Command \"Start-Process -FilePath '%~f0' -Verb RunAs\"\r\n\
                exit /b\r\n\
              )\r\n\
              certutil -addstore -f Root \"%~dp0certs\\ca.crt\"\r\n\
-             certutil -addstore -user Root \"%~dp0certs\\ca.crt\" >nul 2>&1\r\n\
-             echo CA installed. Chrome/Edge now trust local HTTPS domains.\r\n\
-             echo Firefox: about:config -> security.enterprise_roots.enabled = true\r\n\
-             pause\r\n";
+             certutil -addstore -user Root \"%~dp0certs\\ca.crt\" >nul 2>&1\r\n";
         std::fs::write(&script, content)?;
         println!(
             "Скрипт установки CA: {}\nЗапустите его (запросит UAC), затем перезапустите браузер.",
@@ -217,8 +213,14 @@ pub fn trust_certs(dir: &Path) -> Result<()> {
     {
         let script = dir.join(trust_script_name());
         let content = format!(
-            "#!/bin/sh\nsudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain '{}'\necho CA installed. Firefox: security.enterprise_roots.enabled=true\n",
-            ca.display()
+            "#!/bin/sh\n\
+             if [ \"$(id -u)\" -eq 0 ]; then\n\
+               security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain '{ca}'\n\
+             else\n\
+               sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain '{ca}'\n\
+             fi\n\
+             echo CA installed. Firefox: security.enterprise_roots.enabled=true\n",
+            ca = ca.display()
         );
         std::fs::write(&script, content)?;
         #[cfg(unix)]

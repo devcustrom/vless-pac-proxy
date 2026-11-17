@@ -334,9 +334,25 @@ async fn supervise(
 }
 
 pub fn stop(state: &AppState) {
+    #[cfg(unix)]
+    let pid = state
+        .telegram
+        .pid
+        .lock()
+        .ok()
+        .and_then(|pid| *pid)
+        .filter(|pid| *pid > 0);
     if let Ok(mut guard) = state.telegram.stop.lock() {
         if let Some((_, tx)) = guard.take() {
             let _ = tx.send(true);
+        }
+    }
+    // Не ждём асинхронный supervisor: при выходе менеджера процессная группа
+    // sidecar должна умереть сразу, иначе PyInstaller-ребёнок останется жить.
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
         }
     }
     *state.telegram.pid.lock().unwrap_or_else(|e| e.into_inner()) = None;

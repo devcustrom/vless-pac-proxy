@@ -115,6 +115,12 @@ fn main() -> anyhow::Result<()> {
 
 fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool, hidden: bool) -> anyhow::Result<()> {
     let dir = std::path::absolute(&dir).unwrap_or(dir);
+    // Закрытие терминала не должно убивать менеджер и его трей: sidecar и
+    // движки останавливаются только через штатный cleanup/LaunchAgent.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
+    }
     let requested_port = panel_port;
     let panel_port = pick_panel_port(requested_port);
     let _instance = match single_instance::acquire(&dir)? {

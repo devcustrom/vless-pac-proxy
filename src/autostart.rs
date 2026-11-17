@@ -94,8 +94,9 @@ mod imp {
             std::fs::create_dir_all(parent)?;
         }
         let exe = xml_escape(&exe.to_string_lossy());
-        let dir = xml_escape(&dir.to_string_lossy());
-        let out_log = xml_escape(&format!("{}/manager.log", dir));
+        let dir_raw = dir.to_string_lossy();
+        let dir = xml_escape(&dir_raw);
+        let out_log = xml_escape(&format!("{}/manager.log", dir_raw));
         let plist = format!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
              <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
@@ -105,7 +106,8 @@ mod imp {
                <key>ProgramArguments</key>\n\
                <array><string>{exe}</string><string>--hidden</string><string>--data-dir</string><string>{dir}</string></array>\n\
                <key>RunAtLoad</key><true/>\n\
-               <key>KeepAlive</key><true/>\n\
+               <key>KeepAlive</key>\n\
+               <dict><key>SuccessfulExit</key><false/></dict>\n\
                <key>StandardOutPath</key><string>{out_log}</string>\n\
                <key>StandardErrorPath</key><string>{out_log}</string>\n\
              </dict>\n\
@@ -129,6 +131,13 @@ mod imp {
             }
             Err(e) => return Err(e.into()),
         }
+        // Если агент уже загружен launchd, выгружаем его, чтобы KeepAlive
+        // не поднял менеджер после следующего падения.
+        let domain = format!("gui/{}", unsafe { libc::getuid() });
+        let target = format!("{domain}/{LABEL}");
+        let _ = std::process::Command::new("launchctl")
+            .args(["bootout", target.as_str()])
+            .status();
         Ok(())
     }
 

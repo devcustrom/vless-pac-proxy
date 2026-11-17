@@ -154,6 +154,51 @@ async fn connect_local(port: u16) -> Result<TcpStream> {
     Ok(stream)
 }
 
+/// На macOS порты 80/443 без root недоступны. Если занять их не удалось,
+/// автоматически переключаемся на 8088/8443, чтобы плагин работал «из коробки».
+pub async fn preflight_ports(state: &Arc<AppState>) {
+    #[cfg(target_os = "macos")]
+    {
+        let settings = state.settings_snapshot();
+        let mut http = settings.local_proxy_port;
+        let mut https = settings.local_https_port;
+        let http_ok = port_available(http);
+        let https_ok = port_available(https);
+        if !http_ok {
+            if let Some(port) = free_port(8088) {
+                http = port;
+            }
+        }
+        if !https_ok {
+            if let Some(port) = free_port(8443) {
+                https = port;
+            }
+        }
+        if http != settings.local_proxy_port || https != settings.local_https_port {
+            if let Ok(mut current) = state.settings.lock() {
+                current.local_proxy_port = http;
+                current.local_https_port = https;
+                let _ = current.save(&state.dir);
+            }
+            wlog!("локальные домены: macOS-порты переключены на HTTP {http}, HTTPS {https}");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = state;
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn port_available(port: u16) -> bool {
+    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
+#[cfg(target_os = "macos")]
+fn free_port(start: u16) -> Option<u16> {
+    (start..=start.saturating_add(100)).find(|port| port_available(*port))
+}
+
 pub async fn serve(state: Arc<AppState>, stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
     let settings = state.settings_snapshot();
     // TLS: собираем стор сертификатов и кладём в общий слот (горячая замена)

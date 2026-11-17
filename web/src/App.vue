@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watchEffect } from 'vue'
+import { computed, onMounted, ref, watch, watchEffect } from 'vue'
 import { BookOpen, ListFilter, RefreshCw, ShieldCheck } from 'lucide-vue-next'
 import { api, store } from '@/lib/store'
 import { useStatusQuery } from '@/lib/queries'
@@ -24,14 +24,14 @@ import SettingsCard from '@/components/SettingsCard.vue'
 import DocsDialog from '@/components/DocsDialog.vue'
 import Toast from '@/components/Toast.vue'
 
-const TABS = [
-  { value: 'overview', label: 'Обзор' },
-  { value: 'configs', label: 'Конфиги' },
-  { value: 'telegram', label: 'Telegram' },
-  { value: 'zapret', label: 'Zapret' },
-  { value: 'domains', label: 'Домены' },
-  { value: 'settings', label: 'Настройки' },
-]
+const ALL_TABS = {
+  overview: { value: 'overview', label: 'Обзор' },
+  configs: { value: 'configs', label: 'Конфиги' },
+  telegram: { value: 'telegram', label: 'Telegram' },
+  zapret: { value: 'zapret', label: 'Zapret' },
+  domains: { value: 'domains', label: 'Домены' },
+  settings: { value: 'settings', label: 'Настройки' },
+}
 
 const statusQuery = useStatusQuery()
 const s = computed(() => statusQuery.data.value)
@@ -42,6 +42,24 @@ const firstRunOpen = ref(false)
 const firstRunDismissed = ref(false)
 const refreshing = ref(false)
 const tab = ref('overview')
+
+const tabs = computed(() => {
+  const data = s.value
+  const plugins = data?.plugins || {}
+  const items = [ALL_TABS.overview, ALL_TABS.configs]
+  if (plugins.telegram) items.push(ALL_TABS.telegram)
+  if (plugins.zapret && data?.zapret?.supported) items.push(ALL_TABS.zapret)
+  if (plugins.localDomains) items.push(ALL_TABS.domains)
+  items.push(ALL_TABS.settings)
+  return items
+})
+
+watch(tabs, (items) => {
+  if (!items.some((item) => item.value === tab.value)) {
+    tab.value = 'overview'
+    history.replaceState(null, '', '#overview')
+  }
+})
 
 watchEffect(() => {
   if (statusQuery.data.value) {
@@ -84,7 +102,7 @@ function onPluginEnabled() {
 
 function syncTabFromHash() {
   const hash = window.location.hash.replace('#', '')
-  if (TABS.some((item) => item.value === hash)) tab.value = hash
+  if (tabs.value.some((item) => item.value === hash)) tab.value = hash
   if (hash === 'docs') docsOpen.value = true
 }
 
@@ -104,6 +122,8 @@ onMounted(() => {
   syncTabFromHash()
   window.addEventListener('hashchange', syncTabFromHash)
 })
+
+watch(s, () => syncTabFromHash())
 </script>
 
 <template>
@@ -131,7 +151,7 @@ onMounted(() => {
           </Button>
         </div>
       </div>
-      <Tabs :model-value="tab" :tabs="TABS" @update:model-value="setTab" />
+      <Tabs :model-value="tab" :tabs="tabs" @update:model-value="setTab" />
     </header>
 
     <main class="container space-y-4 py-5">

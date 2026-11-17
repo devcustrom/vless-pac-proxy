@@ -89,24 +89,24 @@ wireproxy-control.exe install
 
 ## Установка (macOS, universal: Intel и Apple Silicon)
 
-1. Скачайте бинарник `wireproxy-control-macos-universal` со страницы
-   [Releases](../../releases/latest) (без архива).
-2. Сделайте исполняемым и снимите карантин:
+1. Скачайте из [Releases](../../releases/latest) `WireproxyControl.app` в
+   архиве `.zip` или `.dmg` (есть и отдельный бинарник для Терминала).
+2. Распакуйте/перетащите приложение в «Программы» и запустите ПКМ →
+   «Открыть» → «Открыть». Если macOS пишет «повреждено»:
 
    ```bash
-   chmod +x wireproxy-control-macos-universal
-   xattr -dr com.apple.quarantine wireproxy-control-macos-universal
-   ./wireproxy-control-macos-universal
+   xattr -dr com.apple.quarantine /Applications/WireproxyControl.app
+   open /Applications/WireproxyControl.app
    ```
 
-   Либо ПКМ → «Открыть» в Finder (бинарник не подписан).
-3. Автозапуск: `./wireproxy-control-macos-universal install` — создаёт
-   `~/Library/LaunchAgents/com.wireproxy-control.plist`.
+3. Автозапуск: добавьте приложение в «Системные настройки» → «Основные» →
+   «Элементы входа» либо выполните
+   `/Applications/WireproxyControl.app/Contents/MacOS/wireproxy-control install`.
 
 macOS-часть (трей, системный прокси через `networksetup`, LaunchAgent)
 собирается в CI, но требует ручной проверки на живом Mac — считайте её
 beta. Если что-то не работает, запустите бинарник с `--no-tray` и смотрите
-`manager.log`.
+`manager.log`. Подробности: [README-MAC.md](README-MAC.md).
 
 ## Где лежат данные
 
@@ -212,7 +212,9 @@ base64) или нажмите **BLACK** / **WHITE (CIDR/SNI)** — менедж�
 Блок «Локальные домены» на вкладке «Домены»: домен → локальный порт. Менеджер слушает
 `http://127.0.0.1:80` и `https://127.0.0.1:443` (порты меняются в
 `settings.json`) и проксирует запросы по заголовку `Host`/SNI на
-`localhost:<порт>`. Поддерживаются WebSocket (Vite HMR и т.п.).
+`localhost:<порт>`. Поддерживаются WebSocket (Vite HMR и т.п.). На macOS
+системные порты 80/443 требуют root, поэтому приложение при первом включении
+плагина само занимает 8088/8443 и показывает ссылки с нужным портом.
 
 Домены из `local-domains.txt` автоматически попадают в исключения системного
 прокси (`ProxyOverride` на Windows, bypass-список на macOS): при включённом
@@ -228,17 +230,19 @@ base64) или нажмите **BLACK** / **WHITE (CIDR/SNI)** — менедж�
 
 - `*.localhost` браузеры резолвят в `127.0.0.1` сами — правка hosts не нужна.
 - Для настоящих имён (например, `app.example.com`) нужна запись `127.0.0.1`
-  в hosts. Кнопка «Редактировать hosts» открывает системный файл с UAC
-  (Windows) или в `sudo nano` (macOS); «Подготовить скрипт hosts» создаёт
-  скрипт с записями из `local-domains.txt`.
+  в hosts. Кнопка «Применить hosts» запускает обновление с UAC (Windows) или
+  нативным запросом пароля (macOS) без окон терминала; «Подготовить скрипт
+  hosts» просто создаёт скрипт с записями из `local-domains.txt`.
 - Прокси сам не может заставить браузер резолвить произвольный домен в
   loopback: разрешение имён — это DNS/hosts, а не HTTP-прокси. `*.localhost`
   работают без hosts только потому, что это встроенное поведение браузеров.
-- Для «настоящих» имён запустите `wireproxy-control.exe sync-hosts` и затем
-  созданный `local-domains-hosts.bat` от администратора (macOS — `.command`).
-- HTTPS: кнопка «Установить сертификаты» (или `trust-certs`) запускает
-  `local-domains-trust.bat` с UAC и добавляет CA в доверенные. Firefox:
-  `about:config` → `security.enterprise_roots.enabled = true`.
+- Для «настоящих» имён также можно запустить `wireproxy-control.exe sync-hosts`
+  и затем созданный `local-domains-hosts.bat` от администратора (macOS —
+  `.command`).
+- HTTPS: кнопка «Установить сертификаты» (или `trust-certs`) добавляет CA в
+  доверенные через UAC (Windows) или системный диалог пароля (macOS), без
+  окна терминала. Firefox: `about:config` →
+  `security.enterprise_roots.enabled = true`.
 - Существующий `certs/ca.key|ca.crt` переиспользуется, поэтому ранее
   установленное доверие не сбрасывается.
 

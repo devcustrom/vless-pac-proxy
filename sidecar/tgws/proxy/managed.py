@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -79,3 +80,18 @@ async def status_loop(stop_event: Optional[asyncio.Event] = None) -> None:
             except asyncio.TimeoutError:
                 continue
         await asyncio.sleep(2.0)
+
+
+async def parent_watch(pid: int) -> None:
+    """Завершает sidecar, если менеджер исчез (закрыт терминал/краш)."""
+    if pid <= 0:
+        return
+    while True:
+        await asyncio.sleep(2.0)
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            logging.getLogger('tg-mtproto-proxy').warning(
+                "manager process %d is gone; shutting down", pid
+            )
+            os._exit(0)

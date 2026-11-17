@@ -443,6 +443,9 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
     if proxy_config.status_file:
         managed.write_status(True)
         status_task = asyncio.create_task(managed.status_loop())
+    parent_task = None
+    if proxy_config.parent_pid > 0:
+        parent_task = asyncio.create_task(managed.parent_watch(proxy_config.parent_pid))
 
     link_host = get_link_host(proxy_config.host)
     ftls = proxy_config.fake_tls_domain
@@ -596,6 +599,8 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
         if status_task is not None:
             await _quiet_cancel(status_task)
             managed.write_status(False)
+        if parent_task is not None:
+            await _quiet_cancel(parent_task)
         _server_instance = _server_stop_event = None
         log_stats_task.cancel()
         try:
@@ -692,6 +697,7 @@ def _apply_managed_config(path: str, status_override: Optional[str] = None) -> d
     proxy_config.upstream_timeout = min(
         60.0, max(1.0, float(data.get("upstreamTimeout", 8.0)))
     )
+    proxy_config.parent_pid = max(0, int(data.get("parentPid", 0)))
     return data
 
 

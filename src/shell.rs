@@ -1,5 +1,6 @@
 //! Системные действия: открыть URL в браузере, запустить скрипт с повышением
-//! прав. Windows — ShellExecuteW (без парсинга командной строки), macOS — open.
+//! прав. Windows — ShellExecuteW (без парсинга командной строки), macOS —
+//! osascript с нативным диалогом пароля.
 use std::path::Path;
 
 use anyhow::Result;
@@ -8,8 +9,14 @@ pub fn open_url(url: &str) -> Result<()> {
     imp::open_url(url)
 }
 
+/// Неинтерактивный скрипт: UAC/пароль есть, окна терминала нет.
 pub fn run_elevated(path: &Path) -> Result<()> {
-    imp::run_elevated(path)
+    imp::run_elevated(path, false)
+}
+
+/// Интерактивный скрипт (например, редактор hosts) — окно нужно показать.
+pub fn run_elevated_interactive(path: &Path) -> Result<()> {
+    imp::run_elevated(path, true)
 }
 
 #[cfg(windows)]
@@ -25,7 +32,7 @@ mod imp {
             .collect()
     }
 
-    fn shell_execute(verb: &str, target: &str) -> Result<()> {
+    fn shell_execute(verb: &str, target: &str, show: i32) -> Result<()> {
         use windows_sys::Win32::UI::Shell::ShellExecuteW;
         let verb = wide(verb);
         let target = wide(target);
@@ -36,7 +43,7 @@ mod imp {
                 target.as_ptr(),
                 std::ptr::null(),
                 std::ptr::null(),
-                1,
+                show,
             )
         };
         if rc as isize <= 32 {
@@ -46,11 +53,16 @@ mod imp {
     }
 
     pub fn open_url(url: &str) -> Result<()> {
-        shell_execute("open", url)
+        shell_execute("open", url, 1)
     }
 
-    pub fn run_elevated(path: &Path) -> Result<()> {
-        shell_execute("runas", &path.to_string_lossy())
+    pub fn run_elevated(path: &Path, visible: bool) -> Result<()> {
+        // SW_HIDE для установщиков: UAC остаётся, консоль не мелькает.
+        shell_execute(
+            "runas",
+            &path.to_string_lossy(),
+            if visible { 1 } else { 0 },
+        )
     }
 }
 
@@ -67,9 +79,24 @@ mod imp {
             .map_err(Into::into)
     }
 
-    pub fn run_elevated(path: &Path) -> Result<()> {
-        std::process::Command::new("open")
-            .arg(path)
+    pub fn run_elevated(path: &Path, visible: bool) -> Result<()> {
+        if visible {
+            // Интерактивный сценарий (nano и т.п.) требует Terminal.
+            return std::process::Command::new("open")
+                .arg(path)
+                .spawn()
+                .map(|_| ())
+                .map_err(Into::into);
+        }
+        // Нативный диалог пароля macOS вместо окна Terminal.
+        let escaped = path
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        let script =
+            format!("do shell script \"/bin/sh \" & quoted form of \"{escaped}\" with administrator privileges");
+        std::process::Command::new("osascript")
+            .args(["-e", &script])
             .spawn()
             .map(|_| ())
             .map_err(Into::into)
@@ -89,7 +116,7 @@ mod imp {
             .map_err(Into::into)
     }
 
-    pub fn run_elevated(path: &Path) -> Result<()> {
+    pub fn run_elevated(path: &Path, _visible: bool) -> Result<()> {
         std::process::Command::new("xdg-open")
             .arg(path)
             .spawn()

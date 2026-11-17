@@ -85,6 +85,7 @@ class ProxyConfig:
     wg_proxy: str = '127.0.0.1:25345'
     vless_proxy: str = '127.0.0.1:25346'
     upstream_timeout: float = 8.0
+    parent_pid: int = 0
 
     @property
     def h2_enabled(self) -> bool:

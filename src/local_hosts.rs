@@ -79,8 +79,7 @@ if errorlevel 1 (\r\n\
   powershell -NoProfile -Command \"Start-Process -FilePath '%~f0' -Verb RunAs\"\r\n\
   exit /b\r\n\
 )\r\n\
-powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0local-domains-hosts.ps1\"\r\n\
-pause\r\n";
+powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"%~dp0local-domains-hosts.ps1\"\r\n";
 
 #[cfg(not(windows))]
 const SH: &str = "#!/bin/sh\n\
@@ -96,7 +95,11 @@ if [ -s \"$DIR/hosts-entries.txt\" ]; then\n\
   cat \"$DIR/hosts-entries.txt\" >> \"$TMP\"\n\
   printf '%s\\n' '# wireproxy-control local domains end' >> \"$TMP\"\n\
 fi\n\
-sudo cp \"$TMP\" /etc/hosts\n\
+if [ \"$(id -u)\" -eq 0 ]; then\n\
+  cp \"$TMP\" /etc/hosts\n\
+else\n\
+  sudo cp \"$TMP\" /etc/hosts\n\
+fi\n\
 echo \"hosts updated\"\n";
 
 /// Имя готового скрипта синхронизации hosts (для панели/трея).

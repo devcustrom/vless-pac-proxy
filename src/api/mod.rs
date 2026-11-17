@@ -61,6 +61,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         });
     }
     if state.settings_snapshot().local_domains_enabled {
+        crate::net::local_proxy::preflight_ports(&state).await;
         crate::net::local_proxy::start(&state);
     }
     if state.settings_snapshot().telegram_enabled {
@@ -106,6 +107,10 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/api/local-domains/probe", post(local_domains_probe))
         .route("/api/local-domains/hosts", post(local_domains_hosts))
         .route(
+            "/api/local-domains/hosts/apply",
+            post(local_domains_hosts_apply),
+        )
+        .route(
             "/api/local-domains/hosts/edit",
             post(local_domains_hosts_edit),
         )
@@ -117,6 +122,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/api/engines/ensure", post(engines_ensure))
         .route("/api/trust-certs", post(trust_certs_handler))
         .route("/api/plugins", get(plugins_get).post(plugins_set))
+        .route("/api/autostart", post(autostart_set))
         .route("/api/telegram", get(telegram_get).post(telegram_post))
         .route("/api/telegram/link", post(telegram_link))
         .route("/api/zapret", get(zapret_get).post(zapret_post))
@@ -159,14 +165,44 @@ async fn plugins_get(State(st): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({
         "localDomains": settings.local_domains_enabled,
         "telegram": settings.telegram_enabled,
-        "zapret": settings.zapret_enabled,
+        "zapret": settings.zapret_enabled && crate::zapret::supported(),
     }))
+}
+
+async fn autostart_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let Some(enabled) = body.get("enabled").and_then(Value::as_bool) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "нужно enabled: true|false" })),
+        )
+            .into_response();
+    };
+    let result = if enabled {
+        crate::autostart::install(&st.dir)
+    } else {
+        crate::autostart::uninstall()
+    };
+    match result {
+        Ok(()) => Json(json!({ "ok": true, "autostart": enabled })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("{e:#}") })),
+        )
+            .into_response(),
+    }
 }
 
 async fn plugins_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
     // Zapret можно переключать отдельно, без localDomains/telegram.
     if body.get("localDomains").is_none() && body.get("telegram").is_none() {
         if let Some(enabled) = body.get("zapret").and_then(|value| value.as_bool()) {
+            if enabled && !crate::zapret::supported() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "Zapret поддерживается только на Windows" })),
+                )
+                    .into_response();
+            }
             let result = {
                 let mut settings = st.settings.lock().unwrap();
                 settings.zapret_enabled = enabled;
@@ -260,6 +296,7 @@ async fn plugins_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
         if let Ok(mut current) = st.local_domains.lock() {
             *current = list;
         }
+        crate::net::local_proxy::preflight_ports(&st).await;
         reload_local_tls(&st).await;
         crate::net::local_proxy::start(&st);
         // даём слушателям шанс занять порты, чтобы вернуть ошибки
@@ -1265,7 +1302,7 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         "plugins": {
             "localDomains": settings.local_domains_enabled,
             "telegram": settings.telegram_enabled,
-            "zapret": settings.zapret_enabled,
+            "zapret": settings.zapret_enabled && crate::zapret::supported(),
         },
         "telegram": crate::telegram::status::status_json(&st),
         "zapret": crate::zapret::status_json(&st),
@@ -1735,9 +1772,29 @@ async fn local_domains_hosts(State(st): State<Arc<AppState>>) -> Response {
     }
 }
 
+async fn local_domains_hosts_apply(State(st): State<Arc<AppState>>) -> Response {
+    let names: Vec<String> = st
+        .local_domains
+        .lock()
+        .map(|list| list.iter().map(|item| item.domain.clone()).collect())
+        .unwrap_or_default();
+    match crate::local_hosts::write_script(&st.dir, &names)
+        .and_then(|script| crate::shell::run_elevated(&script).map(|_| script))
+    {
+        Ok(script) => {
+            Json(json!({ "ok": true, "script": script.display().to_string() })).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("{e:#}") })),
+        )
+            .into_response(),
+    }
+}
+
 async fn local_domains_hosts_edit(State(st): State<Arc<AppState>>) -> Response {
     match crate::local_hosts::edit_script(&st.dir)
-        .and_then(|script| crate::shell::run_elevated(&script).map(|_| script))
+        .and_then(|script| crate::shell::run_elevated_interactive(&script).map(|_| script))
     {
         Ok(script) => {
             Json(json!({ "ok": true, "script": script.display().to_string() })).into_response()

@@ -13,6 +13,7 @@ const props = defineProps({ s: { type: Object, required: true } })
 const probes = reactive({})
 const certBusy = ref(false)
 const hostsBusy = ref(false)
+const applyBusy = ref(false)
 const editBusy = ref(false)
 const removing = ref('')
 const probing = ref('')
@@ -43,6 +44,18 @@ async function prepareHosts() {
   }
 }
 
+async function applyHosts() {
+  applyBusy.value = true
+  try {
+    await api('/api/local-domains/hosts/apply', {})
+    notify('Подтвердите UAC/пароль — hosts будут обновлены')
+  } catch (error) {
+    notify(error.message, 'error')
+  } finally {
+    applyBusy.value = false
+  }
+}
+
 async function editHosts() {
   editBusy.value = true
   try {
@@ -58,11 +71,12 @@ async function editHosts() {
 const lp = () => props.s.localProxy || {}
 const httpPort = () => (lp().port === 80 ? '' : `:${lp().port}`)
 const httpsPort = () => (lp().httpsPort === 443 ? '' : `:${lp().httpsPort}`)
+const isMac = () => String(lp().hostsScript || '').endsWith('.command')
 
 async function addDomain(output) {
   try {
     await addAction.mutateAsync({ domain: output.domain, port: output.port })
-    notify(`Домен добавлен: http://${output.domain}`)
+    notify(`Домен добавлен: http://${output.domain}${httpPort()}`)
   } catch {
     /* тост уже показан */
   }
@@ -145,8 +159,15 @@ async function probe(name) {
                   target="_blank"
                   class="inline-flex items-center gap-1 font-medium hover:underline"
                 >
-                  {{ item.domain }}
+                  http://{{ item.domain }}{{ httpPort() }}
                   <ExternalLink class="h-3 w-3" />
+                </a>
+                <a
+                  :href="`https://${item.domain}${httpsPort()}`"
+                  target="_blank"
+                  class="text-xs text-muted-foreground hover:underline"
+                >
+                  https://{{ item.domain }}{{ httpsPort() }}
                 </a>
                 <span class="text-xs text-muted-foreground">→ 127.0.0.1:{{ item.port }}</span>
               </div>
@@ -191,16 +212,26 @@ async function probe(name) {
         <p>
           <code>*.localhost</code> браузеры резолвят сами — hosts не нужен.
           Для настоящих имён (например, <code>app.example.com</code>) нужна
-          запись <code>127.0.0.1</code> в hosts: запустите
+          запись <code>127.0.0.1</code> в hosts: нажмите «Применить hosts» и
+          подтвердите UAC/пароль. Если нужно вручную, запустите
           <code>{{ lp().hostsScript || 'local-domains-hosts.bat' }}</code> от
           администратора.
         </p>
         <div class="flex flex-wrap gap-2">
-          <Button size="sm" variant="outline" :loading="hostsBusy" @click="prepareHosts">
+          <Button size="sm" :loading="applyBusy" @click="applyHosts">
             <ShieldCheck class="h-3.5 w-3.5" />
+            Применить hosts
+          </Button>
+          <Button size="sm" variant="outline" :loading="hostsBusy" @click="prepareHosts">
             Подготовить скрипт hosts
           </Button>
-          <Button size="sm" variant="outline" :loading="editBusy" @click="editHosts">
+          <Button
+            v-if="!isMac()"
+            size="sm"
+            variant="outline"
+            :loading="editBusy"
+            @click="editHosts"
+          >
             <Pencil class="h-3.5 w-3.5" />
             Редактировать hosts
           </Button>

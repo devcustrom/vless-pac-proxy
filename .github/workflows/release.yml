@@ -57,10 +57,45 @@ jobs:
             target/aarch64-apple-darwin/release/wireproxy-control \
             target/x86_64-apple-darwin/release/wireproxy-control
           chmod +x wireproxy-control-macos-universal
+          # Apple Silicon не запускает неподписанные Mach-O: ad-hoc подпись
+          # нужна и для .app, и для отдельного бинарника из Releases.
+          codesign --force --sign - wireproxy-control-macos-universal
+      - name: .app, zip и dmg
+        run: |
+          set -euo pipefail
+          VERSION=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
+          APP="WireproxyControl.app"
+          mkdir -p "$APP/Contents/MacOS"
+          cp wireproxy-control-macos-universal "$APP/Contents/MacOS/wireproxy-control"
+          chmod +x "$APP/Contents/MacOS/wireproxy-control"
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleIdentifier</key><string>com.devcustrom.wireproxy-control</string>
+            <key>CFBundleName</key><string>wireproxy-control</string>
+            <key>CFBundleDisplayName</key><string>wireproxy-control</string>
+            <key>CFBundleExecutable</key><string>wireproxy-control</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$VERSION</string>
+            <key>CFBundleVersion</key><string>$VERSION</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          EOF
+          codesign --force --deep --sign - "$APP"
+          ditto -c -k --keepParent "$APP" wireproxy-control-macos-universal.zip
+          hdiutil create -volname "wireproxy-control" -srcfolder "$APP" \
+            -ov -format UDZO wireproxy-control-macos-universal.dmg
       - uses: actions/upload-artifact@v4
         with:
           name: macos
-          path: wireproxy-control-macos-universal
+          path: |
+            wireproxy-control-macos-universal
+            wireproxy-control-macos-universal.zip
+            wireproxy-control-macos-universal.dmg
 
   sidecar-windows:
     runs-on: windows-latest
@@ -95,6 +130,7 @@ jobs:
         run: |
           cp sidecar/tgws/dist/tgws-proxy tgws-proxy-macos-arm64
           chmod +x tgws-proxy-macos-arm64
+          codesign --force --sign - tgws-proxy-macos-arm64
       - uses: actions/upload-artifact@v4
         with:
           name: sidecar-macos-arm64
@@ -113,6 +149,7 @@ jobs:
         run: |
           cp sidecar/tgws/dist/tgws-proxy tgws-proxy-macos-x64
           chmod +x tgws-proxy-macos-x64
+          codesign --force --sign - tgws-proxy-macos-x64
       - uses: actions/upload-artifact@v4
         with:
           name: sidecar-macos-x64
@@ -163,6 +200,8 @@ jobs:
           files: |
             artifacts/windows/wireproxy-control-windows-x64.exe
             artifacts/macos/wireproxy-control-macos-universal
+            artifacts/macos/wireproxy-control-macos-universal.zip
+            artifacts/macos/wireproxy-control-macos-universal.dmg
             artifacts/sidecar-windows/tgws-proxy-windows-x64.exe
             artifacts/sidecar-macos-arm64/tgws-proxy-macos-arm64
             artifacts/sidecar-macos-x64/tgws-proxy-macos-x64

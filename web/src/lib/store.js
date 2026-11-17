@@ -63,7 +63,7 @@ export async function ensureEngines() {
 export async function installCerts() {
   try {
     await api('/api/trust-certs', {})
-    notify('Запущен установщик сертификатов (UAC)')
+    notify('Запущен установщик сертификатов: подтвердите запрос системы')
   } catch (error) {
     notify(error.message, 'error')
   }

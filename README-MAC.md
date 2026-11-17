@@ -10,42 +10,39 @@
 
 ## Установка
 
-1. Скачайте бинарник `wireproxy-control-macos-universal` из Releases (без
-   архива).
-2. Снимите карантин (Gatekeeper блокирует неподписанные бинарники) и сделайте
-   файл исполняемым:
+1. Скачайте из Releases один из файлов:
+   - `wireproxy-control-macos-universal.dmg` — откройте образ и перетащите
+     `WireproxyControl.app` в «Программы»;
+   - `wireproxy-control-macos-universal.zip` — распакуйте и перенесите
+     `WireproxyControl.app` в «Программы»;
+   - `wireproxy-control-macos-universal` — обычный бинарник для запуска из
+     Терминала (для продвинутых).
+
+2. Первый запуск: ПКМ по `WireproxyControl.app` → «Открыть» → «Открыть».
+   macOS предупредит о неподписанном приложении — это ожидаемо, сборка
+   подписана ad-hoc. Если система пишет «повреждено», выполните в Терминале:
 
    ```bash
-   chmod +x wireproxy-control-macos-universal
-   xattr -dr com.apple.quarantine wireproxy-control-macos-universal
+   xattr -dr com.apple.quarantine /Applications/WireproxyControl.app
+   open /Applications/WireproxyControl.app
    ```
 
-   Либо: ПКМ → «Открыть» → «Открыть» в Finder. Для удобства можно
-   переименовать файл в `wireproxy-control` — команды ниже используют это имя.
+3. Приложение скачает `wireproxy` и `xray` (проверка sha256), создаст папку
+   данных и откроет панель в браузере. Дальше всё делается в панели: добавьте
+   `vless://`-ссылку или импортируйте `wg.conf`, включите системный прокси.
+   Для локальных доменов можно сразу включить плагин и выбрать домен панели.
 
-3. Запустите:
-
-   ```bash
-   ./wireproxy-control-macos-universal
-   ```
-
-   При первом запуске скачаются `wireproxy` и `xray` (проверка sha256),
-   создастся папка данных, откроется панель в браузере. Панель предложит
-   включить плагин локальных доменов и выбрать домен для неё
-   (`panel.localhost` по умолчанию); это можно пропустить и включить позже в
-   «Настройки» → «Плагины».
-
-4. В панели: добавьте `vless://`-ссылку или положите `wg.conf` рядом с
-   бинарником, затем включите системный прокси.
-
-Данные: рядом с бинарником, если там есть `wg.conf`/`settings.json`
-(portable), иначе `~/Library/Application Support/wireproxy-control`.
+Данные: `~/Library/Application Support/wireproxy-control` (или рядом с
+бинарником, если запускать его из папки с `wg.conf`/`settings.json`).
 Переопределить: `--data-dir ~/wireproxy`.
 
 ## Автозапуск
 
+Для `.app` проще всего добавить `WireproxyControl.app` в «Системные настройки»
+→ «Основные» → «Элементы входа». Альтернатива — launchd:
+
 ```bash
-./wireproxy-control install
+/Applications/WireproxyControl.app/Contents/MacOS/wireproxy-control install
 ```
 
 Создаёт `~/Library/LaunchAgents/com.wireproxy-control.plist` с `KeepAlive` и
@@ -58,7 +55,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.wireproxy-control.pl
 Выключить:
 
 ```bash
-./wireproxy-control uninstall
+/Applications/WireproxyControl.app/Contents/MacOS/wireproxy-control uninstall
 launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.wireproxy-control.plist
 ```
 
@@ -91,28 +88,37 @@ loopback-адрес.
 ## Локальные домены и HTTPS
 
 1. Блок «Локальные домены»: `app.localhost = 3000`.
-2. HTTPS: кнопка «Установить сертификаты» запускает
-   `local-domains-trust.command` (запросит пароль администратора):
+2. HTTPS: кнопка «Установить сертификаты» показывает нативный запрос пароля
+   администратора (без окна Терминала) и добавляет CA в системный keychain:
 
    ```bash
-   sudo security add-trusted-cert -d -r trustRoot \
+   security add-trusted-cert -d -r trustRoot \
      -k /Library/Keychains/System.keychain certs/ca.crt
    ```
 
-3. `*.localhost` резолвится браузером без hosts. Для настоящих имён:
+3. `*.localhost` резолвится браузером без hosts. Для настоящих имён нажмите
+   «Применить hosts» — скрипт выполнится с правами администратора, снова без
+   окна Терминала. Эквивалент из командной строки:
 
    ```bash
    ./wireproxy-control sync-hosts
-   ./local-domains-hosts.command   # sudo внутри
+   ./local-domains-hosts.command
    ```
 
 4. Firefox: `security.enterprise_roots.enabled = true` в `about:config`.
 
-Порты 80/443 заданы в `settings.json` (`localProxyPort`, `localHttpsPort`).
-Если macOS не даёт занять их без прав, поставьте 8088/8443 — ошибка видна в
-панели, а домены продолжат работать по этим портам.
+На macOS порты 80/443 требуют root, поэтому при первом включении плагина
+приложение автоматически занимает свободные 8088/8443 и сохраняет их в
+`settings.json` (`localProxyPort`, `localHttpsPort`). Ссылки в панели уже
+содержат нужный порт (`http://app.localhost:8088`,
+`https://app.localhost:8443`). Если хотите вернуть 80/443, запускайте менеджер
+от root — но это не рекомендуется.
 
 ## Команды
+
+Для `.app` бинарник лежит внутри:
+`/Applications/WireproxyControl.app/Contents/MacOS/wireproxy-control`.
+В таблице он сокращён до `wireproxy-control`.
 
 | Действие | Команда |
 | --- | --- |
