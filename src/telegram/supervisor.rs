@@ -264,7 +264,6 @@ async fn supervise(
                     }
                 };
                 *state.telegram.pid.lock().unwrap_or_else(|e| e.into_inner()) = None;
-                drop(job);
                 if *rx.borrow() || exited.is_none() {
                     break;
                 }
