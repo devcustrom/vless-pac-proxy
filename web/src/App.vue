@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch, watchEffect } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue'
 import { BookOpen, ListFilter, RefreshCw, ShieldCheck } from 'lucide-vue-next'
 import { api, store } from '@/lib/store'
 import { useStatusQuery } from '@/lib/queries'
@@ -118,9 +118,21 @@ function closeDocs() {
   }
 }
 
+function refetchStatus() {
+  statusQuery.refetch().catch(() => {
+    /* следующий polling попробует снова */
+  })
+}
+
 onMounted(() => {
   syncTabFromHash()
   window.addEventListener('hashchange', syncTabFromHash)
+  window.addEventListener('wpc:status-refresh', refetchStatus)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('hashchange', syncTabFromHash)
+  window.removeEventListener('wpc:status-refresh', refetchStatus)
 })
 
 watch(s, () => syncTabFromHash())

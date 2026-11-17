@@ -2,18 +2,21 @@
 import { computed, ref, watch } from 'vue'
 import { Activity, RotateCcw, Shield } from 'lucide-vue-next'
 import { notify, post } from '@/lib/store'
+import { useStatusQuery } from '@/lib/queries'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
 import Switch from '@/components/ui/Switch.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
+const statusQuery = useStatusQuery()
 
 const sysProxy = ref(!!props.s.systemProxy?.enabled)
 const sysProxyBusy = ref(false)
 const defaultBusy = ref('')
 const channelBusy = ref('')
 const restartBusy = ref('')
+const directBusy = ref(false)
 watch(() => props.s.systemProxy?.enabled, (value) => {
   sysProxy.value = !!value
 })
@@ -31,6 +34,14 @@ const vlessState = computed(() => {
     : { tone: 'destructive', text: props.s.xrayRunning ? 'канал не проходит трафик' : 'процесс отсутствует' }
 })
 
+async function refreshStatus() {
+  try {
+    await statusQuery.refetch()
+  } catch {
+    /* статус обновится следующим опросом */
+  }
+}
+
 async function setSystemProxy(value) {
   sysProxy.value = value
   sysProxyBusy.value = true
@@ -39,6 +50,7 @@ async function setSystemProxy(value) {
   } catch {
     sysProxy.value = !value
   } finally {
+    await refreshStatus()
     sysProxyBusy.value = false
   }
 }
@@ -50,6 +62,7 @@ async function setDefault(value) {
   } catch {
     /* тост показан */
   } finally {
+    await refreshStatus()
     defaultBusy.value = ''
   }
 }
@@ -61,6 +74,7 @@ async function setChannel(channel, enabled) {
   } catch {
     /* тост показан */
   } finally {
+    await refreshStatus()
     channelBusy.value = ''
   }
 }
@@ -73,16 +87,21 @@ async function restartChannel(channel) {
   } catch {
     /* тост показан */
   } finally {
+    await refreshStatus()
     restartBusy.value = ''
   }
 }
 
 async function setDirectFirst(value) {
+  directBusy.value = true
   try {
     await post('/api/auto', { directFirst: value })
     notify(value ? 'Сначала напрямую, затем VPN' : 'VPN по правилам списков')
   } catch {
     /* тост показан */
+  } finally {
+    await refreshStatus()
+    directBusy.value = false
   }
 }
 </script>
@@ -110,7 +129,7 @@ async function setDirectFirst(value) {
           <Button
             size="icon"
             variant="ghost"
-            :disabled="s.channels?.wireguard === false || !!channelBusy"
+            :disabled="s.channels?.wireguard === false || !!channelBusy || !!restartBusy"
             :loading="restartBusy === 'wireguard'"
             title="Перезапустить WireGuard"
             @click="restartChannel('wireguard')"
@@ -119,7 +138,7 @@ async function setDirectFirst(value) {
           </Button>
           <Switch
             :model-value="s.channels?.wireguard !== false"
-            :disabled="!!channelBusy"
+            :disabled="!!channelBusy || restartBusy === 'wireguard'"
             @update:model-value="(value) => setChannel('wireguard', value)"
           />
         </div>
@@ -145,7 +164,7 @@ async function setDirectFirst(value) {
           <Button
             size="icon"
             variant="ghost"
-            :disabled="s.channels?.xray === false || !!channelBusy"
+            :disabled="s.channels?.xray === false || !!channelBusy || !!restartBusy"
             :loading="restartBusy === 'xray'"
             title="Перезапустить Xray"
             @click="restartChannel('xray')"
@@ -154,7 +173,7 @@ async function setDirectFirst(value) {
           </Button>
           <Switch
             :model-value="s.channels?.xray !== false"
-            :disabled="!!channelBusy"
+            :disabled="!!channelBusy || restartBusy === 'xray'"
             @update:model-value="(value) => setChannel('xray', value)"
           />
         </div>
@@ -194,6 +213,7 @@ async function setDirectFirst(value) {
         </div>
         <Switch
           :model-value="s.directFirst !== false"
+          :disabled="directBusy"
           @update:model-value="setDirectFirst"
         />
       </div>

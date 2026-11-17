@@ -2,11 +2,13 @@
 import { computed, ref } from 'vue'
 import { Download, LockKeyhole, Wifi } from 'lucide-vue-next'
 import { ensureEngines, installCerts, post } from '@/lib/store'
+import { useStatusQuery } from '@/lib/queries'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import Badge from '@/components/ui/Badge.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
+const statusQuery = useStatusQuery()
 
 const downloads = computed(() => Object.entries(props.s.engineDownloads || {}))
 const downloading = computed(() =>
@@ -56,6 +58,11 @@ async function toggleProxy(enabled) {
   } catch {
     /* тост уже показан */
   } finally {
+    try {
+      await statusQuery.refetch()
+    } catch {
+      /* следующий опрос обновит статус */
+    }
     proxyBusy.value = false
   }
 }

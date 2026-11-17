@@ -43,6 +43,9 @@ export async function post(path, body) {
   try {
     const result = await api(path, body ?? {})
     await refresh()
+    // App.vue перезапрашивает Pinia Colada query, чтобы переключатели
+    // обновились сразу, а не ждали пятисекундный polling.
+    window.dispatchEvent(new Event('wpc:status-refresh'))
     return result
   } catch (error) {
     notify(error.message, 'error')

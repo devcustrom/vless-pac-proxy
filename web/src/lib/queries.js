@@ -31,10 +31,10 @@ export function useActionMutation(action, keys = [['status']]) {
   const cache = useQueryCache()
   return useMutation({
     mutation: action,
-    onSuccess: () => {
-      for (const key of keys) {
-        cache.invalidateQueries({ key })
-      }
+    onSuccess: async () => {
+      // Ждём refetch: isLoading не снимется, пока переключатель не получит
+      // новое состояние. Иначе чекбокс успевает «отскочить» до опроса.
+      await Promise.all(keys.map((key) => cache.invalidateQueries({ key })))
     },
     onError: (error) => notify(error.message, 'error'),
   })
