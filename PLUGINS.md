@@ -44,13 +44,14 @@ curl -X POST -H "X-WPC: 1" -H "Content-Type: application/json" \
 ## Zapret (Windows)
 
 Плагин ищет бандл в `<data-dir>/zapret`: zapret2 (`zapret-winws/winws2.exe`,
-Lua, blockcheck2) или Flowseal v1 (`bin/winws.exe`, `general*.bat`). Читает
-`preset2*.cmd`/`general*.bat` и извлекает аргументы движка (сами `.bat` не
-исполняются). Служба `wireproxy-zapret` создаётся через UAC, после чего
+Lua, blockcheck2) или Flowseal v1 (`bin/winws.exe`, `general*.bat`). Бандл
+скачивается кнопкой в панели (URL и sha256 закреплены) либо кладётся вручную.
+Читает `preset2*.cmd`/`general*.bat` и извлекает аргументы движка (сами `.bat`
+не исполняются). Служба `wireproxy-zapret` создаётся через UAC, после чего
 запуск/остановка доступны из панели без UAC. Для zapret2 доступен
 автоподбор стратегии через blockcheck2 с автоматической установкой
-результата. API: `GET /api/zapret`, `POST /api/zapret` (`install`, `remove`,
-`start`, `stop`, `set-preset`, `auto-tune`, `open-folder`).
+результата. API: `GET /api/zapret`, `POST /api/zapret` (`download`, `install`,
+`remove`, `start`, `stop`, `set-preset`, `auto-tune`, `open-folder`).
 Подробнее — [ZAPRET.md](ZAPRET.md).
 
 ## Telegram-прокси

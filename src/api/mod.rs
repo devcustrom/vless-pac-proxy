@@ -598,6 +598,40 @@ async fn zapret_get(State(st): State<Arc<AppState>>) -> Json<Value> {
 async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
     let action = body.get("action").and_then(Value::as_str).unwrap_or("");
     match action {
+        "download" => {
+            if !crate::zapret::supported() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "Zapret поддерживается только на Windows" })),
+                )
+                    .into_response();
+            }
+            let variant = body
+                .get("variant")
+                .and_then(Value::as_str)
+                .and_then(crate::zapret::bundle::BundleVariant::parse)
+                .unwrap_or(crate::zapret::bundle::BundleVariant::Zapret2);
+            match crate::zapret::bundle::install(&st, variant).await {
+                Ok(info) => {
+                    crate::zapret::clear_error(&st);
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    Json(json!({
+                        "ok": true,
+                        "bundle": info,
+                        "status": crate::zapret::status_json(&st),
+                    }))
+                    .into_response()
+                }
+                Err(e) => {
+                    crate::zapret::record_error(&st, &e);
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": format!("{e:#}") })),
+                    )
+                        .into_response()
+                }
+            }
+        }
         "install" => {
             let preset = body
                 .get("preset")

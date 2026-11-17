@@ -12,7 +12,6 @@ const props = defineProps({ s: { type: Object, required: true } })
 
 const probes = reactive({})
 const certBusy = ref(false)
-const hostsBusy = ref(false)
 const applyBusy = ref(false)
 const editBusy = ref(false)
 const removing = ref('')
@@ -29,18 +28,6 @@ async function install() {
     await installCerts()
   } finally {
     certBusy.value = false
-  }
-}
-
-async function prepareHosts() {
-  hostsBusy.value = true
-  try {
-    const result = await api('/api/local-domains/hosts', {})
-    notify('Скрипт hosts: ' + result.script)
-  } catch (error) {
-    notify(error.message, 'error')
-  } finally {
-    hostsBusy.value = false
   }
 }
 
@@ -213,17 +200,12 @@ async function probe(name) {
           <code>*.localhost</code> браузеры резолвят сами — hosts не нужен.
           Для настоящих имён (например, <code>app.example.com</code>) нужна
           запись <code>127.0.0.1</code> в hosts: нажмите «Применить hosts» и
-          подтвердите UAC/пароль. Если нужно вручную, запустите
-          <code>{{ lp().hostsScript || 'local-domains-hosts.bat' }}</code> от
-          администратора.
+          подтвердите запрос системы. Всё делается из панели, без терминала.
         </p>
         <div class="flex flex-wrap gap-2">
           <Button size="sm" :loading="applyBusy" @click="applyHosts">
             <ShieldCheck class="h-3.5 w-3.5" />
             Применить hosts
-          </Button>
-          <Button size="sm" variant="outline" :loading="hostsBusy" @click="prepareHosts">
-            Подготовить скрипт hosts
           </Button>
           <Button
             v-if="!isMac()"

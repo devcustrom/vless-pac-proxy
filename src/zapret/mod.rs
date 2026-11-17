@@ -1,4 +1,5 @@
 pub mod autotune;
+pub mod bundle;
 pub mod preset;
 pub mod service;
 
@@ -50,6 +51,7 @@ pub fn status_json(state: &AppState) -> Value {
         .collect();
     let selected = selected_preset(state);
     let service = service::query(&state.dir);
+    let installed_bundle = bundle::installed_info(&state.dir);
     let auto = state
         .zapret_auto
         .lock()
@@ -70,6 +72,7 @@ pub fn status_json(state: &AppState) -> Value {
         "enabled": settings.zapret_enabled && supported(),
         "bundleInstalled": installed,
         "bundlePath": bundle.display().to_string(),
+        "bundle": installed_bundle,
         "engine": preset::engine_label(&state.dir),
         "blockcheck": preset::blockcheck_paths(&state.dir).is_some(),
         "presets": presets,
@@ -113,6 +116,10 @@ fn set_error(state: &AppState, value: Option<String>) {
     if let Ok(mut guard) = state.zapret_error.lock() {
         *guard = value;
     }
+}
+
+pub fn clear_error(state: &AppState) {
+    set_error(state, None);
 }
 
 pub fn service_running_cached(state: &AppState) -> bool {

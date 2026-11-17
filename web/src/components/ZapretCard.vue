@@ -1,6 +1,6 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
-import { ExternalLink, FolderOpen, Play, ShieldAlert, Square, Trash2 } from 'lucide-vue-next'
+import { Download, FolderOpen, Play, ShieldAlert, Square, Trash2 } from 'lucide-vue-next'
 import { api, notify } from '@/lib/store'
 import { useActionMutation } from '@/lib/queries'
 import Card from '@/components/ui/Card.vue'
@@ -37,6 +37,10 @@ const installAction = useActionMutation(
   () => api('/api/zapret', { action: 'install', preset: form.preset }),
   [['status']],
 )
+const downloadAction = useActionMutation(
+  (variant) => api('/api/zapret', { action: 'download', variant }),
+  [['status']],
+)
 const autoAction = useActionMutation(
   () => api('/api/zapret', { action: 'auto-tune' }),
   [['status']],
@@ -65,6 +69,7 @@ const pluginAction = useActionMutation(
 const busy = computed(
   () =>
     installAction.isLoading.value ||
+    downloadAction.isLoading.value ||
     autoAction.isLoading.value ||
     removeAction.isLoading.value ||
     startAction.isLoading.value ||
@@ -74,12 +79,43 @@ const busy = computed(
 const auto = computed(() => z.value.autoTune || {})
 const autoRunning = computed(() => !!auto.value.running || !!autoAction.isLoading.value)
 const openBusy = computed(() => openAction.isLoading.value)
+const downloading = computed(() => downloadAction.isLoading.value)
+const bundleInfo = computed(() => z.value.bundle || {})
+const bundleLabel = computed(() => {
+  if (bundleInfo.value.variant === 'flowseal') return 'Flowseal v1'
+  if (bundleInfo.value.variant === 'zapret2') return 'zapret2'
+  return z.value.engine && z.value.engine !== 'none' ? z.value.engine : 'Zapret'
+})
 
 async function install() {
   try {
     await installAction.mutateAsync()
     dirty.value = false
     notify('Установщик службы Zapret запущен — подтвердите UAC')
+  } catch {
+    /* тост показан */
+  }
+}
+
+async function downloadBundle(variant) {
+  const label = variant === 'flowseal' ? 'Flowseal v1' : 'zapret2'
+  if (
+    bundle.value &&
+    !confirm(
+      `Скачать и заменить папку Zapret на ${label}? Служба на время замены остановится.`,
+    )
+  ) {
+    return
+  }
+  notify(`Скачиваю ${label} — это может занять до минуты`)
+  try {
+    await downloadAction.mutateAsync(variant)
+    dirty.value = false
+    notify(
+      installed.value
+        ? `Бандл ${label} установлен — проверьте пресет и нажмите «Применить пресет»`
+        : `Бандл ${label} установлен`,
+    )
   } catch {
     /* тост показан */
   }
@@ -138,10 +174,6 @@ async function togglePlugin(value) {
     /* тост показан */
   }
 }
-
-function openRelease() {
-  window.open('https://github.com/Flowseal/zapret-discord-youtube/releases/latest', '_blank', 'noopener')
-}
 </script>
 
 <template>
@@ -170,6 +202,9 @@ function openRelease() {
         <Badge v-if="z.engine && z.engine !== 'none'" variant="outline">
           {{ z.engine }}
         </Badge>
+        <Badge v-if="bundleInfo.variant" variant="outline">
+          {{ bundleLabel }}<template v-if="bundleInfo.version"> · {{ bundleInfo.version }}</template>
+        </Badge>
       </div>
 
       <div v-if="!supported" class="rounded-lg border bg-muted/30 px-3 py-2 text-sm">
@@ -181,16 +216,29 @@ function openRelease() {
         class="space-y-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
       >
         <p>
-          Скачайте Flowseal (v1) или zapret2-бандл, распакуйте его в папку
-          <code class="break-all">{{ z.bundlePath }}</code> и обновите статус.
-          Для zapret2 нужны <code>zapret-winws/winws2.exe</code>,
-          <code>blockcheck</code> и <code>cygwin</code>; для Flowseal —
-          <code>bin/winws.exe</code> и <code>lists</code>.
+          Бандл не найден. Нажмите кнопку — приложение само скачает архив с
+          GitHub, проверит sha256 и распакует его в
+          <code class="break-all">{{ z.bundlePath }}</code>.
+        </p>
+        <p>
+          <b>zapret2</b> (~20 МБ) — рекомендуется: <code>winws2</code>, Lua,
+          blockcheck2 и cygwin. <b>Flowseal v1</b> (~1.5 МБ) — простые
+          <code>general*.bat</code>.
         </p>
         <div class="flex flex-wrap gap-2">
-          <Button size="sm" variant="outline" @click="openRelease">
-            <ExternalLink class="h-3.5 w-3.5" />
-            Открыть релиз Flowseal
+          <Button size="sm" :loading="downloading" :disabled="busy" @click="downloadBundle('zapret2')">
+            <Download class="h-3.5 w-3.5" />
+            Скачать zapret2
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            :loading="downloading"
+            :disabled="busy"
+            @click="downloadBundle('flowseal')"
+          >
+            <Download class="h-3.5 w-3.5" />
+            Скачать Flowseal v1
           </Button>
           <Button size="sm" variant="outline" :loading="openBusy" @click="openFolder">
             <FolderOpen class="h-3.5 w-3.5" />
@@ -200,6 +248,27 @@ function openRelease() {
       </div>
 
       <div v-if="supported && bundle" class="space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/30 px-3 py-2 text-xs">
+          <span>
+            Бандл: <b>{{ bundleLabel }}</b>
+            <span v-if="bundleInfo.version" class="text-muted-foreground"> · {{ bundleInfo.version }}</span>
+          </span>
+          <div class="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" :loading="downloading" :disabled="busy" @click="downloadBundle('zapret2')">
+              <Download class="h-3.5 w-3.5" />
+              Переустановить zapret2
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              :loading="downloading"
+              :disabled="busy"
+              @click="downloadBundle('flowseal')"
+            >
+              Flowseal v1
+            </Button>
+          </div>
+        </div>
         <div
           v-if="z.engine === 'winws2' && z.blockcheck"
           class="space-y-3 rounded-lg border border-primary/30 bg-primary/5 p-3"

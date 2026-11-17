@@ -9,25 +9,29 @@ WinDivert. Это не прокси и не VPN: Zapret перехватывае
 - **zapret2** (`winws2.exe`, Lua-стратегии, `blockcheck2`) — рекомендуется;
 - **Flowseal v1** (`winws.exe`, `general*.bat`) — для совместимости.
 
-## Что нужно
+## Установка бандла
 
-1. Windows 10/11 x64.
-2. Бандл:
-   - [bol-van/zapret-win-bundle](https://github.com/bol-van/zapret-win-bundle)
-     для zapret2, либо
-   - [Flowseal/zapret-discord-youtube](https://github.com/Flowseal/zapret-discord-youtube/releases/latest)
-     для v1.
-3. Распаковать содержимое бандла в каталог данных:
+На вкладке «Zapret» нажмите одну из кнопок:
+
+- **Скачать zapret2** (~20 МБ) — рекомендуется: `winws2`, Lua,
+  `blockcheck2`, cygwin;
+- **Скачать Flowseal v1** (~1.5 МБ) — `winws.exe` и `general*.bat`.
+
+Приложение само скачает архив с GitHub, проверит закреплённый sha256,
+распакует его в каталог данных и покажет найденные пресеты. Терминал и ручная
+распаковка не нужны. Если служба Zapret уже работает, на время замены она
+останавливается и затем запускается снова.
 
 ```text
 %LOCALAPPDATA%\wireproxy-control\zapret\
 ```
 
-Для zapret2 должны быть `zapret-winws\winws2.exe`, `zapret-winws\lua`,
+Для zapret2 в папке появляются `zapret-winws\winws2.exe`, `zapret-winws\lua`,
 `blockcheck\zapret2\blockcheck2.sh` и `cygwin\bin\bash.exe`.
 Для Flowseal v1 — `bin\winws.exe`, `lists`, `general*.bat`.
 
-Кнопка **«Папка Zapret»** создаёт и открывает эту папку.
+Кнопка **«Папка Zapret»** открывает каталог, если нужно положить файлы вручную
+(например, свою сборку).
 
 ## Как работает плагин
 
@@ -82,7 +86,9 @@ Zapret не является прокси: он не умеет выбирать
   автоматический поиск.
 - Игровой фильтр Flowseal `%GameFilterTCP%`/`%GameFilterUDP%` подставляется
   пустым.
-- Плагин не скачивает и не обновляет бандл автоматически.
+- Встроенные кнопки скачивают закреплённые версии: zapret2 из коммита
+  `6b4375fa` и Flowseal `1.10.4`. Свою версию можно положить в папку Zapret
+  вручную.
 
 ## Безопасность
 

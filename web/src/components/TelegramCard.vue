@@ -17,9 +17,6 @@ const t = computed(() => props.s.telegram || {})
 const enabled = computed(() => !!props.s.plugins?.telegram)
 const running = computed(() => !!t.value.running)
 const installed = computed(() => !!t.value.installed)
-const isWindows = computed(() => t.value.platform === 'windows')
-const sidecarName = computed(() => (isWindows.value ? 'tgws-proxy.exe' : 'tgws-proxy'))
-const buildScript = computed(() => (isWindows.value ? 'sidecar/tgws/build.ps1' : 'sidecar/tgws/build.sh'))
 const busyLink = ref(false)
 const dirty = ref(false)
 
@@ -279,10 +276,9 @@ async function openLink() {
           Нужен headless-компонент
         </div>
         <p>
-          Соберите <code>{{ buildScript }}</code> и положите
-          <code>{{ sidecarName }}</code> в каталог данных приложения. После этого
-          включите плагин. Если sidecar опубликован в релизе, его можно
-          установить кнопкой ниже.
+          Нажмите кнопку — приложение скачает готовый sidecar из релиза,
+          проверит sha256 и положит его в каталог данных. После этого включите
+          плагин.
         </p>
         <Button size="sm" variant="outline" :loading="updating" @click="checkUpdate">
           Скачать / обновить sidecar
