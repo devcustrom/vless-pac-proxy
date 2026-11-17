@@ -1,15 +1,25 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
+#[cfg(windows)]
 use std::process::Command;
 use std::sync::Arc;
+#[cfg(windows)]
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+#[cfg(windows)]
+use anyhow::Context;
+use anyhow::{bail, Result};
 
 use crate::state::AppState;
+#[cfg(windows)]
 use crate::wlog;
 
+#[cfg(windows)]
 use super::preset::{self, BlockcheckPaths};
-use super::{service, AutoTuneState};
+#[cfg(windows)]
+use super::service;
+use super::AutoTuneState;
 
 const LOG_FILE: &str = "zapret-blockcheck.log";
 const DONE_FILE: &str = "zapret-blockcheck.done";

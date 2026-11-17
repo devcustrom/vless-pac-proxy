@@ -2,7 +2,9 @@ use std::path::Path;
 #[cfg(windows)]
 use std::process::Command;
 
-use anyhow::{bail, Context, Result};
+#[cfg(windows)]
+use anyhow::Context;
+use anyhow::{bail, Result};
 use serde::Serialize;
 
 #[cfg(windows)]
