@@ -9,6 +9,8 @@
 | Плагин | Что делает | Флаг в settings.json |
 | --- | --- | --- |
 | Локальные домены | HTTP :80 / HTTPS :443, SNI, WebSocket, свой CA | `localDomainsEnabled` (по умолчанию `false`) |
+| Telegram-прокси | MTProto → WS/WireGuard/VLESS/direct, tg-ws-proxy sidecar | `telegramEnabled` (по умолчанию `false`) |
+| Zapret | zapret2/Flowseal, auto blockcheck2, служба Windows, WinDivert | `zapretEnabled` (по умолчанию `false`) |
 | WireGuard-канал | wireproxy, несколько конфигов | `wireguardEnabled` (по умолчанию `true`) |
 | Xray-канал | VLESS/VMess/Trojan/SS | `xrayEnabled` (по умолчанию `true`) |
 | Умный прокси | маршрутизация по доменам на :8081 | всегда включён (ядро) |
@@ -23,7 +25,55 @@ curl -X POST -H "X-WPC: 1" -H "Content-Type: application/json" \
   -d '{"localDomains": false}' http://127.0.0.1:8080/api/plugins
 ```
 
+При включении можно сразу задать домен панели (он привязывается к порту
+панели и заменяет прежнюю привязку):
+
+```bash
+curl -X POST -H "X-WPC: 1" -H "Content-Type: application/json" \
+  -d '{"localDomains": true, "panelDomain": "panel.localhost"}' \
+  http://127.0.0.1:8080/api/plugins
+```
+
+Ответ содержит `panelDomain`, `caTrusted`, `httpError`, `httpsError`.
+Первый запуск предлагает включить плагин; отказ сохраняется в
+`onboardingDone`, чтобы мастер не появлялся снова. Старые установки с уже
+включённым плагином помечаются пройденными автоматически.
+
 Текущее состояние плагинов есть в `/api/status` → `plugins`.
+
+## Zapret (Windows)
+
+Плагин ищет бандл в `<data-dir>/zapret`: zapret2 (`zapret-winws/winws2.exe`,
+Lua, blockcheck2) или Flowseal v1 (`bin/winws.exe`, `general*.bat`). Читает
+`preset2*.cmd`/`general*.bat` и извлекает аргументы движка (сами `.bat` не
+исполняются). Служба `wireproxy-zapret` создаётся через UAC, после чего
+запуск/остановка доступны из панели без UAC. Для zapret2 доступен
+автоподбор стратегии через blockcheck2 с автоматической установкой
+результата. API: `GET /api/zapret`, `POST /api/zapret` (`install`, `remove`,
+`start`, `stop`, `set-preset`, `auto-tune`, `open-folder`).
+Подробнее — [ZAPRET.md](ZAPRET.md).
+
+## Telegram-прокси
+
+Плагин управляет headless-sidecar `tgws-proxy` (vendored MIT-ядро
+`Flowseal/tg-ws-proxy`) и отдельным MTProto-listener’ом на `127.0.0.1:1443`.
+Внутри sidecar порядок путей задаёт менеджер:
+
+- `direct` — WS/TCP напрямую к DC Telegram (явный пункт «Пробовать напрямую»);
+- `wg` — HTTP CONNECT через wireproxy `127.0.0.1:25345`;
+- `vless` — HTTP CONNECT через xray `127.0.0.1:25346`.
+
+Пресеты: `auto` (WS → VPN → direct), `vpn-first`, `direct-only`,
+`vpn-only`. При выключенном direct используются только VPN-пути; прямой
+TCP-пробник в панели показывает доступность DC без TLS/WS.
+
+API: `GET /api/telegram`, `POST /api/telegram` (`enable`, `disable`,
+`restart`, `set`, `probe`, `probe-direct`, `check-update`, `ensure-sidecar`,
+`rotate-secret`), `POST /api/telegram/link` (полная `tg://`-ссылка, только с
+`X-WPC: 1`). Автообновление sidecar проверяет манифест раз в 6 часов,
+скачивает с проверкой sha256 и перезапускает прокси. Секрет хранится в
+`settings.json`, маскируется в статусе и вырезается из логов sidecar. Сборка
+sidecar и ограничения — в [TELEGRAM.md](TELEGRAM.md).
 
 ## Как устроен плагин локальных доменов
 
@@ -35,6 +85,8 @@ curl -X POST -H "X-WPC: 1" -H "Content-Type: application/json" \
    `tls_config`, `local_proxy_stop`.
 5. API: `/api/local-domains`, `/probe`, `/hosts`, `/api/plugins`.
 6. UI: `web/src/components/LocalDomainsCard.vue`, вкладка «Домены».
+   Маршрутизация доменов — отдельная модалка на «Обзоре»
+   (`RoutingDialog.vue` + `DomainRoutingCard.vue`).
 
 Запуск/остановка:
 
@@ -90,6 +142,20 @@ crate::net::local_proxy::stop(&state);  // закрывает слушатели
 Уже поддержаны: `vless://` (Reality/TLS/ws/grpc), `vmess://` (base64 JSON),
 `trojan://`, `ss://` (SIP002 и legacy). Новые протоколы автоматически
 попадают в общий пул, live-проверку и автопереключение.
+
+## Пул конфигов
+
+В карточке «Пул конфигов» две кнопки импорта из
+[igareck/vpn-configs-for-russia](https://github.com/igareck/vpn-configs-for-russia):
+
+- **BLACK** — обычные VLESS/SS-конфиги для обхода блокировок;
+- **WHITE (CIDR/SNI)** — конфиги для сетей, где разрешён только белый список
+  CIDR/SNI.
+
+Импорт идемпотентен по имени файла: повторное нажатие не дублирует подписки.
+После импорта сразу запускается проверка пула. Активный конфиг помечается
+бейджем «активен»; перед применением («Использовать») он перепроверяется
+живым трафиком.
 
 ## Несколько WireGuard-конфигов
 

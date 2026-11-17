@@ -62,8 +62,50 @@ jobs:
           name: macos
           path: wireproxy-control-macos-universal
 
+  sidecar-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Сборка headless sidecar
+        shell: pwsh
+        working-directory: sidecar/tgws
+        run: ./build.ps1
+      - name: Манифест обновления
+        shell: pwsh
+        run: |
+          $version = (Get-Content sidecar/tgws/VERSION -Raw).Trim()
+          $file = "tgws-proxy-windows-x64.exe"
+          Copy-Item sidecar/tgws/dist/tgws-proxy.exe $file
+          $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item $file).Length
+          $url = "https://github.com/devcustrom/vless-pac-proxy/releases/latest/download/$file"
+          $manifest = @{
+            version = $version
+            assets = @{
+              "windows-x64" = @{
+                url = $url
+                sha256 = $hash
+                size = $size
+              }
+            }
+          } | ConvertTo-Json -Depth 5
+          [System.IO.File]::WriteAllText(
+            (Join-Path $PWD "tgws-manifest.json"),
+            $manifest,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidecar
+          path: |
+            tgws-proxy-windows-x64.exe
+            tgws-manifest.json
+
   release:
-    needs: [windows, macos]
+    needs: [windows, macos, sidecar-windows]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
@@ -77,3 +119,5 @@ jobs:
           files: |
             artifacts/windows/wireproxy-control-windows-x64.exe
             artifacts/macos/wireproxy-control-macos-universal
+            artifacts/sidecar/tgws-proxy-windows-x64.exe
+            artifacts/sidecar/tgws-manifest.json

@@ -1,0 +1,139 @@
+# Telegram-прокси
+
+Локальный **MTProto-прокси** для Telegram Desktop, встроенный в
+`wireproxy-control` как плагин. В отличие от системного HTTP-прокси, Telegram
+подключается к нему отдельно по `tg://proxy`-ссылке.
+
+## Как это работает
+
+```text
+Telegram Desktop
+  -> 127.0.0.1:1443 (MTProto + secret)
+     -> sidecar tgws-proxy
+        -> WS напрямую к DC Telegram
+        -> WS через WireGuard  (127.0.0.1:25345)
+        -> WS через VLESS      (127.0.0.1:25346)
+        -> Cloudflare Worker / CF Proxy (если настроены)
+        -> TCP напрямую / через WireGuard / через VLESS
+```
+
+Ядро — headless-сборка [Flowseal/tg-ws-proxy](https://github.com/Flowseal/tg-ws-proxy)
+(MIT). Поверх неё менеджер задаёт порядок исходящих путей и статус.
+Системный прокси Windows и PAC для Telegram не используются: у клиента своя
+настройка MTProto-прокси.
+
+## Сборка sidecar
+
+В релизе sidecar `tgws-proxy.exe` скачивается автоматически по манифесту.
+Для разработки его можно собрать самому на Windows:
+
+```powershell
+cd sidecar\tgws
+.\build.ps1
+```
+
+Нужен Python 3.11+. Результат: `sidecar\tgws\dist\tgws-proxy.exe`.
+Положите его в каталог данных `wireproxy-control`:
+
+```text
+%LOCALAPPDATA%\wireproxy-control\tgws-proxy.exe
+```
+
+macOS/Linux: `./build.sh`, бинарник `dist/tgws-proxy`.
+
+## Включение и подключение Telegram
+
+1. Панель → **Настройки → Плагины → Telegram-прокси** (или вкладка
+   **Telegram** → «Включить»).
+2. На вкладке **Telegram** нажмите «Копировать ссылку» или «Открыть в
+   Telegram».
+3. В Telegram Desktop: Настройки → Продвинутые → Тип соединения → Прокси →
+   MTProto. Либо вставьте ссылку `tg://proxy?...` в браузере/Telegram.
+4. Секрет можно заменить кнопкой «Сгенерировать новый»; после этого нужна
+   новая ссылка.
+
+## Порядок транспортов и direct-режим
+
+Переключатель **«Пробовать напрямую»** добавляет direct-пункты:
+
+- WS напрямую к дата-центру Telegram;
+- TCP напрямую, если WS не поднялся.
+
+Пресеты:
+
+| Пресет | Порядок |
+| --- | --- |
+| `auto` | direct → WireGuard → VLESS |
+| `vpn-first` | WireGuard → VLESS → direct |
+| `direct-only` | только direct (диагностика) |
+| `vpn-only` | только WireGuard/VLESS |
+
+Если «Пробовать напрямую» выключено, direct-пункты исключаются из любого
+пресета, кроме `direct-only` (он тогда недоступен). Кнопка **«Проверить
+напрямую»** делает TCP-пробу DC 1–5/203 без TLS/WS и показывает результат,
+не меняя сохранённый порядок.
+
+Внутри одного пути sidecar сначала использует WS-пул tg-ws-proxy, затем его
+CF/TCP fallback. Для каждого соединения запоминается последний удачный путь,
+чтобы не перебирать заведомо мёртвый канал.
+
+## Автообновление sidecar
+
+По умолчанию включено. Менеджер раз в 6 часов проверяет манифест
+`tgws-manifest.json` в последнем GitHub-релизе, сравнивает версию и sha256,
+скачивает новый `tgws-proxy.exe`, останавливает старый процесс, атомарно
+заменяет бинарник (оставляя `.bak`) и перезапускает прокси. Если манифест ещё
+не опубликован, автообновление молча ждёт; кнопка **«Проверить обновление»**
+покажет ошибку вручную.
+
+Ручная проверка — на вкладке **Telegram** или:
+
+```bash
+curl -X POST -H "X-WPC: 1" -H "Content-Type: application/json" \
+  -d '{"action":"check-update"}' http://127.0.0.1:8080/api/telegram
+```
+
+Для локальной проверки обновления без публикации можно задать
+`WPC_TGWS_LOCAL_MANIFEST` — путь к JSON-манифесту с локальным путём к
+бинарнику. Это только dev-режим; в обычном запуске используется HTTPS-манифест.
+
+Релизный workflow собирает Windows-sidecar и манифест автоматически. Для
+macOS sidecar пока собирается вручную (`sidecar/tgws/build.sh`).
+
+## Cloudflare и Fake TLS
+
+- **CF Worker** — домен Worker’а; используется как WS-fallback.
+- **CF Proxy** — свой домен с A-записями на DC Telegram; включает CF-proxy
+  fallback и (в direct-only) HTTP/2 media.
+- **Fake TLS domain** — маскировка входящего MTProto под TLS; ссылка
+  становится `ee...`. Требует домен и понимание рисков.
+- **HTTP/2 media** доступен только в режиме `direct-only`: H2-транспорт
+  upstream не умеет ходить через наш HTTP CONNECT.
+
+## Ограничения v1
+
+- Слушатель только `127.0.0.1`; LAN/мобильные клиенты не поддерживаются.
+- Нет отдельного SOCKS5: один MTProto-listener сам выбирает путь.
+- Sidecar — отдельный процесс (PyInstaller); на Windows он управляется
+  Job Object, чтобы не оставлять дочерний процесс при перезапуске.
+- MTProto-шифрование Telegram не снимается: прокси меняет только транспорт.
+- CF/Fake TLS/fronting — сторонние механизмы обхода DPI; используйте с
+  пониманием ограничений провайдера и законодательства.
+
+## Безопасность
+
+- Секрет — 32 hex-символа, генерируется CSPRNG и хранится в `settings.json`.
+- В `GET /api/telegram` секрет маскируется; полная ссылка — только
+  `POST /api/telegram/link` с `X-WPC: 1`.
+- Секрет и `tg://`-ссылки вырезаются из stdout/stderr sidecar перед записью
+  в `manager.log`.
+- Внешние хосты проверяются: запрещены loopback/private/reserved адреса;
+  CF-домены проходят валидацию hostname. TLS-цепочка проверяется; fronting
+  использует проверку цепочки без hostname (как upstream), без отключения
+  проверки сертификата.
+
+## Лицензия
+
+Sidecar содержит модифицированную часть `Flowseal/tg-ws-proxy` под MIT.
+Текст лицензии и уведомления — в `sidecar/tgws/LICENSE` и
+`sidecar/tgws/THIRD_PARTY_NOTICES.md`.

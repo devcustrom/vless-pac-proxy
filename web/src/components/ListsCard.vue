@@ -1,26 +1,22 @@
 <script setup>
-import { ListChecks, RefreshCw, RotateCcw } from 'lucide-vue-next'
+import { ref } from 'vue'
+import { ListChecks, RefreshCw } from 'lucide-vue-next'
 import { fmtTime, notify, post } from '@/lib/store'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
+const busy = ref(false)
 
 async function refreshLists() {
+  busy.value = true
   try {
     await post('/api/refresh')
     notify('Обновление списков запущено')
   } catch {
     /* тост уже показан */
-  }
-}
-
-async function restartProxy() {
-  try {
-    await post('/api/restart-proxy')
-    notify('Движки перезапускаются')
-  } catch {
-    /* тост уже показан */
+  } finally {
+    busy.value = false
   }
 }
 </script>
@@ -53,13 +49,14 @@ async function restartProxy() {
       </div>
 
       <div class="flex flex-wrap gap-2">
-        <Button size="sm" :disabled="s.refreshing" @click="refreshLists">
+        <Button
+          size="sm"
+          :loading="busy"
+          :disabled="s.refreshing"
+          @click="refreshLists"
+        >
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': s.refreshing }" />
           Обновить списки
-        </Button>
-        <Button size="sm" variant="outline" @click="restartProxy">
-          <RotateCcw class="h-3.5 w-3.5" />
-          Перезапустить движки
         </Button>
       </div>
     </div>

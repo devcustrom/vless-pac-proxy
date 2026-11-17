@@ -1,7 +1,8 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
-import { BookOpen, RefreshCw, ShieldCheck } from 'lucide-vue-next'
-import { store, refresh, startPolling } from '@/lib/store'
+import { computed, onMounted, ref, watchEffect } from 'vue'
+import { BookOpen, ListFilter, RefreshCw, ShieldCheck } from 'lucide-vue-next'
+import { api, store } from '@/lib/store'
+import { useStatusQuery } from '@/lib/queries'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
 import Tabs from '@/components/ui/Tabs.vue'
@@ -10,8 +11,11 @@ import ChannelsCard from '@/components/ChannelsCard.vue'
 import WireGuardCard from '@/components/WireGuardCard.vue'
 import VlessCard from '@/components/VlessCard.vue'
 import PoolCard from '@/components/PoolCard.vue'
+import TelegramCard from '@/components/TelegramCard.vue'
+import ZapretCard from '@/components/ZapretCard.vue'
 import LocalDomainsCard from '@/components/LocalDomainsCard.vue'
-import DomainRoutingCard from '@/components/DomainRoutingCard.vue'
+import RoutingDialog from '@/components/RoutingDialog.vue'
+import PluginSetupDialog from '@/components/PluginSetupDialog.vue'
 import ListsCard from '@/components/ListsCard.vue'
 import CheckCard from '@/components/CheckCard.vue'
 import VisitedCard from '@/components/VisitedCard.vue'
@@ -23,14 +27,60 @@ import Toast from '@/components/Toast.vue'
 const TABS = [
   { value: 'overview', label: 'Обзор' },
   { value: 'configs', label: 'Конфиги' },
+  { value: 'telegram', label: 'Telegram' },
+  { value: 'zapret', label: 'Zapret' },
   { value: 'domains', label: 'Домены' },
   { value: 'settings', label: 'Настройки' },
 ]
 
-const s = computed(() => store.status)
+const statusQuery = useStatusQuery()
+const s = computed(() => statusQuery.data.value)
 const online = computed(() => !!s.value && (s.value.wgUp || s.value.vlessUp))
 const docsOpen = ref(false)
+const routingOpen = ref(false)
+const firstRunOpen = ref(false)
+const firstRunDismissed = ref(false)
+const refreshing = ref(false)
 const tab = ref('overview')
+
+watchEffect(() => {
+  if (statusQuery.data.value) {
+    store.status = statusQuery.data.value
+    store.offline = false
+    const data = statusQuery.data.value
+    if (!data.onboardingDone && !firstRunDismissed.value) {
+      if (data.plugins?.localDomains) {
+        // Плагин уже включён — мастер первого запуска не нужен.
+        firstRunDismissed.value = true
+        api('/api/onboarding', {}).catch(() => {})
+      } else {
+        firstRunOpen.value = true
+      }
+    }
+  } else if (statusQuery.error.value) {
+    store.offline = true
+  }
+})
+
+async function refreshStatus() {
+  refreshing.value = true
+  try {
+    await statusQuery.refetch()
+  } finally {
+    refreshing.value = false
+  }
+}
+
+async function dismissFirstRun() {
+  firstRunOpen.value = false
+  firstRunDismissed.value = true
+  await api('/api/onboarding', {}).catch(() => {})
+}
+
+function onPluginEnabled() {
+  firstRunOpen.value = false
+  firstRunDismissed.value = true
+}
 
 function syncTabFromHash() {
   const hash = window.location.hash.replace('#', '')
@@ -51,7 +101,6 @@ function closeDocs() {
 }
 
 onMounted(() => {
-  startPolling()
   syncTabFromHash()
   window.addEventListener('hashchange', syncTabFromHash)
 })
@@ -72,7 +121,7 @@ onMounted(() => {
           <Badge :variant="online ? 'success' : 'destructive'">
             {{ online ? 'VPN активен' : 'VPN не активен' }}
           </Badge>
-          <Button variant="outline" size="sm" @click="refresh">
+          <Button variant="outline" size="sm" :loading="refreshing" @click="refreshStatus">
             <RefreshCw class="h-3.5 w-3.5" />
             Обновить
           </Button>
@@ -95,6 +144,12 @@ onMounted(() => {
 
       <template v-if="s">
         <template v-if="tab === 'overview'">
+          <div class="flex justify-end">
+            <Button variant="outline" size="sm" @click="routingOpen = true">
+              <ListFilter class="h-3.5 w-3.5" />
+              Маршрутизация доменов
+            </Button>
+          </div>
           <OnboardingCard :s="s" />
           <div class="grid items-start gap-4 lg:grid-cols-2">
             <div class="space-y-4">
@@ -121,13 +176,26 @@ onMounted(() => {
           </div>
         </template>
 
+        <template v-else-if="tab === 'telegram'">
+          <div class="grid items-start gap-4 lg:grid-cols-2">
+            <div class="space-y-4">
+              <TelegramCard :s="s" />
+            </div>
+          </div>
+        </template>
+
+        <template v-else-if="tab === 'zapret'">
+          <div class="grid items-start gap-4 lg:grid-cols-2">
+            <div class="space-y-4">
+              <ZapretCard :s="s" />
+            </div>
+          </div>
+        </template>
+
         <template v-else-if="tab === 'domains'">
           <div class="grid items-start gap-4 lg:grid-cols-2">
             <div class="space-y-4">
               <LocalDomainsCard :s="s" />
-            </div>
-            <div class="space-y-4">
-              <DomainRoutingCard :s="s" />
             </div>
           </div>
         </template>
@@ -150,6 +218,15 @@ onMounted(() => {
     </main>
 
     <DocsDialog :open="docsOpen" @close="closeDocs" />
+    <RoutingDialog v-if="s" :open="routingOpen" :s="s" @close="routingOpen = false" />
+    <PluginSetupDialog
+      v-if="s"
+      :open="firstRunOpen"
+      :s="s"
+      first-run
+      @close="dismissFirstRun"
+      @enabled="onPluginEnabled"
+    />
     <Toast />
   </div>
 </template>

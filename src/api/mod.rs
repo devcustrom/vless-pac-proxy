@@ -63,6 +63,12 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
     if state.settings_snapshot().local_domains_enabled {
         crate::net::local_proxy::start(&state);
     }
+    if state.settings_snapshot().telegram_enabled {
+        if let Err(e) = crate::telegram::supervisor::start(&state) {
+            wlog!("telegram: автозапуск не удался — {e:#}");
+        }
+    }
+    crate::telegram::update::spawn_scheduler(state.clone());
     crate::lists::spawn_scheduler(state.clone());
     crate::vless::pool::spawn_scheduler(state.clone());
     spawn_health_probes(state.clone());
@@ -88,11 +94,11 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/api/wg", post(wg_config))
         .route("/api/wg/configs", get(wg_configs_get).post(wg_configs_post))
         .route("/api/refresh", post(refresh_lists))
-        .route("/api/restart-proxy", post(restart_proxy))
         .route("/api/system-proxy", post(system_proxy))
         .route("/api/quit", post(quit))
         .route("/api/auto", post(auto))
         .route("/api/channels", post(channels))
+        .route("/api/onboarding", post(onboarding_done))
         .route(
             "/api/local-domains",
             get(local_domains_get).post(local_domains_post),
@@ -111,6 +117,9 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/api/engines/ensure", post(engines_ensure))
         .route("/api/trust-certs", post(trust_certs_handler))
         .route("/api/plugins", get(plugins_get).post(plugins_set))
+        .route("/api/telegram", get(telegram_get).post(telegram_post))
+        .route("/api/telegram/link", post(telegram_link))
+        .route("/api/zapret", get(zapret_get).post(zapret_post))
         .route("/api/docs", get(docs))
         .route("/api/update", get(update_check))
         .fallback(ui_fallback)
@@ -128,6 +137,8 @@ pub fn cleanup(state: &AppState) {
     crate::systemproxy::disable_on_exit();
     state.wg.shutdown();
     state.xr.shutdown();
+    crate::telegram::supervisor::stop(state);
+    crate::vless::pool::cleanup_test_processes();
     crate::paths::clear_panel_port(&state.dir);
     wlog!("выход: системный прокси выключен, движки останавливаются");
 }
@@ -145,10 +156,66 @@ async fn quit(State(st): State<Arc<AppState>>) -> Json<Value> {
 
 async fn plugins_get(State(st): State<Arc<AppState>>) -> Json<Value> {
     let settings = st.settings_snapshot();
-    Json(json!({ "localDomains": settings.local_domains_enabled }))
+    Json(json!({
+        "localDomains": settings.local_domains_enabled,
+        "telegram": settings.telegram_enabled,
+        "zapret": settings.zapret_enabled,
+    }))
 }
 
 async fn plugins_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    // Zapret можно переключать отдельно, без localDomains/telegram.
+    if body.get("localDomains").is_none() && body.get("telegram").is_none() {
+        if let Some(enabled) = body.get("zapret").and_then(|value| value.as_bool()) {
+            let result = {
+                let mut settings = st.settings.lock().unwrap();
+                settings.zapret_enabled = enabled;
+                settings.save(&st.dir).map_err(|e| e.to_string())
+            };
+            if let Err(e) = result {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": e })),
+                )
+                    .into_response();
+            }
+            return Json(crate::zapret::status_json(&st)).into_response();
+        }
+    }
+    // Telegram-плагин можно переключать отдельно, не передавая localDomains.
+    if body.get("localDomains").is_none() {
+        if let Some(enabled) = body.get("telegram").and_then(|value| value.as_bool()) {
+            let save_result = {
+                let mut settings = st.settings.lock().unwrap();
+                settings.telegram_enabled = enabled;
+                if enabled && !crate::telegram::config::valid_secret(&settings.telegram_secret) {
+                    settings.telegram_secret = crate::telegram::config::generate_secret();
+                }
+                settings.save(&st.dir).map_err(|e| e.to_string())
+            };
+            if let Err(e) = save_result {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": e })),
+                )
+                    .into_response();
+            }
+            if enabled {
+                if let Err(e) = crate::telegram::supervisor::start(&st) {
+                    wlog!("telegram: запуск не удался — {e:#}");
+                }
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            } else {
+                crate::telegram::supervisor::stop(&st);
+            }
+            return Json(crate::telegram::status::status_json(&st)).into_response();
+        }
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "нужно localDomains или telegram: true|false" })),
+        )
+            .into_response();
+    }
     let Some(enabled) = body.get("localDomains").and_then(|value| value.as_bool()) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -156,13 +223,48 @@ async fn plugins_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
         )
             .into_response();
     };
+    let panel_domain = match body.get("panelDomain").and_then(|value| value.as_str()) {
+        Some(raw) => match crate::lists::validate_hostname(raw) {
+            Some(domain) => Some(domain),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "некорректный домен панели" })),
+                )
+                    .into_response()
+            }
+        },
+        None => None,
+    };
     {
         let mut settings = st.settings.lock().unwrap();
         settings.local_domains_enabled = enabled;
         let _ = settings.save(&st.dir);
     }
+    let mut chosen_domain = None;
     if enabled {
+        let chosen = panel_domain.unwrap_or_else(|| "panel.localhost".to_string());
+        let mut list = read_local_domains(&st);
+        list.retain(|item| item.port != st.panel_port && item.domain != chosen);
+        list.push(crate::net::local_proxy::LocalDomain {
+            domain: chosen.clone(),
+            port: st.panel_port,
+        });
+        if let Err(e) = write_local_domains(&st.dir, &list) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
+        if let Ok(mut current) = st.local_domains.lock() {
+            *current = list;
+        }
+        reload_local_tls(&st).await;
         crate::net::local_proxy::start(&st);
+        // даём слушателям шанс занять порты, чтобы вернуть ошибки
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        chosen_domain = Some(chosen);
     } else {
         crate::net::local_proxy::stop(&st);
     }
@@ -180,6 +282,16 @@ async fn plugins_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
             wlog!("системный прокси: исключения плагина — {e:#}");
         }
     }
+    let http_error = st
+        .local_http_error
+        .lock()
+        .ok()
+        .and_then(|value| value.clone());
+    let https_error = st
+        .local_https_error
+        .lock()
+        .ok()
+        .and_then(|value| value.clone());
     wlog!(
         "плагин локальных доменов: {}",
         if enabled {
@@ -188,7 +300,429 @@ async fn plugins_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
             "выключен"
         }
     );
-    Json(json!({ "ok": true, "localDomains": enabled })).into_response()
+    Json(json!({
+        "ok": true,
+        "localDomains": enabled,
+        "panelDomain": chosen_domain,
+        "caTrusted": crate::trust_status::is_trusted(&st.dir),
+        "httpError": http_error,
+        "httpsError": https_error,
+    }))
+    .into_response()
+}
+
+async fn telegram_get(State(st): State<Arc<AppState>>) -> Json<Value> {
+    Json(crate::telegram::status::status_json(&st))
+}
+
+fn apply_telegram_set(
+    settings: &mut crate::settings::Settings,
+    body: &Value,
+) -> Result<(), String> {
+    if let Some(value) = body.get("port") {
+        let port = value
+            .as_u64()
+            .and_then(|p| u16::try_from(p).ok())
+            .filter(|p| *p > 0)
+            .ok_or_else(|| "некорректный порт".to_string())?;
+        settings.telegram_port = port;
+    }
+    if let Some(value) = body.get("tryDirect").and_then(Value::as_bool) {
+        settings.telegram_try_direct = value;
+    }
+    if let Some(value) = body.get("order").and_then(Value::as_str) {
+        settings.telegram_order = value.trim().to_string();
+    }
+    if let Some(value) = body.get("cfWorker").and_then(Value::as_str) {
+        crate::telegram::config::validate_domains(value).map_err(|e| format!("{e:#}"))?;
+        settings.telegram_cf_worker = value.trim().to_string();
+    }
+    if let Some(value) = body.get("cfProxy").and_then(Value::as_str) {
+        crate::telegram::config::validate_domains(value).map_err(|e| format!("{e:#}"))?;
+        settings.telegram_cf_proxy = value.trim().to_string();
+    }
+    if let Some(value) = body.get("fakeTls").and_then(Value::as_str) {
+        crate::telegram::config::validate_domains(value).map_err(|e| format!("{e:#}"))?;
+        settings.telegram_fake_tls = value.trim().to_string();
+    }
+    if let Some(value) = body.get("h2").and_then(Value::as_bool) {
+        settings.telegram_h2 = value;
+    }
+    if let Some(value) = body.get("verbose").and_then(Value::as_bool) {
+        settings.telegram_verbose = value;
+    }
+    if let Some(value) = body.get("autoUpdate").and_then(Value::as_bool) {
+        settings.telegram_auto_update = value;
+    }
+    if settings.telegram_secret.is_empty() {
+        settings.telegram_secret = crate::telegram::config::generate_secret();
+    }
+    crate::telegram::config::order_for(settings).map_err(|e| format!("{e:#}"))?;
+    Ok(())
+}
+
+async fn telegram_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let action = body.get("action").and_then(Value::as_str).unwrap_or("");
+    match action {
+        "enable" | "disable" => {
+            let enabled = action == "enable";
+            let result: Result<(), String> = {
+                let mut settings = st.settings.lock().unwrap();
+                if enabled && !crate::telegram::config::valid_secret(&settings.telegram_secret) {
+                    settings.telegram_secret = crate::telegram::config::generate_secret();
+                }
+                settings.telegram_enabled = enabled;
+                if enabled {
+                    match crate::telegram::config::TelegramConfig::from_settings(
+                        &settings,
+                        st.panel_port,
+                    ) {
+                        Ok(_) => settings.save(&st.dir).map_err(|e| e.to_string()),
+                        Err(e) => Err(format!("{e:#}")),
+                    }
+                } else {
+                    settings.save(&st.dir).map_err(|e| e.to_string())
+                }
+            };
+            if let Err(e) = result {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": e })),
+                )
+                    .into_response();
+            }
+            if enabled {
+                if let Err(e) = crate::telegram::supervisor::start(&st) {
+                    wlog!("telegram: запуск не удался — {e:#}");
+                }
+                tokio::time::sleep(Duration::from_millis(400)).await;
+            } else {
+                crate::telegram::supervisor::stop(&st);
+            }
+            Json(crate::telegram::status::status_json(&st)).into_response()
+        }
+        "restart" => {
+            if let Err(e) = crate::telegram::supervisor::restart(&st).await {
+                wlog!("telegram: перезапуск не удался — {e:#}");
+            }
+            Json(crate::telegram::status::status_json(&st)).into_response()
+        }
+        "probe" => {
+            crate::telegram::supervisor::probe(&st).await;
+            Json(crate::telegram::status::status_json(&st)).into_response()
+        }
+        "probe-direct" => {
+            crate::telegram::supervisor::probe_direct(&st).await;
+            Json(crate::telegram::status::status_json(&st)).into_response()
+        }
+        "rotate-secret" => {
+            let result: Result<(), String> = {
+                let mut settings = st.settings.lock().unwrap();
+                settings.telegram_secret = crate::telegram::config::generate_secret();
+                settings.save(&st.dir).map_err(|e| e.to_string())
+            };
+            if let Err(e) = result {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": e })),
+                )
+                    .into_response();
+            }
+            if st.settings_snapshot().telegram_enabled {
+                if let Err(e) = crate::telegram::supervisor::restart(&st).await {
+                    wlog!("telegram: смена секрета — {e:#}");
+                }
+            }
+            Json(crate::telegram::status::status_json(&st)).into_response()
+        }
+        "ensure-sidecar" => {
+            let path = crate::telegram::supervisor::sidecar_path(&st.dir);
+            if path.is_file() {
+                Json(json!({ "ok": true, "installed": true })).into_response()
+            } else {
+                match crate::telegram::update::check_and_update(&st, true).await {
+                    Ok(version) => Json(json!({
+                        "ok": true,
+                        "installed": true,
+                        "version": version,
+                    }))
+                    .into_response(),
+                    Err(e) => (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "error": format!("{e:#}"),
+                            "path": path.display().to_string(),
+                        })),
+                    )
+                        .into_response(),
+                }
+            }
+        }
+        "check-update" => match crate::telegram::update::check_and_update(&st, true).await {
+            Ok(version) => Json(json!({
+                "ok": true,
+                "version": version,
+                "telegram": crate::telegram::status::status_json(&st),
+            }))
+            .into_response(),
+            Err(e) => {
+                let text = format!("{e:#}");
+                if text.contains("HTTP 404") {
+                    crate::telegram::update::clear_update_error(&st);
+                    return Json(json!({
+                        "ok": true,
+                        "published": false,
+                        "version": crate::telegram::update::installed_version(&st.dir),
+                        "message": "манифест обновлений ещё не опубликован",
+                    }))
+                    .into_response();
+                }
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": text })),
+                )
+                    .into_response()
+            }
+        },
+        "set" => {
+            let mut settings = st.settings_snapshot();
+            if let Err(e) = apply_telegram_set(&mut settings, &body) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": e })),
+                )
+                    .into_response();
+            }
+            if let Err(e) =
+                crate::telegram::config::TelegramConfig::from_settings(&settings, st.panel_port)
+            {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response();
+            }
+            if let Err(e) = settings.save(&st.dir) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": e.to_string() })),
+                )
+                    .into_response();
+            }
+            {
+                let mut current = st.settings.lock().unwrap();
+                *current = settings.clone();
+            }
+            if settings.telegram_enabled {
+                if let Err(e) = crate::telegram::supervisor::restart(&st).await {
+                    wlog!("telegram: применение настроек — {e:#}");
+                }
+            }
+            Json(crate::telegram::status::status_json(&st)).into_response()
+        }
+        _ => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "action должен быть enable|disable|restart|set|probe|probe-direct|ensure-sidecar|check-update|rotate-secret"
+            })),
+        )
+            .into_response(),
+    }
+}
+
+async fn telegram_link(State(st): State<Arc<AppState>>) -> Response {
+    let settings = st.settings_snapshot();
+    if !settings.telegram_enabled {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Telegram-прокси выключен" })),
+        )
+            .into_response();
+    }
+    match crate::telegram::link::build_link(
+        &settings.telegram_host,
+        settings.telegram_port,
+        &settings.telegram_secret,
+        &settings.telegram_fake_tls,
+    ) {
+        Ok(link) => Json(json!({ "ok": true, "link": link })).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("{e:#}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn zapret_get(State(st): State<Arc<AppState>>) -> Json<Value> {
+    Json(crate::zapret::status_json(&st))
+}
+
+async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let action = body.get("action").and_then(Value::as_str).unwrap_or("");
+    match action {
+        "install" => {
+            let preset = body
+                .get("preset")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let preset = if preset.is_empty() {
+                crate::zapret::selected_preset(&st)
+            } else {
+                preset.to_string()
+            };
+            let available = crate::zapret::preset::list_presets(&st.dir);
+            if !crate::zapret::preset::valid_preset_name(&st.dir, &preset)
+                || !available.iter().any(|item| item.name == preset)
+            {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "некорректный или неизвестный пресет Zapret" })),
+                )
+                    .into_response();
+            }
+            {
+                let mut settings = st.settings.lock().unwrap();
+                settings.zapret_preset = preset.clone();
+                if let Err(e) = settings.save(&st.dir) {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": e.to_string() })),
+                    )
+                        .into_response();
+                }
+            }
+            match crate::zapret::install(&st, &preset) {
+                Ok(()) => {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    Json(json!({
+                        "ok": true,
+                        "message": "установщик службы запущен (подтвердите UAC)",
+                        "status": crate::zapret::status_json(&st),
+                    }))
+                    .into_response()
+                }
+                Err(e) => {
+                    crate::zapret::record_error(&st, &e);
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": format!("{e:#}") })),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        "remove" => match crate::zapret::remove(&st) {
+            Ok(()) => {
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                Json(json!({
+                    "ok": true,
+                    "message": "удаление службы запущено (подтвердите UAC)",
+                    "status": crate::zapret::status_json(&st),
+                }))
+                .into_response()
+            }
+            Err(e) => {
+                crate::zapret::record_error(&st, &e);
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response()
+            }
+        },
+        "start" => match crate::zapret::start(&st) {
+            Ok(_) => {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                Json(crate::zapret::status_json(&st)).into_response()
+            }
+            Err(e) => {
+                crate::zapret::record_error(&st, &e);
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response()
+            }
+        },
+        "stop" => match crate::zapret::stop(&st) {
+            Ok(_) => {
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                Json(crate::zapret::status_json(&st)).into_response()
+            }
+            Err(e) => {
+                crate::zapret::record_error(&st, &e);
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response()
+            }
+        },
+        "set-preset" => {
+            let Some(preset) = body.get("preset").and_then(Value::as_str) else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "нужен preset" })),
+                )
+                    .into_response();
+            };
+            let available = crate::zapret::preset::list_presets(&st.dir);
+            if !crate::zapret::preset::valid_preset_name(&st.dir, preset)
+                || !available.iter().any(|item| item.name == preset)
+            {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "неизвестный пресет Zapret" })),
+                )
+                    .into_response();
+            }
+            {
+                let mut settings = st.settings.lock().unwrap();
+                settings.zapret_preset = preset.to_string();
+                if let Err(e) = settings.save(&st.dir) {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": e.to_string() })),
+                    )
+                        .into_response();
+                }
+            }
+            Json(crate::zapret::status_json(&st)).into_response()
+        }
+        "open-folder" => match crate::zapret::open_folder(&st) {
+            Ok(()) => Json(json!({ "ok": true })).into_response(),
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("{e:#}") })),
+            )
+                .into_response(),
+        },
+        "auto-tune" => match crate::zapret::autotune::start(&st) {
+            Ok(()) => Json(json!({
+                "ok": true,
+                "message": "автоподбор запущен (подтвердите UAC)",
+                "status": crate::zapret::status_json(&st),
+            }))
+            .into_response(),
+            Err(e) => {
+                crate::zapret::record_error(&st, &e);
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response()
+            }
+        },
+        "refresh" => Json(crate::zapret::status_json(&st)).into_response(),
+        _ => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "action должен быть install|remove|start|stop|set-preset|open-folder|auto-tune|refresh"
+            })),
+        )
+            .into_response(),
+    }
 }
 
 async fn wg_configs_get(State(st): State<Arc<AppState>>) -> Response {
@@ -264,12 +798,16 @@ async fn wg_configs_post(State(st): State<Arc<AppState>>, Json(body): Json<Value
                 .into_response(),
         },
         "remove" => match crate::engines::wg_configs::remove(&st.dir, slug) {
-            Ok(was_active) => {
-                if was_active {
-                    st.wg.stop();
+            Ok((removed_active, active)) => {
+                if removed_active {
+                    if active.is_some() {
+                        st.wg.restart();
+                    } else {
+                        st.wg.stop();
+                    }
                 }
                 wlog!("WireGuard: конфиг «{slug}» удалён");
-                Json(json!({ "ok": true })).into_response()
+                Json(json!({ "ok": true, "active": active })).into_response()
             }
             Err(e) => (
                 StatusCode::BAD_REQUEST,
@@ -334,6 +872,8 @@ async fn docs() -> Json<Value> {
         "readme": include_str!("../../README.md"),
         "readmeMac": include_str!("../../README-MAC.md"),
         "plugins": include_str!("../../PLUGINS.md"),
+        "telegram": include_str!("../../TELEGRAM.md"),
+        "zapret": include_str!("../../ZAPRET.md"),
     }))
 }
 
@@ -504,9 +1044,16 @@ async fn guard(State(st): State<Arc<AppState>>, req: Request, next: Next) -> Res
     if !allowed {
         // домены, указывающие на панель (из плагина локальных домменов)
         let domains = read_local_domains(&st);
+        let https_port = st
+            .settings
+            .lock()
+            .map(|settings| settings.local_https_port)
+            .unwrap_or(443);
         allowed = domains.iter().any(|d| {
             d.port == st.panel_port
-                && (host == d.domain || host == format!("{}:{}", d.domain, st.panel_port))
+                && (host == d.domain
+                    || host == format!("{}:{}", d.domain, st.panel_port)
+                    || host == format!("{}:{}", d.domain, https_port))
         });
     }
     if !allowed {
@@ -640,7 +1187,8 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
                     "address": e.address,
                     "port": e.port,
                     "ok": e.ok,
-                    "ms": e.ms
+                    "ms": e.ms,
+                    "active": p.active_link.as_deref() == Some(e.link.as_str())
                 })
             })
             .collect();
@@ -698,6 +1246,7 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         "poolError": pool_error,
         "autoRotate": settings.auto_rotate,
         "autoPoolRefreshHours": settings.auto_pool_refresh_hours,
+        "directFirst": settings.direct_first,
         "nextPoolRefreshAt": next_pool_refresh,
         "subscriptions": subscriptions,
         "localProxy": {
@@ -712,9 +1261,14 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         },
         "vpnDefault": settings.vpn_default,
         "version": env!("CARGO_PKG_VERSION"),
+        "onboardingDone": settings.onboarding_done,
         "plugins": {
             "localDomains": settings.local_domains_enabled,
+            "telegram": settings.telegram_enabled,
+            "zapret": settings.zapret_enabled,
         },
+        "telegram": crate::telegram::status::status_json(&st),
+        "zapret": crate::zapret::status_json(&st),
         "channels": {
             "wireguard": settings.wireguard_enabled,
             "xray": settings.xray_enabled,
@@ -744,7 +1298,7 @@ async fn extra(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
     let Some(domain) = body
         .get("domain")
         .and_then(|v| v.as_str())
-        .and_then(crate::lists::normalize_domain)
+        .and_then(crate::lists::validate_hostname)
     else {
         return (
             StatusCode::BAD_REQUEST,
@@ -798,9 +1352,20 @@ async fn vless(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
             }
         }
         "remove-link" => {
-            let _ = std::fs::remove_file(st.dir.join("xray-config.json"));
+            for name in [
+                "xray-config.json",
+                "xray-config.json.bak",
+                "xray-config.json.tmp",
+            ] {
+                let _ = std::fs::remove_file(st.dir.join(name));
+            }
             st.xr.stop();
-            Json(json!({ "ok": true })).into_response()
+            if let Ok(mut pool) = st.pool.lock() {
+                pool.active_link = None;
+            }
+            crate::vless::pool::save_pool_state(&st);
+            wlog!("VLESS-конфиг удалён пользователем");
+            Json(json!({ "ok": true, "configured": false })).into_response()
         }
         "set-default" => {
             let value = body.get("value").and_then(|v| v.as_str()).unwrap_or("");
@@ -820,7 +1385,7 @@ async fn vless(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
             let Some(domain) = body
                 .get("domain")
                 .and_then(|v| v.as_str())
-                .and_then(crate::lists::normalize_domain)
+                .and_then(crate::lists::validate_hostname)
             else {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -854,7 +1419,7 @@ async fn vless(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
             let Some(domain) = body
                 .get("domain")
                 .and_then(|v| v.as_str())
-                .and_then(crate::lists::normalize_domain)
+                .and_then(crate::lists::validate_hostname)
             else {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -901,12 +1466,6 @@ async fn refresh_lists(State(st): State<Arc<AppState>>) -> Response {
     (StatusCode::ACCEPTED, Json(json!({ "ok": true }))).into_response()
 }
 
-async fn restart_proxy(State(st): State<Arc<AppState>>) -> Json<Value> {
-    wlog!("перезапуск wireproxy по запросу из панели");
-    st.wg.restart();
-    Json(json!({ "ok": true }))
-}
-
 async fn system_proxy(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
     let enabled = body
         .get("enabled")
@@ -935,6 +1494,15 @@ fn start_enabled_engines(state: &Arc<AppState>) {
     if settings.xray_enabled {
         state.xr.start();
     }
+}
+
+async fn onboarding_done(State(st): State<Arc<AppState>>) -> Json<Value> {
+    {
+        let mut settings = st.settings.lock().unwrap();
+        settings.onboarding_done = true;
+        let _ = settings.save(&st.dir);
+    }
+    Json(json!({ "ok": true, "onboardingDone": true }))
 }
 
 async fn channels(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
@@ -1009,6 +1577,12 @@ async fn auto(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Respo
     if let Some(v) = body.get("autoRotate").and_then(|v| v.as_bool()) {
         s.auto_rotate = v;
     }
+    if let Some(v) = body.get("directFirst").and_then(|v| v.as_bool()) {
+        s.direct_first = v;
+        if let Ok(mut cache) = st.direct_probe.lock() {
+            cache.clear();
+        }
+    }
     if let Some(v) = body.get("autoPoolRefreshHours").and_then(|v| v.as_f64()) {
         if !(0.0..=168.0).contains(&v) {
             return (
@@ -1020,7 +1594,7 @@ async fn auto(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Respo
         s.auto_pool_refresh_hours = v;
     }
     let _ = s.save(&st.dir);
-    Json(json!({ "ok": true, "autoRotate": s.auto_rotate, "autoPoolRefreshHours": s.auto_pool_refresh_hours })).into_response()
+    Json(json!({ "ok": true, "autoRotate": s.auto_rotate, "autoPoolRefreshHours": s.auto_pool_refresh_hours, "directFirst": s.direct_first })).into_response()
 }
 
 async fn local_domains_get(State(st): State<Arc<AppState>>) -> Json<Value> {
@@ -1046,23 +1620,17 @@ async fn local_domains_get(State(st): State<Arc<AppState>>) -> Json<Value> {
 
 async fn local_domains_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
     let action = body.get("action").and_then(|v| v.as_str()).unwrap_or("");
-    let domain = body
+    let Some(domain) = body
         .get("domain")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
-    if domain.is_empty()
-        || !domain
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
-    {
+        .and_then(crate::lists::validate_hostname)
+    else {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "некорректный домен" })),
         )
             .into_response();
-    }
+    };
     let mut list = read_local_domains(&st);
     match action {
         "add" => {
@@ -1299,7 +1867,7 @@ async fn check(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
     let Some(domain) = body
         .get("domain")
         .and_then(|v| v.as_str())
-        .and_then(crate::lists::normalize_domain)
+        .and_then(crate::lists::validate_hostname)
     else {
         return (
             StatusCode::BAD_REQUEST,
@@ -1397,6 +1965,7 @@ async fn subscriptions(State(st): State<Arc<AppState>>, Json(body): Json<Value>)
         .to_string();
     let mut list = crate::vless::pool::read_subscriptions(&st.dir);
     let mut imported = false;
+    let mut imported_count = 0usize;
     match action {
         "add" => {
             if let Err(e) = crate::vless::pool::validate_subscription_url(&url).await {
@@ -1411,18 +1980,44 @@ async fn subscriptions(State(st): State<Arc<AppState>>, Json(body): Json<Value>)
             }
         }
         "import-igareck" => {
+            let groups: Vec<String> = body
+                .get("groups")
+                .and_then(|value| value.as_array())
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_string))
+                        .collect()
+                })
+                .or_else(|| {
+                    body.get("group")
+                        .and_then(|value| value.as_str())
+                        .map(|group| vec![group.to_string()])
+                })
+                .unwrap_or_default();
             let mut added = 0;
-            for candidate in crate::vless::pool::igareck_urls() {
+            for candidate in crate::vless::pool::igareck_group_urls(&groups) {
+                let file_name = candidate.rsplit('/').next().unwrap_or("").to_lowercase();
+                let duplicate = list.iter().any(|existing| {
+                    existing
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or("")
+                        .eq_ignore_ascii_case(&file_name)
+                });
+                if duplicate {
+                    continue;
+                }
                 if crate::vless::pool::validate_subscription_url(&candidate)
                     .await
                     .is_ok()
-                    && !list.contains(&candidate)
                 {
                     list.push(candidate);
                     added += 1;
                 }
             }
             imported = true;
+            imported_count = added;
             wlog!("подписки: импортировано из igareck — {added}");
         }
         "remove" => list.retain(|u| *u != url),
@@ -1449,8 +2044,12 @@ async fn subscriptions(State(st): State<Arc<AppState>>, Json(body): Json<Value>)
             }
         });
     }
-    Json(json!({ "ok": true, "subscriptions": crate::vless::pool::read_subscriptions(&st.dir) }))
-        .into_response()
+    Json(json!({
+        "ok": true,
+        "added": imported_count,
+        "subscriptions": crate::vless::pool::read_subscriptions(&st.dir)
+    }))
+    .into_response()
 }
 
 // ---------------- файловые помощники ----------------

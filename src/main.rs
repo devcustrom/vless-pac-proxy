@@ -11,6 +11,7 @@
 //!   mcp                — MCP-сервер (stdio JSON-RPC)
 //!   version            — версия
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+#![recursion_limit = "256"]
 #![allow(dead_code)] // временно на время переноса (M0→M6): модули подключаются поэтапно
 use std::path::PathBuf;
 
@@ -33,10 +34,12 @@ mod shell;
 mod single_instance;
 mod state;
 mod systemproxy;
+mod telegram;
 #[cfg(any(windows, target_os = "macos"))]
 mod tray;
 mod trust_status;
 mod vless;
+mod zapret;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -133,6 +136,7 @@ fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool, hidden: bool) -> an
     std::env::set_current_dir(&dir).map_err(|e| {
         anyhow::anyhow!("не удалось перейти в каталог данных {}: {e}", dir.display())
     })?;
+    crate::vless::pool::cleanup_test_processes();
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

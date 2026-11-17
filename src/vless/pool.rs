@@ -2,7 +2,7 @@
 //! проверка `xray -test`, мульти-inbound тест с реальными пробами, применение
 //! и авто-ротация. Паритет с legacy/vless-pool.js.
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -20,7 +20,8 @@ use crate::state::AppState;
 use crate::vless::link;
 use crate::wlog;
 
-pub const MAX_TEST: usize = 120;
+pub const MAX_TEST: usize = 200;
+const MAX_PER_SOURCE: usize = 40;
 const TEST_BATCH: usize = 10;
 const TEST_PORT_START: u16 = 30000;
 const TEST_PORT_END: u16 = 60000;
@@ -28,17 +29,55 @@ const PROBE_TIMEOUT_MS: u64 = 8000;
 
 pub const IGARECK_REPO: &str = "https://github.com/igareck/vpn-configs-for-russia";
 
-/// Готовые подписки из репозитория igareck (BLACK/WHITE списки).
+pub struct IgareckGroup {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub files: &'static [&'static str],
+}
+
+pub const IGARECK_GROUPS: &[IgareckGroup] = &[
+    IgareckGroup {
+        key: "black",
+        label: "BLACK",
+        files: &[
+            "BLACK_VLESS_RUS.txt",
+            "BLACK_SS+All_RUS.txt",
+            "BLACK_VLESS_RUS_mobile.txt",
+            "BLACK_SS_WEAK_DPI_RUS.txt",
+        ],
+    },
+    IgareckGroup {
+        key: "white",
+        label: "WHITE (CIDR/SNI)",
+        files: &[
+            "Vless-Reality-White-Lists-Rus-Mobile.txt",
+            "WHITE-CIDR-RU-all.txt",
+            "WHITE-CIDR-RU-checked.txt",
+            "WHITE-SNI-RU-all.txt",
+        ],
+    },
+];
+
+fn file_url(name: &str) -> String {
+    format!("https://raw.githack.com/igareck/vpn-configs-for-russia/main/{name}")
+}
+
+/// Все источники igareck (для обратной совместимости).
 pub fn igareck_urls() -> Vec<String> {
-    [
-        "BLACK_VLESS_RUS.txt",
-        "BLACK_SS+All_RUS.txt",
-        "BLACK_VLESS_RUS_mobile.txt",
-        "Vless-Reality-White-Lists-Rus-Mobile.txt",
-    ]
-    .iter()
-    .map(|name| format!("https://raw.githack.com/igareck/vpn-configs-for-russia/main/{name}"))
-    .collect()
+    IGARECK_GROUPS
+        .iter()
+        .flat_map(|group| group.files.iter().map(|name| file_url(name)))
+        .collect()
+}
+
+/// Источники выбранных групп: black, white или all.
+pub fn igareck_group_urls(groups: &[String]) -> Vec<String> {
+    let all = groups.is_empty() || groups.iter().any(|group| group == "all");
+    IGARECK_GROUPS
+        .iter()
+        .filter(|group| all || groups.iter().any(|key| key == group.key))
+        .flat_map(|group| group.files.iter().map(|name| file_url(name)))
+        .collect()
 }
 
 /// Один тестовый xray на всех: не даём фоновой перепроверке и ручному
@@ -91,6 +130,16 @@ fn xray_dir() -> Result<PathBuf> {
 }
 
 #[cfg(windows)]
+fn test_engine_name() -> &'static str {
+    "xray-pool-test.exe"
+}
+
+#[cfg(not(windows))]
+fn test_engine_name() -> &'static str {
+    "xray-pool-test"
+}
+
+#[cfg(windows)]
 fn cmd_test() -> Command {
     let mut c = Command::new(".\\xray.exe");
     c.args(["-test", "-c", "xray-pool-one.json"]);
@@ -105,9 +154,58 @@ fn cmd_test() -> Command {
     c
 }
 
+/// Тестовый xray запускается под отдельным именем: если менеджер завершится
+/// аварийно, такие процессы можно безопасно добить, не задев рабочий канал.
+fn ensure_test_engine(dir: &Path) -> Result<()> {
+    let src = dir.join(if cfg!(windows) { "xray.exe" } else { "xray" });
+    if !src.is_file() {
+        bail!("xray не найден: {}", src.display());
+    }
+    let dst = dir.join(test_engine_name());
+    let fresh = match (std::fs::metadata(&src), std::fs::metadata(&dst)) {
+        (Ok(src_meta), Ok(dst_meta)) => {
+            dst_meta.len() == src_meta.len() && dst_meta.modified().ok() >= src_meta.modified().ok()
+        }
+        _ => false,
+    };
+    if !fresh {
+        std::fs::copy(&src, &dst)
+            .with_context(|| format!("не удалось скопировать xray в {}", dst.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+    Ok(())
+}
+
+/// Убирает зависшие тестовые xray прошлых запусков. Рабочий xray.exe не
+/// затрагивается: у тестового процесса отдельное имя.
+pub fn cleanup_test_processes() {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut cmd = std::process::Command::new("taskkill");
+        cmd.args(["/F", "/IM", test_engine_name()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(0x08000000);
+        let _ = cmd.status();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("pkill")
+            .args(["-x", test_engine_name()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
 #[cfg(windows)]
 fn cmd_run() -> Command {
-    let mut c = Command::new(".\\xray.exe");
+    let mut c = Command::new(".\\xray-pool-test.exe");
     c.args(["-c", "xray-pool-test.json"]);
     c.creation_flags(0x08000000);
     c
@@ -115,7 +213,7 @@ fn cmd_run() -> Command {
 
 #[cfg(not(windows))]
 fn cmd_run() -> Command {
-    let mut c = Command::new("./xray");
+    let mut c = Command::new("./xray-pool-test");
     c.args(["-c", "xray-pool-test.json"]);
     c
 }
@@ -454,6 +552,12 @@ async fn test_links(dir: &PathBuf, links: Vec<String>) -> Vec<PoolEntry> {
             results.extend(chunk.iter().map(failed_entry));
             continue;
         }
+        if let Err(e) = ensure_test_engine(dir) {
+            wlog!("пул: тестовый xray недоступен — {e:#}");
+            let _ = std::fs::remove_file(&test_cfg);
+            results.extend(chunk.iter().map(failed_entry));
+            continue;
+        }
         let mut child = match cmd_run()
             .current_dir(dir)
             .stdout(std::process::Stdio::null())
@@ -553,6 +657,10 @@ async fn refresh_inner(state: &Arc<AppState>) -> Result<()> {
             Err(e) => wlog!("подписка {}: ошибка — {e}", host_of(url)),
         }
     }
+    let sources: Vec<Vec<String>> = sources
+        .into_iter()
+        .map(|links| links.into_iter().take(MAX_PER_SOURCE).collect())
+        .collect();
     let links = round_robin(sources);
     if links.is_empty() {
         bail!("в подписках не найдено поддерживаемых конфигов (vless://, ss://)");

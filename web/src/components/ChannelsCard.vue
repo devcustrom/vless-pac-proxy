@@ -10,6 +10,10 @@ import Switch from '@/components/ui/Switch.vue'
 const props = defineProps({ s: { type: Object, required: true } })
 
 const sysProxy = ref(!!props.s.systemProxy?.enabled)
+const sysProxyBusy = ref(false)
+const defaultBusy = ref('')
+const channelBusy = ref('')
+const restartBusy = ref('')
 watch(() => props.s.systemProxy?.enabled, (value) => {
   sysProxy.value = !!value
 })
@@ -29,33 +33,54 @@ const vlessState = computed(() => {
 
 async function setSystemProxy(value) {
   sysProxy.value = value
+  sysProxyBusy.value = true
   try {
     await post('/api/system-proxy', { enabled: value })
   } catch {
     sysProxy.value = !value
+  } finally {
+    sysProxyBusy.value = false
   }
 }
 
 async function setDefault(value) {
+  defaultBusy.value = value
   try {
     await post('/api/vless', { action: 'set-default', value })
   } catch {
     /* тост показан */
+  } finally {
+    defaultBusy.value = ''
   }
 }
 
 async function setChannel(channel, enabled) {
+  channelBusy.value = channel
   try {
     await post('/api/channels', { channel, enabled })
   } catch {
     /* тост показан */
+  } finally {
+    channelBusy.value = ''
   }
 }
 
 async function restartChannel(channel) {
+  restartBusy.value = channel
   try {
     await post('/api/channels', { channel, restart: true })
     notify(channel === 'wireguard' ? 'WireGuard перезапускается' : 'Xray перезапускается')
+  } catch {
+    /* тост показан */
+  } finally {
+    restartBusy.value = ''
+  }
+}
+
+async function setDirectFirst(value) {
+  try {
+    await post('/api/auto', { directFirst: value })
+    notify(value ? 'Сначала напрямую, затем VPN' : 'VPN по правилам списков')
   } catch {
     /* тост показан */
   }
@@ -85,7 +110,8 @@ async function restartChannel(channel) {
           <Button
             size="icon"
             variant="ghost"
-            :disabled="s.channels?.wireguard === false"
+            :disabled="s.channels?.wireguard === false || !!channelBusy"
+            :loading="restartBusy === 'wireguard'"
             title="Перезапустить WireGuard"
             @click="restartChannel('wireguard')"
           >
@@ -93,6 +119,7 @@ async function restartChannel(channel) {
           </Button>
           <Switch
             :model-value="s.channels?.wireguard !== false"
+            :disabled="!!channelBusy"
             @update:model-value="(value) => setChannel('wireguard', value)"
           />
         </div>
@@ -118,7 +145,8 @@ async function restartChannel(channel) {
           <Button
             size="icon"
             variant="ghost"
-            :disabled="s.channels?.xray === false"
+            :disabled="s.channels?.xray === false || !!channelBusy"
+            :loading="restartBusy === 'xray'"
             title="Перезапустить Xray"
             @click="restartChannel('xray')"
           >
@@ -126,6 +154,7 @@ async function restartChannel(channel) {
           </Button>
           <Switch
             :model-value="s.channels?.xray !== false"
+            :disabled="!!channelBusy"
             @update:model-value="(value) => setChannel('xray', value)"
           />
         </div>
@@ -137,6 +166,8 @@ async function restartChannel(channel) {
           <Button
             size="sm"
             :variant="s.vpnDefault === 'wireguard' ? 'default' : 'outline'"
+            :loading="defaultBusy === 'wireguard'"
+            :disabled="!!defaultBusy"
             @click="setDefault('wireguard')"
           >
             WireGuard
@@ -144,6 +175,8 @@ async function restartChannel(channel) {
           <Button
             size="sm"
             :variant="s.vpnDefault === 'vless' ? 'default' : 'outline'"
+            :loading="defaultBusy === 'vless'"
+            :disabled="!!defaultBusy"
             @click="setDefault('vless')"
           >
             VLESS
@@ -153,12 +186,30 @@ async function restartChannel(channel) {
 
       <div class="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2">
         <div>
+          <div class="text-sm font-medium">Сначала напрямую</div>
+          <div class="text-xs text-muted-foreground">
+            Для VPN-доменов: сначала прямой запрос через Zapret, VPN — только если
+            напрямую не открылось.
+          </div>
+        </div>
+        <Switch
+          :model-value="s.directFirst !== false"
+          @update:model-value="setDirectFirst"
+        />
+      </div>
+
+      <div class="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2">
+        <div>
           <div class="text-sm font-medium">Системный прокси</div>
           <div class="text-xs text-muted-foreground">
             {{ s.systemProxy?.enabled ? 'включён: ' + (s.systemProxy?.value || '') : 'выключен' }}
           </div>
         </div>
-        <Switch :model-value="sysProxy" @update:model-value="setSystemProxy" />
+        <Switch
+          :model-value="sysProxy"
+          :disabled="sysProxyBusy"
+          @update:model-value="setSystemProxy"
+        />
       </div>
     </div>
   </Card>

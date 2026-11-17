@@ -1,14 +1,14 @@
 <script setup>
 import { cva } from 'class-variance-authority'
+import { Loader2 } from 'lucide-vue-next'
 import { cn } from '@/lib/utils'
-
-defineOptions({ inheritAttrs: false })
 
 const props = defineProps({
   variant: { type: String, default: 'default' },
   size: { type: String, default: 'default' },
   type: { type: String, default: 'button' },
   disabled: Boolean,
+  loading: Boolean,
 })
 
 const buttonVariants = cva(
@@ -38,9 +38,10 @@ const buttonVariants = cva(
 <template>
   <button
     :type="type"
-    :disabled="disabled"
-    :class="cn(buttonVariants({ variant, size }), $attrs.class)"
+    :disabled="disabled || loading"
+    :class="cn(buttonVariants({ variant, size }))"
   >
-    <slot />
+    <Loader2 v-if="loading" class="h-3.5 w-3.5 animate-spin" />
+    <slot v-if="!loading" />
   </button>
 </template>

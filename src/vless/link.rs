@@ -28,6 +28,9 @@ pub struct ParsedLink {
     pub path: Option<String>,
     pub service_name: Option<String>,
     pub host_header: Option<String>,
+    pub mode: Option<String>,
+    pub extra: Option<String>,
+    pub alpn: Option<String>,
     // shadowsocks
     pub method: String,
     pub password: String,
@@ -126,6 +129,9 @@ pub fn parse_vless(raw: &str) -> Result<ParsedLink> {
         path: query_param(&pairs, "path"),
         service_name: query_param(&pairs, "serviceName"),
         host_header: query_param(&pairs, "host"),
+        mode: query_param(&pairs, "mode").filter(|v| !v.is_empty()),
+        extra: query_param(&pairs, "extra").filter(|v| !v.is_empty()),
+        alpn: query_param(&pairs, "alpn").filter(|v| !v.is_empty()),
         method: String::new(),
         password: String::new(),
     })
@@ -145,8 +151,13 @@ pub fn parse_ss(raw: &str) -> Result<ParsedLink> {
 
     let (method, password, address, port) =
         if let Some((userinfo, hostport)) = body.rsplit_once('@') {
-            // SIP002: ss://base64(method:password)@host:port
-            let decoded = decode_b64(userinfo).context("не удалось разобрать ss userinfo")?;
+            // SIP002: ss://base64(method:password)@host:port или
+            // plaintext method:password (может быть percent-encoded).
+            let decoded = if userinfo.contains(':') {
+                percent_decode(userinfo)
+            } else {
+                decode_b64(userinfo).unwrap_or_else(|_| percent_decode(userinfo))
+            };
             let (m, p) = decoded
                 .split_once(':')
                 .context("не удалось разобрать ss userinfo")?;
@@ -183,6 +194,9 @@ pub fn parse_ss(raw: &str) -> Result<ParsedLink> {
         path: None,
         service_name: None,
         host_header: None,
+        mode: None,
+        extra: None,
+        alpn: None,
         method: method.to_lowercase(),
         password,
     })
@@ -195,7 +209,14 @@ pub fn parse_vmess(raw: &str) -> Result<ParsedLink> {
         .strip_prefix("vmess://")
         .or_else(|| trimmed.strip_prefix("VMESS://"))
         .context("ссылка должна начинаться с vmess://")?;
-    let text = decode_b64(payload).context("не удалось разобрать vmess base64")?;
+    // Некоторые клиенты (Hiddify/v2rayN) добавляют query после base64:
+    // vmess://<base64>?fp=edge
+    let payload = payload.split('#').next().unwrap_or(payload);
+    let (b64, query) = payload.split_once('?').unwrap_or((payload, ""));
+    let query_pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
+        .into_owned()
+        .collect();
+    let text = decode_b64(b64).context("не удалось разобрать vmess base64")?;
     let value: Value = serde_json::from_str(&text).context("vmess: некорректный JSON")?;
     let address = value
         .get("add")
@@ -230,6 +251,11 @@ pub fn parse_vmess(raw: &str) -> Result<ParsedLink> {
         .and_then(|v| v.as_str())
         .unwrap_or("tcp")
         .to_lowercase();
+    let network = if network == "raw" {
+        "tcp".to_string()
+    } else {
+        network
+    };
     let tls = value
         .get("tls")
         .and_then(|v| v.as_str())
@@ -246,11 +272,15 @@ pub fn parse_vmess(raw: &str) -> Result<ParsedLink> {
         .and_then(|v| v.as_str())
         .filter(|v| !v.is_empty())
         .map(str::to_string);
-    let sni = value
-        .get("sni")
-        .and_then(|v| v.as_str())
+    let sni = query_param(&query_pairs, "sni")
         .filter(|v| !v.is_empty())
-        .map(str::to_string)
+        .or_else(|| {
+            value
+                .get("sni")
+                .and_then(|v| v.as_str())
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        })
         .or_else(|| host.clone());
     let name = value
         .get("ps")
@@ -274,16 +304,31 @@ pub fn parse_vmess(raw: &str) -> Result<ParsedLink> {
             .unwrap_or("auto")
             .to_string(),
         sni,
-        fingerprint: value
-            .get("fp")
-            .and_then(|v| v.as_str())
+        fingerprint: query_param(&query_pairs, "fp")
             .filter(|v| !v.is_empty())
-            .map(str::to_string),
+            .or_else(|| {
+                value
+                    .get("fp")
+                    .and_then(|v| v.as_str())
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string)
+            }),
         public_key: None,
         short_id: None,
         path,
         service_name: None,
         host_header: host,
+        mode: None,
+        extra: None,
+        alpn: query_param(&query_pairs, "alpn")
+            .filter(|v| !v.is_empty())
+            .or_else(|| {
+                value
+                    .get("alpn")
+                    .and_then(|v| v.as_str())
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string)
+            }),
         method: String::new(),
         password: String::new(),
     })
@@ -336,6 +381,9 @@ pub fn parse_trojan(raw: &str) -> Result<ParsedLink> {
         path: query_param(&pairs, "path").filter(|v| !v.is_empty()),
         service_name: query_param(&pairs, "serviceName").filter(|v| !v.is_empty()),
         host_header: host,
+        mode: lower("mode"),
+        extra: query_param(&pairs, "extra").filter(|v| !v.is_empty()),
+        alpn: lower("alpn"),
         method: String::new(),
         password,
     })
@@ -400,11 +448,22 @@ fn stream_settings(p: &ParsedLink) -> Value {
             "spiderX": "/"
         });
     } else if p.security == "tls" {
-        stream["tlsSettings"] = json!({
+        let mut tls = json!({
             "serverName": p.sni.clone().unwrap_or_default(),
             "fingerprint": p.fingerprint.clone().unwrap_or_else(|| "chrome".into()),
             "allowInsecure": false
         });
+        if let Some(alpn) = &p.alpn {
+            let values: Vec<&str> = alpn
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .collect();
+            if !values.is_empty() {
+                tls["alpn"] = json!(values);
+            }
+        }
+        stream["tlsSettings"] = tls;
     }
     if p.network == "ws" {
         let mut ws = json!({ "path": p.path.clone().unwrap_or_else(|| "/".into()) });
@@ -415,6 +474,24 @@ fn stream_settings(p: &ParsedLink) -> Value {
     } else if p.network == "grpc" {
         stream["grpcSettings"] =
             json!({ "serviceName": p.service_name.clone().unwrap_or_default() });
+    } else if p.network == "xhttp" {
+        let mut xhttp = json!({
+            "path": p.path.clone().unwrap_or_else(|| "/".into()),
+            "host": p.host_header.clone().unwrap_or_default()
+        });
+        if let Some(mode) = &p.mode {
+            xhttp["mode"] = json!(mode);
+        }
+        if let Some(extra) = &p.extra {
+            xhttp["extra"] = serde_json::from_str::<Value>(extra).unwrap_or_else(|_| json!(extra));
+        }
+        stream["xhttpSettings"] = xhttp;
+    } else if p.network == "httpupgrade" {
+        let mut upgrade = json!({ "path": p.path.clone().unwrap_or_else(|| "/".into()) });
+        if let Some(host) = &p.host_header {
+            upgrade["host"] = json!(host);
+        }
+        stream["httpupgradeSettings"] = upgrade;
     }
     stream
 }
@@ -616,6 +693,43 @@ mod tests {
     }
 
     #[test]
+    fn parses_vmess_with_query_fp() {
+        let payload = {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(
+                r#"{"v":"2","ps":"VM","add":"1.2.3.4","port":"443","id":"a1b2c3d4-1111-2222-3333-444455556666","aid":"0","net":"ws","path":"/ws","host":"front.example.com","tls":"tls","scy":"auto"}"#,
+            )
+        };
+        let p = parse_vmess(&format!("vmess://{payload}?fp=edge")).unwrap();
+        assert_eq!(p.network, "ws");
+        assert_eq!(p.fingerprint.as_deref(), Some("edge"));
+        let out = build_outbound(&p, "out0");
+        assert_eq!(out["streamSettings"]["tlsSettings"]["fingerprint"], "edge");
+    }
+
+    #[test]
+    fn parses_vmess_raw_as_tcp() {
+        let payload = {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(
+                r#"{"v":"2","add":"1.2.3.4","port":443,"id":"a1b2c3d4-1111-2222-3333-444455556666","aid":0,"net":"raw","tls":"none"}"#,
+            )
+        };
+        let p = parse_vmess(&format!("vmess://{payload}")).unwrap();
+        assert_eq!(p.network, "tcp");
+    }
+
+    #[test]
+    fn parses_ss_plain_userinfo() {
+        let p =
+            parse_ss("ss://2022-blake3-aes-256-gcm:pass%2Fword%3D@example.com:8388#SS").unwrap();
+        assert_eq!(p.method, "2022-blake3-aes-256-gcm");
+        assert_eq!(p.password, "pass/word=");
+        assert_eq!(p.address, "example.com");
+        assert_eq!(p.port, 8388);
+    }
+
+    #[test]
     fn parses_trojan() {
         let p = parse_any(
             "trojan://secret@example.com:443?security=tls&type=ws&path=%2Fws&host=front.example.com#T",
@@ -629,6 +743,20 @@ mod tests {
         let out = build_outbound(&p, "out0");
         assert_eq!(out["protocol"], "trojan");
         assert_eq!(out["settings"]["servers"][0]["password"], "secret");
+    }
+
+    #[test]
+    fn parses_xhttp() {
+        let p = parse_any(
+            "vless://a1b2c3d4-1111-2222-3333-444455556666@example.com:443?security=tls&type=xhttp&path=%2Fx&host=front.example.com&mode=auto#XHTTP",
+        )
+        .unwrap();
+        assert_eq!(p.network, "xhttp");
+        assert_eq!(p.path.as_deref(), Some("/x"));
+        assert_eq!(p.mode.as_deref(), Some("auto"));
+        let out = build_outbound(&p, "out0");
+        assert_eq!(out["streamSettings"]["xhttpSettings"]["path"], "/x");
+        assert_eq!(out["streamSettings"]["xhttpSettings"]["mode"], "auto");
     }
 
     #[test]

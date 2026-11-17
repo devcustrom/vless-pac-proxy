@@ -32,6 +32,7 @@ pub struct WgConfigInfo {
     pub name: String,
     pub endpoint: Option<String>,
     pub active: bool,
+    pub valid: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -89,34 +90,59 @@ fn config_path(dir: &Path, slug: &str) -> Result<PathBuf> {
     Ok(configs_dir(dir).join(format!("{slug}.conf")))
 }
 
-/// Импортирует текущий wg.conf как конфиг «Основной», если список пуст.
+/// Импортирует текущий wg.conf в список конфигов. Импорт не зависит от
+/// строгой валидности: конфиг должен быть виден пользователю даже с ошибкой.
 pub fn ensure_imported(dir: &Path) -> Result<()> {
     let base = configs_dir(dir);
     std::fs::create_dir_all(&base)?;
-    let has_files = std::fs::read_dir(&base)
-        .map(|entries| {
-            entries
-                .flatten()
-                .any(|entry| entry.path().extension().is_some_and(|ext| ext == "conf"))
-        })
-        .unwrap_or(false);
-    if has_files {
-        return Ok(());
+    let mut files: Vec<std::path::PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(&base)
+        .with_context(|| format!("не удалось прочитать каталог {}", base.display()))?
+    {
+        let path = entry?.path();
+        if path.extension().map(|ext| ext == "conf").unwrap_or(false) {
+            files.push(path);
+        }
     }
-    let wg = dir.join("wg.conf");
-    let Ok(content) = std::fs::read_to_string(&wg) else {
-        return Ok(());
-    };
-    if !wireproxy::is_configured(dir) {
-        return Ok(());
-    }
-    std::fs::write(base.join("default.conf"), content)?;
+    let wg_content = std::fs::read_to_string(dir.join("wg.conf"))
+        .ok()
+        .filter(|text| !text.trim().is_empty());
     let mut meta = read_meta(dir);
-    meta.active = Some("default".to_string());
-    meta.names
-        .entry("default".to_string())
-        .or_insert_with(|| "Основной".to_string());
-    write_meta(dir, &meta)?;
+
+    if files.is_empty() {
+        if let Some(content) = wg_content {
+            std::fs::write(base.join("default.conf"), content)?;
+            meta.active = Some("default".to_string());
+            meta.names
+                .entry("default".to_string())
+                .or_insert_with(|| "Основной".to_string());
+            write_meta(dir, &meta)?;
+        }
+        return Ok(());
+    }
+
+    if let Some(content) = wg_content {
+        let represented = files.iter().any(|path| {
+            std::fs::read_to_string(path)
+                .map(|text| text.trim() == content.trim())
+                .unwrap_or(false)
+        });
+        if !represented {
+            std::fs::write(base.join("current.conf"), &content)?;
+            meta.active = Some("current".to_string());
+            meta.names
+                .insert("current".to_string(), "Текущий wg.conf".to_string());
+            write_meta(dir, &meta)?;
+        }
+    }
+    if meta.active.is_none() {
+        if let Some(path) = files.first() {
+            if let Some(slug) = path.file_stem().and_then(|stem| stem.to_str()) {
+                meta.active = Some(slug.to_string());
+                write_meta(dir, &meta)?;
+            }
+        }
+    }
     Ok(())
 }
 
@@ -124,28 +150,30 @@ pub fn list(dir: &Path) -> Result<Vec<WgConfigInfo>> {
     ensure_imported(dir)?;
     let meta = read_meta(dir);
     let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(configs_dir(dir)) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().map(|ext| ext != "conf").unwrap_or(true) {
-                continue;
-            }
-            let Some(slug) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            let text = std::fs::read_to_string(&path).unwrap_or_default();
-            let name = meta
-                .names
-                .get(slug)
-                .cloned()
-                .unwrap_or_else(|| slug.to_string());
-            out.push(WgConfigInfo {
-                slug: slug.to_string(),
-                name,
-                endpoint: wireproxy::endpoint_from_text(&text),
-                active: meta.active.as_deref() == Some(slug),
-            });
+    let entries = std::fs::read_dir(configs_dir(dir))
+        .with_context(|| format!("не удалось прочитать {}", configs_dir(dir).display()))?;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().map(|ext| ext != "conf").unwrap_or(true) {
+            continue;
         }
+        let Some(slug) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let name = meta
+            .names
+            .get(slug)
+            .cloned()
+            .unwrap_or_else(|| slug.to_string());
+        out.push(WgConfigInfo {
+            slug: slug.to_string(),
+            name,
+            endpoint: wireproxy::endpoint_from_text(&text),
+            active: meta.active.as_deref() == Some(slug),
+            valid: wireproxy::validate(&text).is_ok(),
+        });
     }
     out.sort_by(|a, b| {
         b.active
@@ -193,7 +221,7 @@ pub fn activate(dir: &Path, slug: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn remove(dir: &Path, slug: &str) -> Result<bool> {
+pub fn remove(dir: &Path, slug: &str) -> Result<(bool, Option<String>)> {
     let path = config_path(dir, slug)?;
     if path.exists() {
         std::fs::remove_file(&path)?;
@@ -201,13 +229,36 @@ pub fn remove(dir: &Path, slug: &str) -> Result<bool> {
     let mut meta = read_meta(dir);
     meta.names.remove(slug);
     let was_active = meta.active.as_deref() == Some(slug);
-    if was_active {
-        meta.active = None;
-        let _ = std::fs::remove_file(dir.join("wg.conf"));
-        let _ = std::fs::remove_file(dir.join("wireproxy.conf"));
+    if !was_active {
+        write_meta(dir, &meta)?;
+        return Ok((false, meta.active));
     }
-    write_meta(dir, &meta)?;
-    Ok(was_active)
+    let next = std::fs::read_dir(configs_dir(dir))
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| path.extension().map(|ext| ext == "conf").unwrap_or(false))
+        .and_then(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(str::to_string)
+        });
+    match next {
+        Some(next_slug) => {
+            write_meta(dir, &meta)?;
+            activate(dir, &next_slug)?;
+            Ok((true, Some(next_slug)))
+        }
+        None => {
+            meta.active = None;
+            write_meta(dir, &meta)?;
+            let _ = std::fs::remove_file(dir.join("wg.conf"));
+            let _ = std::fs::remove_file(dir.join("wireproxy.conf"));
+            Ok((true, None))
+        }
+    }
 }
 
 fn test_config(dir: &Path, slug: &str) -> Result<String> {

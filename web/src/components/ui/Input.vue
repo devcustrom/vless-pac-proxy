@@ -1,5 +1,4 @@
 <script setup>
-defineOptions({ inheritAttrs: false })
 defineProps({
   modelValue: { type: [String, Number], default: '' },
 })

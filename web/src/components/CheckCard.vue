@@ -12,6 +12,7 @@ const props = defineProps({ s: { type: Object, required: true } })
 const domain = ref('')
 const result = ref(null)
 const busy = ref(false)
+const adding = ref('')
 
 const VERDICTS = {
   'vpn-helps': ['success', 'через VPN открывается — добавляйте'],
@@ -48,11 +49,14 @@ async function check() {
 }
 
 async function addToVpn(value) {
+  adding.value = value
   try {
     await post('/api/extra', { action: 'add', domain: value })
     notify(value + ' добавлен в VPN-список')
   } catch {
     /* тост уже показан */
+  } finally {
+    adding.value = ''
   }
 }
 </script>
@@ -66,7 +70,7 @@ async function addToVpn(value) {
     <div class="space-y-3">
       <form class="flex gap-2" @submit.prevent="check">
         <Input v-model="domain" placeholder="example.com" autocomplete="off" />
-        <Button type="submit" :disabled="busy">
+        <Button type="submit" :loading="busy">
           <Search class="h-3.5 w-3.5" />
           Проверить
         </Button>
@@ -84,6 +88,8 @@ async function addToVpn(value) {
           <Button
             v-if="['vpn-helps', 'challenge'].includes(result.verdict) && !(s.extra || []).includes(result.domain)"
             size="sm"
+            :loading="adding === result.domain"
+            :disabled="!!adding"
             @click="addToVpn(result.domain)"
           >
             <Plus class="h-3.5 w-3.5" />
@@ -107,6 +113,8 @@ async function addToVpn(value) {
               v-if="['vpn-helps', 'challenge'].includes(item.verdict) && !(s.extra || []).includes(item.domain)"
               size="sm"
               variant="outline"
+              :loading="adding === item.domain"
+              :disabled="!!adding"
               @click="addToVpn(item.domain)"
             >
               добавить

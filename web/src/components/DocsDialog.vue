@@ -14,11 +14,13 @@ const error = ref('')
 const tab = ref('readme')
 
 const html = computed(() => {
-  const text = tab.value === 'readme'
-    ? docs.value?.readme
-    : tab.value === 'mac'
-      ? docs.value?.readmeMac
-      : docs.value?.plugins
+  const text = {
+    readme: docs.value?.readme,
+    mac: docs.value?.readmeMac,
+    plugins: docs.value?.plugins,
+    telegram: docs.value?.telegram,
+    zapret: docs.value?.zapret,
+  }[tab.value]
   if (!text) return ''
   return marked.parse(text, { mangle: false, headerIds: false })
 })
@@ -88,6 +90,20 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
             @click="tab = 'plugins'"
           >
             Плагины и протоколы
+          </Button>
+          <Button
+            size="sm"
+            :variant="tab === 'telegram' ? 'secondary' : 'ghost'"
+            @click="tab = 'telegram'"
+          >
+            Telegram
+          </Button>
+          <Button
+            size="sm"
+            :variant="tab === 'zapret' ? 'secondary' : 'ghost'"
+            @click="tab = 'zapret'"
+          >
+            Zapret
           </Button>
         </div>
 

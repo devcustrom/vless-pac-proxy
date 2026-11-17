@@ -3,8 +3,8 @@
 //! Паритет с legacy manager.js: CONNECT-цепочка в upstream, plain-HTTP
 //! absolute-URI форвардинг, фильтр hop-by-hop заголовков, журнал direct-сайтов.
 use std::net::IpAddr;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -12,13 +12,82 @@ use tokio::net::{TcpListener, TcpStream};
 use url::Url;
 
 use crate::net::dns_guard;
-use crate::routing::Channel;
+use crate::routing::{Channel, Routing};
 use crate::state::AppState;
 use crate::vless::{WIREPROXY_HTTP_PORT, XRAY_HTTP_PORT};
 use crate::wlog;
 
 const HEAD_LIMIT: usize = 65536;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const DIRECT_PROBE_TTL: Duration = Duration::from_secs(300);
+
+fn probe_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .redirect(reqwest::redirect::Policy::none())
+            .pool_max_idle_per_host(0)
+            .no_proxy()
+            .user_agent("wireproxy-control/direct-probe")
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    })
+}
+
+/// Проверяет, доступен ли домен напрямую. Вызывается только когда запущен
+/// Zapret: его обход применяется к этому же системному трафику.
+async fn direct_probe_ok(state: &AppState, host: &str, port: u16) -> bool {
+    let key = format!("{host}:{port}");
+    if let Ok(cache) = state.direct_probe.lock() {
+        if let Some((ok, at)) = cache.get(&key) {
+            if at.elapsed() < DIRECT_PROBE_TTL {
+                return *ok;
+            }
+        }
+    }
+    if port != 80 && port != 443 {
+        return false;
+    }
+    if dns_guard::check_host(host).await.is_err() {
+        return false;
+    }
+    let scheme = if port == 443 { "https" } else { "http" };
+    let url = format!("{scheme}://{host}/");
+    let ok = match probe_client().head(&url).send().await {
+        Ok(response) => response.status().as_u16() < 500,
+        Err(_) => false,
+    };
+    if let Ok(mut cache) = state.direct_probe.lock() {
+        cache.insert(key, (ok, Instant::now()));
+    }
+    wlog!(
+        "direct-first {host}:{port} -> {}",
+        if ok { "direct" } else { "vpn" }
+    );
+    ok
+}
+
+async fn effective_route(
+    state: &AppState,
+    routing: &Routing,
+    host: &str,
+    port: u16,
+) -> Option<Channel> {
+    let route = routing.route_for(host)?;
+    let settings = state.settings_snapshot();
+    if !settings.direct_first || routing.is_forced_channel(host) {
+        return Some(route);
+    }
+    if !crate::zapret::service_running_cached(state) {
+        return Some(route);
+    }
+    if direct_probe_ok(state, host, port).await {
+        None
+    } else {
+        Some(route)
+    }
+}
 
 pub async fn serve(state: Arc<AppState>) -> Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", crate::api::SMART_PROXY_PORT)).await?;
@@ -78,7 +147,7 @@ async fn tunnel(
     reject_forbidden(&host)?;
 
     let routing = state.routing_snapshot();
-    let route = routing.route_for(&host);
+    let route = effective_route(&state, &routing, &host, port).await;
     if route.is_none() {
         state.visited.lock().unwrap().note(&host);
     }
@@ -121,7 +190,7 @@ async fn forward_http(
     reject_forbidden(&host)?;
 
     let routing = state.routing_snapshot();
-    let route = routing.route_for(&host);
+    let route = effective_route(&state, &routing, &host, port).await;
     if route.is_none() {
         state.visited.lock().unwrap().note(&host);
     }

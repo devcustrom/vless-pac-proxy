@@ -1,15 +1,26 @@
 <script setup>
-import { ref } from 'vue'
-import { ListFilter, Plus, Trash2 } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
+import { ListFilter, Trash2 } from 'lucide-vue-next'
 import { notify, post } from '@/lib/store'
+import { useActionMutation } from '@/lib/queries'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
-import Input from '@/components/ui/Input.vue'
+import DomainAddForm from '@/components/DomainAddForm.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
 
-const inputs = ref({ extra: '', wg: '', vless: '' })
+const addAction = useActionMutation(
+  ({ section, domain }) => section.add(domain),
+  [['status']],
+)
+const addLoading = computed(() => addAction.isLoading.value)
+const addSection = ref('')
+const removeAction = useActionMutation(
+  ({ section, value }) => section.remove(value),
+  [['status']],
+)
+const removing = ref('')
 
 const sections = [
   {
@@ -44,24 +55,28 @@ const sections = [
   },
 ]
 
-async function add(section) {
-  const value = inputs.value[section.key].trim()
-  if (!value) return
+async function add(section, domain) {
+  addSection.value = section.key
   try {
-    await section.add(value)
-    inputs.value[section.key] = ''
-    notify('Домен добавлен: ' + value)
+    await addAction.mutateAsync({ section, domain })
+    notify('Домен добавлен: ' + domain)
   } catch {
     /* тост показан */
+  } finally {
+    addSection.value = ''
   }
 }
 
 async function remove(section, value) {
+  const key = `${section.key}:${value}`
+  removing.value = key
   try {
-    await section.remove(value)
+    await removeAction.mutateAsync({ section, value })
     notify('Домен убран')
   } catch {
     /* тост показан */
+  } finally {
+    removing.value = ''
   }
 }
 </script>
@@ -91,23 +106,22 @@ async function remove(section, value) {
             class="flex items-center justify-between px-3 py-1.5 text-sm"
           >
             <span class="font-mono text-xs">{{ item }}</span>
-            <Button size="sm" variant="ghost" @click="remove(section, item)">
+            <Button
+              size="sm"
+              variant="ghost"
+              :loading="removing === `${section.key}:${item}`"
+              :disabled="!!removing || addLoading"
+              @click="remove(section, item)"
+            >
               <Trash2 class="h-3.5 w-3.5" />
             </Button>
           </li>
         </ul>
 
-        <form class="flex gap-2" @submit.prevent="add(section)">
-          <Input
-            v-model="inputs[section.key]"
-            placeholder="example.com"
-            autocomplete="off"
-          />
-          <Button type="submit" variant="outline" size="sm">
-            <Plus class="h-3.5 w-3.5" />
-            Добавить
-          </Button>
-        </form>
+        <DomainAddForm
+          :submit="(output) => add(section, output.domain)"
+          :loading="addSection === section.key"
+        />
       </section>
     </div>
   </Card>

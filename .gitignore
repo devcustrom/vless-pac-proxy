@@ -4,6 +4,12 @@ xray-config.json
 xray-config.json.bak
 pool-state.json
 settings.json
+tgws-config.json
+tgws-status.json
+tgws-version.json
+tgws-proxy.download
+tgws-proxy.exe.bak
+tgws-proxy.bak
 
 # Генерируется менеджером автоматически
 proxy.pac
@@ -25,6 +31,8 @@ wireproxy.exe
 wireproxy
 xray.exe
 xray
+tgws-proxy.exe
+tgws-proxy
 WireproxyTray
 *.tar.gz
 *.zip
@@ -41,3 +49,9 @@ wireproxy.conf
 # Frontend
 web/node_modules/
 web/dist/
+
+# Telegram sidecar build artifacts
+sidecar/tgws/.build-venv/
+sidecar/tgws/build/
+sidecar/tgws/dist/
+sidecar/tgws/**/__pycache__/

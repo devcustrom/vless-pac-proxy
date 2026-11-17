@@ -2,6 +2,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Instant;
 
 use chrono::{DateTime, Utc};
 
@@ -97,6 +98,11 @@ pub struct AppState {
     pub settings: Mutex<Settings>,
     pub wg: Engine,
     pub xr: Engine,
+    pub telegram: crate::telegram::TelegramRuntime,
+    pub zapret_error: Mutex<Option<String>>,
+    pub zapret_running: Mutex<Option<(bool, Instant)>>,
+    pub zapret_auto: Mutex<crate::zapret::AutoTuneState>,
+    pub direct_probe: Mutex<HashMap<String, (bool, Instant)>>,
     pub health: Mutex<Health>,
     pub lists: Mutex<Lists>,
     pub pool: Mutex<Pool>,
@@ -135,6 +141,11 @@ impl AppState {
             settings: Mutex::new(settings),
             wg,
             xr,
+            telegram: crate::telegram::TelegramRuntime::default(),
+            zapret_error: Mutex::new(None),
+            zapret_running: Mutex::new(None),
+            zapret_auto: Mutex::new(crate::zapret::AutoTuneState::default()),
+            direct_probe: Mutex::new(HashMap::new()),
             health: Mutex::new(Health::default()),
             lists: Mutex::new(Lists::default()),
             pool: Mutex::new(Pool::default()),

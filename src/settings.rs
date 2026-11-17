@@ -1,4 +1,5 @@
-//! settings.json — байт-совместимый с legacy-версией формат (5 полей).
+//! settings.json — совместимый с legacy-версией формат; новые поля имеют
+//! значения по умолчанию и не ломают старые файлы.
 use std::path::Path;
 
 use anyhow::Result;
@@ -24,6 +25,38 @@ pub struct Settings {
     pub wireguard_enabled: bool,
     #[serde(rename = "xrayEnabled", default = "default_true")]
     pub xray_enabled: bool,
+    #[serde(rename = "onboardingDone", default)]
+    pub onboarding_done: bool,
+    #[serde(rename = "telegramEnabled", default)]
+    pub telegram_enabled: bool,
+    #[serde(rename = "telegramHost", default = "default_telegram_host")]
+    pub telegram_host: String,
+    #[serde(rename = "telegramPort", default = "default_telegram_port")]
+    pub telegram_port: u16,
+    #[serde(rename = "telegramSecret", default)]
+    pub telegram_secret: String,
+    #[serde(rename = "telegramTryDirect", default = "default_true")]
+    pub telegram_try_direct: bool,
+    #[serde(rename = "telegramOrder", default = "default_telegram_order")]
+    pub telegram_order: String,
+    #[serde(rename = "telegramCfWorker", default)]
+    pub telegram_cf_worker: String,
+    #[serde(rename = "telegramCfProxy", default)]
+    pub telegram_cf_proxy: String,
+    #[serde(rename = "telegramFakeTls", default)]
+    pub telegram_fake_tls: String,
+    #[serde(rename = "telegramH2", default)]
+    pub telegram_h2: bool,
+    #[serde(rename = "telegramVerbose", default)]
+    pub telegram_verbose: bool,
+    #[serde(rename = "telegramAutoUpdate", default = "default_true")]
+    pub telegram_auto_update: bool,
+    #[serde(rename = "zapretEnabled", default)]
+    pub zapret_enabled: bool,
+    #[serde(rename = "zapretPreset", default = "default_zapret_preset")]
+    pub zapret_preset: String,
+    #[serde(rename = "directFirst", default = "default_true")]
+    pub direct_first: bool,
 }
 
 fn default_vpn() -> String {
@@ -41,6 +74,18 @@ fn default_http_port() -> u16 {
 fn default_https_port() -> u16 {
     443
 }
+fn default_telegram_host() -> String {
+    "127.0.0.1".to_string()
+}
+fn default_telegram_port() -> u16 {
+    1443
+}
+fn default_telegram_order() -> String {
+    "auto".to_string()
+}
+fn default_zapret_preset() -> String {
+    "general.bat".to_string()
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -53,6 +98,22 @@ impl Default for Settings {
             local_domains_enabled: false,
             wireguard_enabled: true,
             xray_enabled: true,
+            onboarding_done: false,
+            telegram_enabled: false,
+            telegram_host: default_telegram_host(),
+            telegram_port: default_telegram_port(),
+            telegram_secret: String::new(),
+            telegram_try_direct: true,
+            telegram_order: default_telegram_order(),
+            telegram_cf_worker: String::new(),
+            telegram_cf_proxy: String::new(),
+            telegram_fake_tls: String::new(),
+            telegram_h2: false,
+            telegram_verbose: false,
+            telegram_auto_update: true,
+            zapret_enabled: false,
+            zapret_preset: default_zapret_preset(),
+            direct_first: true,
         }
     }
 }
@@ -63,10 +124,17 @@ impl Settings {
             Ok(p) => p,
             Err(_) => return Self::default(),
         };
-        match std::fs::read_to_string(&path) {
+        let mut settings = match std::fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str::<Settings>(&text).unwrap_or_default(),
             Err(_) => Self::default(),
+        };
+        // Старые установки с уже включённым плагином не должны получать
+        // мастер первого запуска после обновления.
+        if settings.local_domains_enabled && !settings.onboarding_done {
+            settings.onboarding_done = true;
+            let _ = settings.save(dir);
         }
+        settings
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
@@ -101,6 +169,22 @@ mod tests {
             local_domains_enabled: false,
             wireguard_enabled: true,
             xray_enabled: true,
+            onboarding_done: false,
+            telegram_enabled: false,
+            telegram_host: default_telegram_host(),
+            telegram_port: default_telegram_port(),
+            telegram_secret: String::new(),
+            telegram_try_direct: true,
+            telegram_order: default_telegram_order(),
+            telegram_cf_worker: String::new(),
+            telegram_cf_proxy: String::new(),
+            telegram_fake_tls: String::new(),
+            telegram_h2: false,
+            telegram_verbose: false,
+            telegram_auto_update: true,
+            zapret_enabled: false,
+            zapret_preset: default_zapret_preset(),
+            direct_first: true,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"vpnDefault\":\"vless\""));

@@ -52,6 +52,24 @@ impl Routing {
         None
     }
 
+    /// Домен принудительно закреплён за конкретным каналом (не общий VPN-список).
+    pub fn is_forced_channel(&self, host_raw: &str) -> bool {
+        let Some(host) = normalize(host_raw) else {
+            return false;
+        };
+        let mut current = host.as_str();
+        loop {
+            if self.vless_only.contains(current) || self.wg_only.contains(current) {
+                return true;
+            }
+            match current.find('.') {
+                Some(i) => current = &current[i + 1..],
+                None => break,
+            }
+        }
+        false
+    }
+
     /// Канал с учётом здоровья: мёртвый выбранный заменяется живым.
     pub fn available(&self, pref: Channel) -> Channel {
         match pref {
@@ -129,6 +147,15 @@ mod tests {
         // WireGuard умер — домен уходит на VLESS, если он жив
         r.wg_healthy = false;
         assert_eq!(r.route_for("wronly.test"), Some(Channel::Vless));
+    }
+
+    #[test]
+    fn forced_channels_detected() {
+        let r = routing();
+        assert!(r.is_forced_channel("vlessonly.test"));
+        assert!(r.is_forced_channel("sub.vlessonly.test"));
+        assert!(r.is_forced_channel("wronly.test"));
+        assert!(!r.is_forced_channel("example.com"));
     }
 
     #[test]

@@ -1,4 +1,6 @@
 import { createApp } from 'vue'
+import { createPinia } from 'pinia'
+import { PiniaColada } from '@pinia/colada'
 import App from './App.vue'
 import './style.css'
 
@@ -7,4 +9,9 @@ const applyTheme = () => document.documentElement.classList.toggle('dark', dark.
 applyTheme()
 dark.addEventListener?.('change', applyTheme)
 
-createApp(App).mount('#app')
+const app = createApp(App)
+app.use(createPinia())
+app.use(PiniaColada, {
+  queryOptions: { staleTime: 2000 },
+})
+app.mount('#app')

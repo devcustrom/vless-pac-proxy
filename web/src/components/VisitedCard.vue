@@ -9,6 +9,7 @@ const props = defineProps({ s: { type: Object, required: true } })
 
 const PAGE_SIZE = 20
 const page = ref(1)
+const adding = ref('')
 
 const items = computed(() => {
   const cutoff = Math.floor(Date.now() / 1000) - 86_400
@@ -26,11 +27,14 @@ watch(pageCount, (count) => {
 })
 
 async function addToVpn(domain) {
+  adding.value = domain
   try {
     await post('/api/extra', { action: 'add', domain })
     notify(domain + ' добавлен в VPN-список')
   } catch {
     /* тост уже показан */
+  } finally {
+    adding.value = ''
   }
 }
 </script>
@@ -55,7 +59,13 @@ async function addToVpn(domain) {
             {{ item.domain }}
             <span class="text-xs text-muted-foreground">×{{ item.count }}</span>
           </span>
-          <Button size="sm" variant="outline" @click="addToVpn(item.domain)">
+          <Button
+            size="sm"
+            variant="outline"
+            :loading="adding === item.domain"
+            :disabled="!!adding"
+            @click="addToVpn(item.domain)"
+          >
             <Plus class="h-3.5 w-3.5" />
             через VPN
           </Button>

@@ -1,6 +1,6 @@
 <script setup>
 import { ref } from 'vue'
-import { Activity, Save } from 'lucide-vue-next'
+import { Activity, Save, Trash2 } from 'lucide-vue-next'
 import { notify, post } from '@/lib/store'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
@@ -11,6 +11,7 @@ const props = defineProps({ s: { type: Object, required: true } })
 
 const link = ref('')
 const busy = ref(false)
+const deleting = ref(false)
 
 async function saveLink() {
   if (!link.value.trim()) return
@@ -24,6 +25,19 @@ async function saveLink() {
     /* тост уже показан */
   } finally {
     busy.value = false
+  }
+}
+
+async function removeConfig() {
+  if (!confirm('Удалить активный VLESS/VMess/Trojan/SS-конфиг? Подписки и пул останутся.')) return
+  deleting.value = true
+  try {
+    await post('/api/vless', { action: 'remove-link' })
+    notify('VLESS-конфиг удалён')
+  } catch {
+    /* тост уже показан */
+  } finally {
+    deleting.value = false
   }
 }
 </script>
@@ -43,6 +57,17 @@ async function saveLink() {
           {{ s.vlessConfigured ? 'настроен' : 'не настроен' }}
         </Badge>
         <span class="text-muted-foreground">IP: {{ s.exitIpVless || '—' }}</span>
+        <Button
+          v-if="s.vlessConfigured"
+          size="sm"
+          variant="ghost"
+          :loading="deleting"
+          :disabled="busy"
+          @click="removeConfig"
+        >
+          <Trash2 class="h-3.5 w-3.5" />
+          Удалить конфиг
+        </Button>
       </div>
 
       <form class="flex flex-col gap-2 sm:flex-row" @submit.prevent="saveLink">
@@ -51,15 +76,15 @@ async function saveLink() {
           placeholder="vless://uuid@host:443?... или vmess://... / trojan://... / ss://..."
           autocomplete="off"
         />
-        <Button type="submit" :disabled="busy || !link.trim()">
+        <Button type="submit" :loading="busy" :disabled="!link.trim()">
           <Save class="h-3.5 w-3.5" />
           Сохранить
         </Button>
       </form>
 
       <p class="text-xs text-muted-foreground">
-        Домены «только VLESS» и «только WireGuard» — во вкладке «Домены».
-        Подписки и пул конфигов — в карточке ниже.
+        Домены «только VLESS» и «только WireGuard» — кнопка «Маршрутизация
+        доменов» на вкладке «Обзор». Подписки и пул конфигов — в карточке ниже.
       </p>
     </div>
   </Card>

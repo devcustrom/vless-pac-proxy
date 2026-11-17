@@ -1,15 +1,34 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { Blocks, Info, Settings2 } from 'lucide-vue-next'
-import { notify, post } from '@/lib/store'
+import { Blocks, Info } from 'lucide-vue-next'
+import { api, notify } from '@/lib/store'
+import { useActionMutation } from '@/lib/queries'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Switch from '@/components/ui/Switch.vue'
+import PluginSetupDialog from '@/components/PluginSetupDialog.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
 
-const busy = ref(false)
-const localDomains = ref(!!props.s.plugins?.localDomains)
+const setupOpen = ref(false)
+const localDomains = computed(() => !!props.s.plugins?.localDomains)
+const telegram = computed(() => !!props.s.plugins?.telegram)
+const zapret = computed(() => !!props.s.plugins?.zapret)
+const disableAction = useActionMutation(
+  () => api('/api/plugins', { localDomains: false }),
+  [['status']],
+)
+const telegramAction = useActionMutation(
+  (enabled) => api('/api/plugins', { telegram: enabled }),
+  [['status']],
+)
+const zapretAction = useActionMutation(
+  (enabled) => api('/api/plugins', { zapret: enabled }),
+  [['status']],
+)
+const disableLoading = computed(() => disableAction.isLoading.value)
+const telegramLoading = computed(() => telegramAction.isLoading.value)
+const zapretLoading = computed(() => zapretAction.isLoading.value)
 
 const core = computed(() => [
   {
@@ -31,15 +50,33 @@ const core = computed(() => [
 ])
 
 async function toggleLocalDomains(value) {
-  busy.value = true
-  localDomains.value = value
+  if (value) {
+    setupOpen.value = true
+    return
+  }
   try {
-    await post('/api/plugins', { localDomains: value })
-    notify(value ? 'Плагин локальных доменов включён' : 'Плагин локальных доменов выключен')
+    await disableAction.mutateAsync()
+    notify('Плагин локальных доменов выключен')
   } catch {
-    localDomains.value = !value
-  } finally {
-    busy.value = false
+    /* тост показан */
+  }
+}
+
+async function toggleTelegram(value) {
+  try {
+    await telegramAction.mutateAsync(value)
+    notify(value ? 'Telegram-прокси включён' : 'Telegram-прокси выключен')
+  } catch {
+    /* тост показан */
+  }
+}
+
+async function toggleZapret(value) {
+  try {
+    await zapretAction.mutateAsync(value)
+    notify(value ? 'Плагин Zapret включён' : 'Плагин Zapret выключен')
+  } catch {
+    /* тост показан */
   }
 }
 </script>
@@ -69,8 +106,48 @@ async function toggleLocalDomains(value) {
         </div>
         <Switch
           :model-value="localDomains"
-          :disabled="busy"
+          :disabled="disableLoading"
           @update:model-value="toggleLocalDomains"
+        />
+      </div>
+
+      <div class="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-3">
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-sm font-medium">Telegram-прокси</span>
+            <Badge :variant="telegram ? 'success' : 'secondary'">
+              {{ telegram ? 'включён' : 'выключен' }}
+            </Badge>
+          </div>
+          <p class="mt-1 text-xs text-muted-foreground">
+            MTProto на 127.0.0.1:{{ s.telegram?.port || 1443 }}: WS-транспорт,
+            WireGuard/VLESS и явный direct-режим. Настройки — во вкладке «Telegram».
+          </p>
+        </div>
+        <Switch
+          :model-value="telegram"
+          :disabled="telegramLoading"
+          @update:model-value="toggleTelegram"
+        />
+      </div>
+
+      <div class="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-3">
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-sm font-medium">Zapret</span>
+            <Badge :variant="zapret ? 'success' : 'secondary'">
+              {{ zapret ? 'включён' : 'выключен' }}
+            </Badge>
+          </div>
+          <p class="mt-1 text-xs text-muted-foreground">
+            WinDivert и Windows-служба Zapret: general-пресеты, запуск и
+            остановка из вкладки «Zapret».
+          </p>
+        </div>
+        <Switch
+          :model-value="zapret"
+          :disabled="zapretLoading"
+          @update:model-value="toggleZapret"
         />
       </div>
 
@@ -97,4 +174,10 @@ async function toggleLocalDomains(value) {
       </p>
     </div>
   </Card>
+  <PluginSetupDialog
+    :open="setupOpen"
+    :s="s"
+    @close="setupOpen = false"
+    @enabled="setupOpen = false"
+  />
 </template>

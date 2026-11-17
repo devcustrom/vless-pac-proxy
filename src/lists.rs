@@ -42,6 +42,37 @@ fn tld_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^[a-z]{2,24}$").unwrap())
 }
 
+/// Строгий валидатор домена для пользовательского ввода (без схем, путей,
+/// портов, IP и CIDR). Возвращает нормализованное имя.
+pub fn validate_hostname(raw: &str) -> Option<String> {
+    let d = raw.trim().trim_end_matches('.').to_lowercase();
+    if d.is_empty() || d.len() > 253 {
+        return None;
+    }
+    if d.chars()
+        .any(|c| !(c.is_ascii_alphanumeric() || c == '.' || c == '-'))
+    {
+        return None;
+    }
+    if d.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+    let labels: Vec<&str> = d.split('.').collect();
+    if labels.len() < 2 && d != "localhost" {
+        return None;
+    }
+    for label in &labels {
+        if label.is_empty() || label.len() > 63 || label.starts_with('-') || label.ends_with('-') {
+            return None;
+        }
+    }
+    let tld = labels.last()?;
+    if *tld != "localhost" && !tld_re().is_match(tld) {
+        return None;
+    }
+    Some(d)
+}
+
 pub fn normalize_domain(line: &str) -> Option<String> {
     let mut d = line.trim().to_lowercase();
     if d.is_empty() || d.starts_with('#') || d.starts_with('!') || d.starts_with(';') {
@@ -262,6 +293,42 @@ mod tests {
         assert_eq!(normalize_domain("10.0.0.0/8"), None);
         assert_eq!(normalize_domain("1.2.3.4"), None);
         assert_eq!(normalize_domain("# comment"), None);
+    }
+
+    #[test]
+    fn validate_hostname_cases() {
+        for raw in [
+            "panel.localhost",
+            "Example.COM ",
+            "sub-domain.example.co.uk",
+            "foo.localhost.",
+            "localhost",
+        ] {
+            assert!(validate_hostname(raw).is_some(), "должен принять {raw:?}");
+        }
+        for raw in [
+            "",
+            "https://example.com",
+            "example.com:443",
+            "1.2.3.4",
+            "10.0.0.0/8",
+            "bad_domain.com",
+            "-bad.example.com",
+            "bad-.example.com",
+            "example",
+            "a..b",
+            "пример.рф",
+            "example.c",
+        ] {
+            assert!(
+                validate_hostname(raw).is_none(),
+                "не должен принять {raw:?}"
+            );
+        }
+        assert_eq!(
+            validate_hostname("  Panel.LocalHost.  ").as_deref(),
+            Some("panel.localhost")
+        );
     }
 
     #[test]
