@@ -18,6 +18,28 @@ use crate::wlog;
 pub const SMART_PROXY_PORT: u16 = 8081;
 pub const PANEL_PORT: u16 = 8080;
 
+#[cfg(unix)]
+async fn shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+    match signal(SignalKind::terminate()) {
+        Ok(mut term) => {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            }
+        }
+        Err(e) => {
+            wlog!("SIGTERM handler: {e}");
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
+}
+
 /// Собранный фронтенд (Vue + Tailwind + shadcn): `npm --prefix web run build`.
 static UI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
 
@@ -78,12 +100,11 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
     {
         let st = state.clone();
         tokio::spawn(async move {
-            if tokio::signal::ctrl_c().await.is_ok() {
-                wlog!("Ctrl+C: завершение");
-                cleanup(&st);
-                tokio::time::sleep(Duration::from_millis(700)).await;
-                std::process::exit(0);
-            }
+            shutdown_signal().await;
+            wlog!("завершение по сигналу");
+            cleanup(&st);
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            std::process::exit(0);
         });
     }
 
