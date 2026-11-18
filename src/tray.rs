@@ -177,6 +177,16 @@ impl App {
             .map(|proxy| proxy.enabled)
             .unwrap_or(false);
         let enabled = !current;
+        if enabled
+            && !self
+                .ctx
+                .state
+                .smart_proxy_ready
+                .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            wlog!("трей: умный прокси не слушает 8081 — системный прокси не включаю");
+            return;
+        }
         let domains: Vec<String> = self
             .ctx
             .state
@@ -193,9 +203,14 @@ impl App {
 
     fn toggle_telegram(&self) {
         let enabled = !self.ctx.state.settings_snapshot().telegram_enabled;
-        if let Err(e) = crate::telegram::set_enabled(&self.ctx.state, enabled) {
-            wlog!("трей: Telegram-прокси — {e:#}");
-        }
+        let state = self.ctx.state.clone();
+        // Вызывается из winit-потока, где нет Tokio-контекста:
+        // supervisor::start() внутри делает tokio::spawn.
+        self.ctx.handle.spawn(async move {
+            if let Err(e) = crate::telegram::set_enabled(&state, enabled) {
+                wlog!("трей: Telegram-прокси — {e:#}");
+            }
+        });
     }
 
     fn open_telegram(&self) {

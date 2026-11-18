@@ -91,19 +91,38 @@ async fn effective_route(
 
 pub async fn serve(state: Arc<AppState>) -> Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", crate::api::SMART_PROXY_PORT)).await?;
+    state
+        .smart_proxy_ready
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    struct ReadyGuard<'a>(&'a std::sync::atomic::AtomicBool);
+    impl Drop for ReadyGuard<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _ready = ReadyGuard(&state.smart_proxy_ready);
     wlog!(
         "умный прокси: 127.0.0.1:{} (режим {})",
         crate::api::SMART_PROXY_PORT,
         crate::lists::MODE
     );
     loop {
-        let (sock, _) = listener.accept().await?;
-        let st = state.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle(sock, st).await {
-                wlog!("прокси: {e}");
+        match listener.accept().await {
+            Ok((sock, _)) => {
+                let st = state.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = handle(sock, st).await {
+                        wlog!("прокси: {e}");
+                    }
+                });
             }
-        });
+            Err(e) => {
+                // Не оставляем системный прокси включённым без слушателя:
+                // временная ошибка accept не должна убивать сервис.
+                wlog!("умный прокси: accept — {e}");
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+        }
     }
 }
 

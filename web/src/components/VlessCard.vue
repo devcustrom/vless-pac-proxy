@@ -62,7 +62,7 @@ async function removeConfig() {
           size="sm"
           variant="ghost"
           :loading="deleting"
-          :disabled="busy"
+          :disabled="busy || deleting"
           @click="removeConfig"
         >
           <Trash2 class="h-3.5 w-3.5" />
@@ -74,9 +74,10 @@ async function removeConfig() {
         <Input
           v-model="link"
           placeholder="vless://uuid@host:443?... или vmess://... / trojan://... / ss://..."
+          :disabled="deleting"
           autocomplete="off"
         />
-        <Button type="submit" :loading="busy" :disabled="!link.trim()">
+        <Button type="submit" :loading="busy" :disabled="!link.trim() || deleting">
           <Save class="h-3.5 w-3.5" />
           Сохранить
         </Button>

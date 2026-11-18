@@ -56,8 +56,10 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.wireproxy-control.pl
 
 ```bash
 /Applications/WireproxyControl.app/Contents/MacOS/wireproxy-control uninstall
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.wireproxy-control.plist
 ```
+
+Плитка удаляется; текущий процесс продолжает работать, а со следующего входа
+агент больше не запускается.
 
 Логи launchd и менеджера: `manager.log` в папке данных.
 
@@ -92,8 +94,9 @@ loopback-адрес.
    администратора (без окна Терминала) и добавляет CA в системный keychain:
 
    ```bash
-   security add-trusted-cert -d -r trustRoot \
-     -k /Library/Keychains/System.keychain certs/ca.crt
+   sudo security add-trusted-cert -d -r trustRoot \
+     -k /Library/Keychains/System.keychain \
+     "$HOME/Library/Application Support/wireproxy-control/certs/ca.crt"
    ```
 
 3. `*.localhost` резолвится браузером без hosts. Для настоящих имён нажмите

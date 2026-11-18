@@ -181,6 +181,17 @@ pub async fn refresh(state: &Arc<AppState>) -> Result<()> {
         }
         lists.refreshing = true;
     }
+    // Любой ранний `?` (диск, путь, запись PAC) должен снять флаг,
+    // иначе UI навсегда показывает «обновление идёт».
+    struct RefreshFlag<'a>(&'a std::sync::Mutex<crate::state::Lists>);
+    impl Drop for RefreshFlag<'_> {
+        fn drop(&mut self) {
+            if let Ok(mut lists) = self.0.lock() {
+                lists.refreshing = false;
+            }
+        }
+    }
+    let _flag = RefreshFlag(&state.lists);
 
     let mut proxied: HashSet<String> = HashSet::new();
     let mut direct: HashSet<String> = HashSet::new();

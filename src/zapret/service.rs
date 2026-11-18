@@ -76,18 +76,33 @@ pub fn query(data_dir: &Path) -> ServiceStatus {
         status.state = "not installed".to_string();
         return status;
     }
-    status.installed = text.contains("SERVICE_NAME");
+    // sc.exe локализован, но коды состояний (RUNNING/STOPPED/…) остаются
+    // английскими. Не привязываемся к слову SERVICE_NAME/STATE.
+    status.installed = true;
+    let (state, running) = parse_state(&text);
+    status.state = state;
+    status.running = running;
+    status
+}
+
+#[cfg(windows)]
+fn parse_state(text: &str) -> (String, bool) {
+    const STATES: [&str; 7] = [
+        "STOP_PENDING",
+        "START_PENDING",
+        "PAUSE_PENDING",
+        "CONTINUE_PENDING",
+        "RUNNING",
+        "STOPPED",
+        "PAUSED",
+    ];
     for line in text.lines() {
-        if line.contains("STATE") {
-            let state = line.split(':').nth(1).unwrap_or("").trim();
-            status.state = state.to_string();
-            status.running = state.contains("RUNNING");
+        let upper = line.to_ascii_uppercase();
+        if let Some(state) = STATES.iter().find(|state| upper.contains(**state)) {
+            return ((*state).to_string(), *state == "RUNNING");
         }
     }
-    if status.installed && status.state.is_empty() {
-        status.state = "unknown".to_string();
-    }
-    status
+    ("unknown".to_string(), false)
 }
 
 #[cfg(not(windows))]
@@ -237,4 +252,21 @@ pub fn install_args(_data_dir: &Path, _args: Vec<String>) -> Result<()> {
 #[cfg(not(windows))]
 pub fn remove(_data_dir: &Path) -> Result<()> {
     bail!("Zapret поддерживается только на Windows")
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::parse_state;
+
+    #[test]
+    fn parses_localized_sc_state() {
+        let text = "Имя_службы: winmgmt\n        Тип                : 30  WIN32\n        Состояние          : 4  RUNNING\n";
+        assert_eq!(parse_state(text), ("RUNNING".to_string(), true));
+        let stopped = "SERVICE_NAME: wireproxy-zapret\n        STATE              : 1  STOPPED\n";
+        assert_eq!(parse_state(stopped), ("STOPPED".to_string(), false));
+        assert_eq!(
+            parse_state("SERVICE_NAME: x\n"),
+            ("unknown".to_string(), false)
+        );
+    }
 }

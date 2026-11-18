@@ -1,6 +1,7 @@
 //! Общее состояние приложения.
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -92,9 +93,11 @@ pub struct AppState {
     pub local_http_error: Mutex<Option<String>>,
     pub local_https_error: Mutex<Option<String>>,
     pub downloads: Mutex<HashMap<String, DownloadInfo>>,
+    /// Умный прокси реально слушает 127.0.0.1:8081.
+    pub smart_proxy_ready: AtomicBool,
     pub tls_config:
         Mutex<Option<std::sync::Arc<tokio::sync::RwLock<std::sync::Arc<rustls::ServerConfig>>>>>,
-    pub local_proxy_stop: Mutex<Option<tokio::sync::watch::Sender<bool>>>,
+    pub local_proxy_stop: Mutex<Option<(u64, tokio::sync::watch::Sender<bool>)>>,
     pub settings: Mutex<Settings>,
     pub wg: Engine,
     pub xr: Engine,
@@ -136,6 +139,7 @@ impl AppState {
             local_http_error: Mutex::new(None),
             local_https_error: Mutex::new(None),
             downloads: Mutex::new(HashMap::new()),
+            smart_proxy_ready: AtomicBool::new(false),
             tls_config: Mutex::new(None),
             local_proxy_stop: Mutex::new(None),
             settings: Mutex::new(settings),

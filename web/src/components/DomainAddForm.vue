@@ -9,6 +9,7 @@ const props = defineProps({
   showPort: { type: Boolean, default: false },
   submit: { type: Function, required: true },
   loading: Boolean,
+  disabled: Boolean,
   placeholder: { type: String, default: 'example.com' },
 })
 
@@ -18,8 +19,8 @@ const form = useForm({
 })
 
 async function onSubmit(output) {
-  await props.submit(output)
-  reset(form)
+  const result = await props.submit(output)
+  if (result !== false) reset(form)
 }
 </script>
 
@@ -31,6 +32,7 @@ async function onSubmit(output) {
           v-model="field.input"
           v-bind="field.props"
           :placeholder="placeholder"
+          :disabled="disabled"
           autocomplete="off"
         />
         <p v-if="field.errors" class="mt-1 text-xs text-destructive">{{ field.errors[0] }}</p>
@@ -44,12 +46,13 @@ async function onSubmit(output) {
           placeholder="3000"
           inputmode="numeric"
           maxlength="5"
+          :disabled="disabled"
           @input="field.input = digitsOnly(field.input)"
         />
         <p v-if="field.errors" class="mt-1 text-xs text-destructive">{{ field.errors[0] }}</p>
       </div>
     </Field>
-    <Button type="submit" :loading="loading" class="self-start sm:self-auto">
+    <Button type="submit" :loading="loading" :disabled="disabled" class="self-start sm:self-auto">
       <Plus class="h-3.5 w-3.5" />
       Добавить
     </Button>

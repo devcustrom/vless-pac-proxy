@@ -47,7 +47,8 @@ VLESS-канал умирает — подписки перепроверяют�
 
 1. Скачайте готовый бинарник `wireproxy-control-windows-x64.exe` со страницы
    [Releases](../../releases/latest) и положите в любую папку (например,
-   `C:\Tools\wireproxy-control`). Архивов нет — файл запускается сразу.
+   `C:\Tools\wireproxy-control`). Для удобства переименуйте его в
+   `wireproxy-control.exe` — команды ниже используют это имя.
 2. Запустите `wireproxy-control.exe`.
 3. При первом запуске бинарник:
    - скачает `wireproxy.exe` и `xray.exe` (с проверкой контрольных сумм);
@@ -232,8 +233,7 @@ base64) или нажмите **BLACK** / **WHITE (CIDR/SNI)** — менедж�
 - `*.localhost` браузеры резолвят в `127.0.0.1` сами — правка hosts не нужна.
 - Для настоящих имён (например, `app.example.com`) нужна запись `127.0.0.1`
   в hosts. Кнопка «Применить hosts» запускает обновление с UAC (Windows) или
-  нативным запросом пароля (macOS) без окон терминала; «Подготовить скрипт
-  hosts» просто создаёт скрипт с записями из `local-domains.txt`.
+  нативным запросом пароля (macOS) без окон терминала.
 - Прокси сам не может заставить браузер резолвить произвольный домен в
   loopback: разрешение имён — это DNS/hosts, а не HTTP-прокси. `*.localhost`
   работают без hosts только потому, что это встроенное поведение браузеров.
@@ -259,15 +259,17 @@ base64) или нажмите **BLACK** / **WHITE (CIDR/SNI)** — менедж�
 Проверка сайта: «Проверить» открывает домен напрямую и через VPN и предлагает
 добавить его в список, если VPN помогает.
 
-PAC-файл: <http://127.0.0.1:8080/proxy.pac> — `PROXY 127.0.0.1:8081` для
-доменов списков, остальное `DIRECT`.
+PAC-файл: `http://127.0.0.1:<порт панели>/proxy.pac` — `PROXY
+127.0.0.1:8081` для доменов списков, остальное `DIRECT`.
 
 ## Обновление
 
-В Releases лежат только готовые бинарники с постоянными именами:
+В Releases лежат готовые сборки:
 
-- `wireproxy-control-windows-x64.exe`
-- `wireproxy-control-macos-universal`
+- `wireproxy-control-windows-x64.exe` — Windows;
+- `wireproxy-control-macos-universal` — macOS-бинарник для Терминала;
+- `wireproxy-control-macos-universal.zip` и `.dmg` — `WireproxyControl.app`;
+- `tgws-proxy-*` и `tgws-manifest.json` — sidecar Telegram для автообновления.
 
 Их можно скачивать напрямую (в том числе по ссылке
 `https://github.com/devcustrom/vless-pac-proxy/releases/latest/download/<имя>`).

@@ -192,11 +192,14 @@ pub fn add(dir: &Path, name: &str, content: &str) -> Result<String> {
     let mut meta = read_meta(dir);
     meta.names.insert(slug.clone(), name.trim().to_string());
     let first = meta.active.is_none();
+    let active = meta.active.as_deref() == Some(slug.as_str());
     if first {
         meta.active = Some(slug.clone());
     }
     write_meta(dir, &meta)?;
-    if first {
+    // Перезапись активного конфига должна обновить wg.conf, иначе рестарт
+    // wireproxy поднимет старые ключи/peer.
+    if first || active {
         activate(dir, &slug)?;
     }
     Ok(slug)

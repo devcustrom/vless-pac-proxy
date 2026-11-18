@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Gauge, Plus, RefreshCw, Trash2, Zap } from 'lucide-vue-next'
 import { api, fmtTime, notify } from '@/lib/store'
 import { useActionMutation } from '@/lib/queries'
@@ -53,6 +53,14 @@ const subBusy = ref('')
 const autoBusy = ref(false)
 const rotateBusy = ref(false)
 const usingIndex = ref(null)
+watch(
+  () => props.s.autoPoolRefreshHours,
+  (value) => {
+    if (autoBusy.value) return
+    autoPool.value = (value || 0) > 0
+    hours.value = String(value || 1)
+  },
+)
 
 async function addSubscription() {
   const url = subscription.value.trim()
@@ -70,6 +78,7 @@ async function addSubscription() {
 }
 
 async function removeSubscription(url) {
+  if (!confirm('Удалить подписку? Конфиги, уже добавленные в пул, останутся.')) return
   subBusy.value = url
   try {
     await subAction.mutateAsync({ action: 'remove', url })
@@ -116,10 +125,11 @@ async function saveAuto() {
   try {
     await autoAction.mutateAsync({
       autoPoolRefreshHours: autoPool.value ? Number(hours.value) : 0,
-      autoRotate: props.s.autoRotate,
     })
     notify('Настройки обновления сохранены')
   } catch {
+    autoPool.value = (props.s.autoPoolRefreshHours || 0) > 0
+    hours.value = String(props.s.autoPoolRefreshHours || 1)
     /* тост уже показан */
   } finally {
     autoBusy.value = false
@@ -230,7 +240,7 @@ async function toggleRotate(value) {
         <label class="flex items-center gap-2 text-sm">
           <Switch
             :model-value="autoPool"
-            :disabled="autoBusy"
+            :disabled="autoBusy || rotateBusy"
             @update:model-value="(v) => { autoPool = v; saveAuto() }"
           />
           Автообновление
@@ -239,14 +249,14 @@ async function toggleRotate(value) {
           <Select
             v-model="hours"
             :options="hourOptions"
-            :disabled="autoBusy"
+            :disabled="autoBusy || rotateBusy || !autoPool"
             @update:model-value="autoPool && saveAuto()"
           />
         </div>
         <label class="flex items-center gap-2 text-sm">
           <Switch
             :model-value="!!s.autoRotate"
-            :disabled="rotateBusy"
+            :disabled="rotateBusy || autoBusy"
             @update:model-value="toggleRotate"
           />
           Автопереключение

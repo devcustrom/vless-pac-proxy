@@ -51,15 +51,16 @@ pub struct TelegramRuntime {
 /// Общая точка включения/выключения для API и трея.
 pub fn set_enabled(state: &Arc<AppState>, enabled: bool) -> Result<()> {
     {
-        let mut settings = state.settings.lock().unwrap();
-        if enabled && !config::valid_secret(&settings.telegram_secret) {
-            settings.telegram_secret = config::generate_secret();
+        let mut candidate = state.settings_snapshot();
+        if enabled && !config::valid_secret(&candidate.telegram_secret) {
+            candidate.telegram_secret = config::generate_secret();
         }
-        settings.telegram_enabled = enabled;
+        candidate.telegram_enabled = enabled;
         if enabled {
-            config::TelegramConfig::from_settings(&settings, state.panel_port)?;
+            config::TelegramConfig::from_settings(&candidate, state.panel_port)?;
         }
-        settings.save(&state.dir)?;
+        candidate.save(&state.dir)?;
+        *state.settings.lock().unwrap() = candidate;
     }
     if enabled {
         supervisor::start(state)?;

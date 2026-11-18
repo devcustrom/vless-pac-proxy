@@ -22,7 +22,10 @@ pub fn entries(domains: &[String]) -> Vec<String> {
         {
             continue;
         }
-        if !out.iter().any(|x| x.ends_with(&d)) {
+        if !out
+            .iter()
+            .any(|line| line.split_whitespace().nth(1) == Some(d.as_str()))
+        {
             out.push(format!("127.0.0.1 {d}"));
         }
     }
@@ -203,6 +206,19 @@ mod tests {
             "bad domain".to_string(),
         ];
         assert_eq!(entries(&list), vec!["127.0.0.1 app.example.com"]);
+    }
+
+    #[test]
+    fn keeps_parent_and_subdomain() {
+        let list = vec![
+            "app.example.com".to_string(),
+            "example.com".to_string(),
+            "app.example.com".to_string(),
+        ];
+        assert_eq!(
+            entries(&list),
+            vec!["127.0.0.1 app.example.com", "127.0.0.1 example.com"]
+        );
     }
 
     #[test]

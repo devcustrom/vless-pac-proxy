@@ -125,19 +125,18 @@ mod imp {
     pub fn uninstall() -> Result<()> {
         let path = plist_path()?;
         match std::fs::remove_file(&path) {
-            Ok(()) => println!("Автозапуск выключен (удалён {})", path.display()),
+            Ok(()) => println!(
+                "Автозапуск выключен (удалён {}); текущий процесс продолжит работать",
+                path.display()
+            ),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 println!("Автозапуск и так не был включён")
             }
             Err(e) => return Err(e.into()),
         }
-        // Если агент уже загружен launchd, выгружаем его, чтобы KeepAlive
-        // не поднял менеджер после следующего падения.
-        let domain = format!("gui/{}", unsafe { libc::getuid() });
-        let target = format!("{domain}/{LABEL}");
-        let _ = std::process::Command::new("launchctl")
-            .args(["bootout", target.as_str()])
-            .status();
+        // Не делаем launchctl bootout из собственного процесса: если он
+        // запущен этим LaunchAgent'ом, SIGTERM убьёт менеджер до ответа и
+        // cleanup. Плитки достаточно — со следующего входа агент не поднимется.
         Ok(())
     }
 

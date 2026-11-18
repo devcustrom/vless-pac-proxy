@@ -71,8 +71,12 @@ async function toggleLocalDomains(value) {
 
 async function toggleTelegram(value) {
   try {
-    await telegramAction.mutateAsync(value)
-    notify(value ? 'Telegram-прокси включён' : 'Telegram-прокси выключен')
+    const result = await telegramAction.mutateAsync(value)
+    if (value && result?.error) {
+      notify(`Telegram включён, но не запустился: ${result.error}`, 'error')
+    } else {
+      notify(value ? 'Telegram-прокси включён' : 'Telegram-прокси выключен')
+    }
   } catch {
     /* тост показан */
   }

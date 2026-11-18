@@ -64,12 +64,15 @@ async function addDomain(output) {
   try {
     await addAction.mutateAsync({ domain: output.domain, port: output.port })
     notify(`Домен добавлен: http://${output.domain}${httpPort()}`)
+    return true
   } catch {
     /* тост уже показан */
+    return false
   }
 }
 
 async function removeDomain(name) {
+  if (!confirm(`Удалить локальный домен ${name}?`)) return
   removing.value = name
   try {
     await post('/api/local-domains', { action: 'remove', domain: name })
@@ -144,6 +147,7 @@ async function probe(name) {
                 <a
                   :href="`http://${item.domain}${httpPort()}`"
                   target="_blank"
+                  rel="noopener"
                   class="inline-flex items-center gap-1 font-medium hover:underline"
                 >
                   http://{{ item.domain }}{{ httpPort() }}
@@ -152,6 +156,7 @@ async function probe(name) {
                 <a
                   :href="`https://${item.domain}${httpsPort()}`"
                   target="_blank"
+                  rel="noopener"
                   class="text-xs text-muted-foreground hover:underline"
                 >
                   https://{{ item.domain }}{{ httpsPort() }}
@@ -193,6 +198,7 @@ async function probe(name) {
         placeholder="app.example.com"
         :submit="addDomain"
         :loading="addLoading"
+        :disabled="!!removing || applyBusy"
       />
 
       <div class="space-y-1 rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">

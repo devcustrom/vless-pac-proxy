@@ -95,7 +95,8 @@ async function toggleProxy(enabled) {
           Скачайте движки wireproxy и xray — без них каналы не запустятся.
         </template>
         <template v-else-if="!configured">
-          Добавьте канал: вставьте wg.conf в блоке WireGuard ниже или vless://-ссылку в блоке VLESS.
+          Откройте вкладку «Конфиги» и добавьте канал: импортируйте wg.conf в блоке
+          WireGuard или вставьте vless://-ссылку в блоке VLESS.
         </template>
         <template v-else>
           Каналы настроены. Включите системный прокси, чтобы браузер пошёл через менеджер.
@@ -139,7 +140,7 @@ async function toggleProxy(enabled) {
           <input
             type="checkbox"
             :checked="s.systemProxy?.enabled"
-            :disabled="proxyBusy"
+            :disabled="proxyBusy || (s.smartProxyReady === false && !s.systemProxy?.enabled)"
             class="h-4 w-4 rounded border-input"
             @change="toggleProxy($event.target.checked)"
           />

@@ -162,15 +162,15 @@ pub async fn preflight_ports(state: &Arc<AppState>) {
         let settings = state.settings_snapshot();
         let mut http = settings.local_proxy_port;
         let mut https = settings.local_https_port;
-        let http_ok = port_available(http);
-        let https_ok = port_available(https);
+        let http_ok = http != state.panel_port && port_available(http);
+        let https_ok = https != state.panel_port && port_available(https);
         if !http_ok {
-            if let Some(port) = free_port(8088) {
+            if let Some(port) = free_port(8088, state.panel_port) {
                 http = port;
             }
         }
         if !https_ok {
-            if let Some(port) = free_port(8443) {
+            if let Some(port) = free_port(8443, state.panel_port) {
                 https = port;
             }
         }
@@ -195,8 +195,8 @@ fn port_available(port: u16) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-fn free_port(start: u16) -> Option<u16> {
-    (start..=start.saturating_add(100)).find(|port| port_available(*port))
+fn free_port(start: u16, exclude: u16) -> Option<u16> {
+    (start..=start.saturating_add(100)).find(|port| *port != exclude && port_available(*port))
 }
 
 pub async fn serve(state: Arc<AppState>, stop: tokio::sync::watch::Receiver<bool>) -> Result<()> {
@@ -337,15 +337,26 @@ async fn bind_retry(port: u16) -> std::io::Result<TcpListener> {
 }
 
 /// Включает плагин локальных доменов (идемпотентно).
+pub fn is_running(state: &AppState) -> bool {
+    state
+        .local_proxy_stop
+        .lock()
+        .map(|guard| guard.is_some())
+        .unwrap_or(false)
+}
+
 pub fn start(state: &Arc<AppState>) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static GENERATION: AtomicU64 = AtomicU64::new(0);
     let Ok(mut guard) = state.local_proxy_stop.lock() else {
         return;
     };
     if guard.is_some() {
         return;
     }
+    let generation = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     let (tx, rx) = tokio::sync::watch::channel(false);
-    *guard = Some(tx);
+    *guard = Some((generation, tx));
     drop(guard);
     let st = state.clone();
     tokio::spawn(async move {
@@ -353,7 +364,10 @@ pub fn start(state: &Arc<AppState>) {
             wlog!("локальные домены остановлены: {e}");
         }
         if let Ok(mut guard) = st.local_proxy_stop.lock() {
-            guard.take();
+            // Старый serve не должен стирать sender нового запуска.
+            if matches!(&*guard, Some((current, _)) if *current == generation) {
+                guard.take();
+            }
         }
     });
 }
@@ -361,7 +375,7 @@ pub fn start(state: &Arc<AppState>) {
 /// Выключает плагин локальных доменов.
 pub fn stop(state: &Arc<AppState>) {
     if let Ok(mut guard) = state.local_proxy_stop.lock() {
-        if let Some(tx) = guard.take() {
+        if let Some((_, tx)) = guard.take() {
             let _ = tx.send(true);
         }
     }
@@ -420,6 +434,21 @@ where
         let _ = stream.shutdown().await;
         return;
     };
+
+    // Защита от петли: домен не должен указывать на сам локальный
+    // HTTP/HTTPS-слушатель, иначе каждый запрос создаёт новое соединение.
+    let local_ports = state.settings_snapshot();
+    if port == local_ports.local_proxy_port || port == local_ports.local_https_port {
+        let body = "локальный домен указывает на сам прокси; выберите другой порт";
+        let response = format!(
+            "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+        let _ = stream.shutdown().await;
+        return;
+    }
 
     let safe_host = sanitize(&domain, 128);
     let safe_path = sanitize(&target, 512);

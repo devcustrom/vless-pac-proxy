@@ -115,24 +115,52 @@ pub fn start(state: &Arc<AppState>) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        if state.zapret_auto.lock().map(|v| v.running).unwrap_or(false) {
-            bail!("автоподбор уже выполняется");
-        }
-        let paths = preset::blockcheck_paths(&state.dir)
-            .context("для автоподбора нужен zapret2-бандл с blockcheck2.sh и cygwin")?;
-        let cmd = build_cmd(&state.dir, &paths)?;
-        let _ = std::fs::remove_file(state.dir.join(DONE_FILE));
-        let _ = std::fs::remove_file(state.dir.join(LOG_FILE));
-        set_state(state, |s| {
-            *s = AutoTuneState {
+        {
+            let mut guard = state
+                .zapret_auto
+                .lock()
+                .map_err(|_| anyhow::anyhow!("состояние автоподбора повреждено"))?;
+            if guard.running {
+                bail!("автоподбор уже выполняется");
+            }
+            *guard = AutoTuneState {
                 running: true,
-                phase: "blockcheck".to_string(),
+                phase: "starting".to_string(),
                 log: String::new(),
                 error: None,
                 strategy: None,
                 started_at: Some(chrono::Utc::now().to_rfc3339()),
                 finished_at: None,
             };
+        }
+        let paths = match preset::blockcheck_paths(&state.dir)
+            .context("для автоподбора нужен zapret2-бандл с blockcheck2.sh и cygwin")
+        {
+            Ok(paths) => paths,
+            Err(e) => {
+                set_state(state, |s| {
+                    s.running = false;
+                    s.phase = "error".to_string();
+                    s.error = Some(format!("{e:#}"));
+                });
+                return Err(e);
+            }
+        };
+        let cmd = match build_cmd(&state.dir, &paths) {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                set_state(state, |s| {
+                    s.running = false;
+                    s.phase = "error".to_string();
+                    s.error = Some(format!("{e:#}"));
+                });
+                return Err(e);
+            }
+        };
+        let _ = std::fs::remove_file(state.dir.join(DONE_FILE));
+        let _ = std::fs::remove_file(state.dir.join(LOG_FILE));
+        set_state(state, |s| {
+            s.phase = "blockcheck".to_string();
         });
         if let Err(e) = crate::shell::run_elevated(&cmd) {
             set_state(state, |s| {

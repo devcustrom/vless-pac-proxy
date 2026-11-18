@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { Field, Form, reset, submit, useForm } from '@formisch/vue'
+import { Field, Form, setInput, submit, useForm } from '@formisch/vue'
 import { LockKeyhole } from 'lucide-vue-next'
 import { api, installCerts, notify } from '@/lib/store'
 import { useActionMutation } from '@/lib/queries'
@@ -25,7 +25,13 @@ const form = useForm({
 const certBusy = ref(false)
 
 watch(() => props.open, (open) => {
-  if (open) reset(form)
+  if (open) {
+    setInput(form, {
+      input: {
+        domain: props.s.localProxy?.panelDomain || 'panel.localhost',
+      },
+    })
+  }
 })
 
 const enableAction = useActionMutation(

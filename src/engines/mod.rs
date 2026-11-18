@@ -131,24 +131,40 @@ impl Engine {
                     match spawn_engine(kind) {
                         Ok(mut child) => {
                             running_task.store(true, Ordering::SeqCst);
-                            tokio::select! {
-                                status = child.wait() => {
-                                    wlog!("{}: процесс завершился ({status:?})", kind.label());
-                                }
-                                cmd = rx.recv() => {
-                                    match cmd {
-                                        Some(Cmd::Start) => {}
-                                        Some(Cmd::Stop) => { desired = false; let _ = child.kill().await; }
-                                        Some(Cmd::Restart) => { desired = true; let _ = child.kill().await; }
-                                        Some(Cmd::Shutdown) | None => {
-                                            stopping = true;
-                                            desired = false;
-                                            let _ = child.kill().await;
-                                        }
+                            let mut should_stop = false;
+                            loop {
+                                tokio::select! {
+                                    status = child.wait() => {
+                                        wlog!("{}: процесс завершился ({status:?})", kind.label());
+                                        break;
                                     }
-                                    let _ = child.wait().await;
+                                    cmd = rx.recv() => {
+                                        match cmd {
+                                            // Уже запущен: не выходим из select и не
+                                            // плодим второй процесс.
+                                            Some(Cmd::Start) => continue,
+                                            Some(Cmd::Stop) => {
+                                                desired = false;
+                                                should_stop = true;
+                                            }
+                                            Some(Cmd::Restart) => {
+                                                desired = true;
+                                                should_stop = true;
+                                            }
+                                            Some(Cmd::Shutdown) | None => {
+                                                stopping = true;
+                                                desired = false;
+                                                should_stop = true;
+                                            }
+                                        }
+                                        break;
+                                    }
                                 }
                             }
+                            if should_stop {
+                                let _ = child.kill().await;
+                            }
+                            let _ = child.wait().await;
                             running_task.store(false, Ordering::SeqCst);
                             if stopping {
                                 break;
@@ -272,6 +288,7 @@ fn spawn_engine(kind: EngineKind) -> Result<tokio::process::Child> {
     }
     let mut cmd = build_command(kind);
     cmd.current_dir(dir)
+        .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     #[cfg(windows)]

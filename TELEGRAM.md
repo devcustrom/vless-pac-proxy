@@ -102,8 +102,9 @@ curl -X POST -H "X-WPC: 1" -H "Content-Type: application/json" \
 `WPC_TGWS_LOCAL_MANIFEST` — путь к JSON-манифесту с локальным путём к
 бинарнику. Это только dev-режим; в обычном запуске используется HTTPS-манифест.
 
-Релизный workflow собирает Windows-sidecar и манифест автоматически. Для
-macOS sidecar пока собирается вручную (`sidecar/tgws/build.sh`).
+Релизный workflow собирает sidecar для Windows, macOS arm64 и macOS x64,
+публикует их вместе с `tgws-manifest.json`; панель скачивает нужный бинарник
+кнопкой «Скачать / обновить sidecar».
 
 ## Cloudflare и Fake TLS
 

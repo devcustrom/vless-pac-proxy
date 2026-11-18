@@ -33,6 +33,9 @@ export async function refresh() {
   try {
     store.status = await (await fetch('/api/status')).json()
     store.offline = false
+    // App.vue перезапрашивает Pinia Colada query, чтобы все карточки
+    // обновились сразу, а не ждали пятисекундный polling.
+    window.dispatchEvent(new Event('wpc:status-refresh'))
   } catch {
     store.offline = true
   }
@@ -43,9 +46,6 @@ export async function post(path, body) {
   try {
     const result = await api(path, body ?? {})
     await refresh()
-    // App.vue перезапрашивает Pinia Colada query, чтобы переключатели
-    // обновились сразу, а не ждали пятисекундный polling.
-    window.dispatchEvent(new Event('wpc:status-refresh'))
     return result
   } catch (error) {
     notify(error.message, 'error')
@@ -67,6 +67,7 @@ export async function installCerts() {
   try {
     await api('/api/trust-certs', {})
     notify('Запущен установщик сертификатов: подтвердите запрос системы')
+    window.dispatchEvent(new Event('wpc:status-refresh'))
   } catch (error) {
     notify(error.message, 'error')
   }
@@ -74,9 +75,4 @@ export async function installCerts() {
 
 export function fmtTime(value) {
   return value ? new Date(value).toLocaleString('ru-RU') : '—'
-}
-
-export function startPolling() {
-  refresh()
-  setInterval(refresh, 5000)
 }

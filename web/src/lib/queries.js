@@ -11,8 +11,9 @@ async function getJson(path) {
 export function useStatusQuery() {
   return useQuery({
     key: ['status'],
+    // Периодический refetch делает App.vue: @pinia/colada 1.4.9
+    // не поддерживает refetchInterval.
     query: () => getJson('/api/status'),
-    refetchInterval: 5000,
   })
 }
 
@@ -33,8 +34,15 @@ export function useActionMutation(action, keys = [['status']]) {
     mutation: action,
     onSuccess: async () => {
       // Ждём refetch: isLoading не снимется, пока переключатель не получит
-      // новое состояние. Иначе чекбокс успевает «отскочить» до опроса.
-      await Promise.all(keys.map((key) => cache.invalidateQueries({ key })))
+      // новое состояние. Ошибка refetch не должна превращать успешный POST
+      // в ошибку — offline-баннер покажет потерю связи.
+      await Promise.all(
+        keys.map((key) =>
+          cache.invalidateQueries({ key }).catch(() => {
+            /* статус обновится polling'ом */
+          }),
+        ),
+      )
     },
     onError: (error) => notify(error.message, 'error'),
   })

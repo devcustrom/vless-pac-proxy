@@ -28,6 +28,7 @@ const html = computed(() => {
 async function load() {
   if (docs.value || loading.value) return
   loading.value = true
+  error.value = ''
   try {
     const response = await fetch('/api/docs')
     const data = await response.json()
@@ -37,6 +38,36 @@ async function load() {
     error.value = e.message
   } finally {
     loading.value = false
+  }
+}
+
+const fileTabs = {
+  'README.md': 'readme',
+  'README-MAC.md': 'mac',
+  'PLUGINS.md': 'plugins',
+  'TELEGRAM.md': 'telegram',
+  'ZAPRET.md': 'zapret',
+}
+
+function onDocClick(event) {
+  const link = event.target.closest('a')
+  if (!link) return
+  const href = link.getAttribute('href') || ''
+  if (/^https?:/i.test(href)) {
+    link.target = '_blank'
+    link.rel = 'noopener'
+    return
+  }
+  if (href.includes('/releases')) {
+    event.preventDefault()
+    window.open('https://github.com/devcustrom/vless-pac-proxy/releases/latest', '_blank', 'noopener')
+    return
+  }
+  const name = href.split('#')[0].split('/').pop()
+  const target = fileTabs[name]
+  if (target) {
+    event.preventDefault()
+    tab.value = target
   }
 }
 
@@ -64,12 +95,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           <BookOpen class="h-5 w-5 text-primary" />
           <h2 class="text-base font-semibold">Документация</h2>
           <Badge variant="outline">v{{ docs?.version || '…' }}</Badge>
-          <Button variant="ghost" size="icon" class="ml-auto" @click="emit('close')">
+          <Button variant="ghost" size="icon" class="ml-auto" aria-label="Закрыть" @click="emit('close')">
             <X class="h-4 w-4" />
           </Button>
         </div>
 
-        <div class="flex gap-1 border-b px-4 py-2">
+        <div class="flex flex-wrap gap-1 border-b px-4 py-2">
           <Button
             size="sm"
             :variant="tab === 'readme' ? 'secondary' : 'ghost'"
@@ -109,8 +140,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
         <div class="min-h-0 flex-1 overflow-auto px-5 py-4">
           <p v-if="loading" class="text-sm text-muted-foreground">Загружаю документацию…</p>
-          <p v-else-if="error" class="text-sm text-destructive">{{ error }}</p>
-          <div v-else class="markdown" v-html="html" />
+          <div v-else-if="error" class="space-y-2 text-sm text-destructive">
+            <p>{{ error }}</p>
+            <Button size="sm" variant="outline" @click="load">Повторить</Button>
+          </div>
+          <div v-else class="markdown" v-html="html" @click="onDocClick" />
         </div>
       </div>
     </div>

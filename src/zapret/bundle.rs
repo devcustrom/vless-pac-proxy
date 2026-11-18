@@ -318,7 +318,20 @@ fn unpack_zip(archive: &Path, dest: &Path, variant: BundleVariant) -> Result<()>
     Ok(())
 }
 
+/// Если прошлая замена оборвалась между rename(zapret→zapret.old) и
+/// rename(unpacked→zapret), возвращаем последний рабочий бандл.
+pub fn recover(data_dir: &Path) {
+    let target = preset::bundle_dir(data_dir);
+    let backup = data_dir.join("zapret.old");
+    if !target.exists() && backup.exists() {
+        if let Err(e) = std::fs::rename(&backup, &target) {
+            wlog!("zapret: не удалось восстановить zapret.old — {e:#}");
+        }
+    }
+}
+
 fn replace_bundle(data_dir: &Path, unpacked: &Path) -> Result<()> {
+    recover(data_dir);
     let target = preset::bundle_dir(data_dir);
     let backup = data_dir.join("zapret.old");
     if backup.exists() {

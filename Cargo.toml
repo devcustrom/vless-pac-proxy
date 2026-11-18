@@ -2,7 +2,7 @@
 name = "wireproxy-control"
 version = "0.5.2"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.88"
 description = "Умный прокси-стек: WireGuard (wireproxy) + VLESS/SS (xray) с панелью, треем и локальными доменами"
 license = "MIT"
 

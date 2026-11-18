@@ -17,6 +17,7 @@ const defaultBusy = ref('')
 const channelBusy = ref('')
 const restartBusy = ref('')
 const directBusy = ref(false)
+const smartReady = computed(() => props.s.smartProxyReady !== false)
 watch(() => props.s.systemProxy?.enabled, (value) => {
   sysProxy.value = !!value
 })
@@ -224,10 +225,13 @@ async function setDirectFirst(value) {
           <div class="text-xs text-muted-foreground">
             {{ s.systemProxy?.enabled ? 'включён: ' + (s.systemProxy?.value || '') : 'выключен' }}
           </div>
+          <div v-if="!smartReady" class="text-xs text-destructive">
+            умный прокси не слушает 127.0.0.1:8081 — порт занят?
+          </div>
         </div>
         <Switch
           :model-value="sysProxy"
-          :disabled="sysProxyBusy"
+          :disabled="sysProxyBusy || (!smartReady && !sysProxy)"
           @update:model-value="setSystemProxy"
         />
       </div>

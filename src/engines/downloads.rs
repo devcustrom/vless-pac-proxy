@@ -2,7 +2,7 @@
 //! (zip/tar.gz). Прогресс виден в /api/status.engineDownloads и в панели.
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -229,6 +229,16 @@ pub async fn ensure(dir: &Path, kind: EngineKind, state: Option<Arc<AppState>>) 
         return Ok(found);
     }
     let dest = dir.join(kind.exe_name());
+    if dest.is_file() {
+        return Ok(dest);
+    }
+    // Стартовая автозагрузка и кнопка «Скачать движки» могут прийти
+    // одновременно; фиксированный .download-файл нельзя писать параллельно.
+    static DOWNLOAD_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    let _guard = DOWNLOAD_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
     if dest.is_file() {
         return Ok(dest);
     }

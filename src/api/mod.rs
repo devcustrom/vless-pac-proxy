@@ -64,6 +64,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         crate::net::local_proxy::preflight_ports(&state).await;
         crate::net::local_proxy::start(&state);
     }
+    crate::zapret::bundle::recover(&state.dir);
     if state.settings_snapshot().telegram_enabled {
         if let Err(e) = crate::telegram::supervisor::start(&state) {
             wlog!("telegram: автозапуск не удался — {e:#}");
@@ -273,9 +274,16 @@ async fn plugins_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
         None => None,
     };
     {
-        let mut settings = st.settings.lock().unwrap();
-        settings.local_domains_enabled = enabled;
-        let _ = settings.save(&st.dir);
+        let mut candidate = st.settings_snapshot();
+        candidate.local_domains_enabled = enabled;
+        if let Err(e) = candidate.save(&st.dir) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
+        *st.settings.lock().unwrap() = candidate;
     }
     let mut chosen_domain = None;
     if enabled {
@@ -296,7 +304,11 @@ async fn plugins_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
         if let Ok(mut current) = st.local_domains.lock() {
             *current = list;
         }
-        crate::net::local_proxy::preflight_ports(&st).await;
+        // Если слушатели уже работают, preflight увидит их же порты занятыми
+        // и сохранит другие значения, не перезапустив listener.
+        if !crate::net::local_proxy::is_running(&st) {
+            crate::net::local_proxy::preflight_ports(&st).await;
+        }
         reload_local_tls(&st).await;
         crate::net::local_proxy::start(&st);
         // даём слушателям шанс занять порты, чтобы вернуть ошибки
@@ -1328,6 +1340,11 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
             "caPath": "certs/ca.crt",
             "trustScript": crate::local_tls::trust_script_name(),
             "hostsScript": crate::local_hosts::hosts_script_name(),
+            "panelDomain": local_domains
+                .iter()
+                .find(|d| d.port == st.panel_port)
+                .or_else(|| local_domains.iter().find(|d| d.domain == "panel.localhost"))
+                .map(|d| d.domain.clone()),
             "domains": local_domains.iter().map(|d| json!({ "domain": d.domain, "port": d.port })).collect::<Vec<_>>(),
         },
         "vpnDefault": settings.vpn_default,
@@ -1357,6 +1374,9 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         "refreshing": refreshing,
         "mode": crate::lists::MODE,
         "systemProxy": sys_proxy,
+        "smartProxyReady": st
+            .smart_proxy_ready
+            .load(std::sync::atomic::Ordering::SeqCst),
         "extra": extra,
         "checks": checks,
         "visited": visited,
@@ -1447,10 +1467,17 @@ async fn vless(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
                 )
                     .into_response();
             }
-            let mut s = st.settings.lock().unwrap();
-            s.vpn_default = value.to_string();
-            let _ = s.save(&st.dir);
-            Json(json!({ "ok": true, "vpnDefault": s.vpn_default })).into_response()
+            let mut candidate = st.settings_snapshot();
+            candidate.vpn_default = value.to_string();
+            if let Err(e) = candidate.save(&st.dir) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": e.to_string() })),
+                )
+                    .into_response();
+            }
+            *st.settings.lock().unwrap() = candidate.clone();
+            Json(json!({ "ok": true, "vpnDefault": candidate.vpn_default })).into_response()
         }
         "add-domain" | "remove-domain" => {
             let Some(domain) = body
@@ -1538,10 +1565,24 @@ async fn refresh_lists(State(st): State<Arc<AppState>>) -> Response {
 }
 
 async fn system_proxy(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
-    let enabled = body
-        .get("enabled")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let Some(enabled) = body.get("enabled").and_then(|v| v.as_bool()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "нужно enabled: true|false" })),
+        )
+            .into_response();
+    };
+    if enabled
+        && !st
+            .smart_proxy_ready
+            .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "умный прокси не слушает 127.0.0.1:8081 — порт занят?" })),
+        )
+            .into_response();
+    }
     let domains: Vec<String> = st
         .local_domains
         .lock()
@@ -1568,10 +1609,12 @@ fn start_enabled_engines(state: &Arc<AppState>) {
 }
 
 async fn onboarding_done(State(st): State<Arc<AppState>>) -> Json<Value> {
-    {
-        let mut settings = st.settings.lock().unwrap();
-        settings.onboarding_done = true;
-        let _ = settings.save(&st.dir);
+    let mut candidate = st.settings_snapshot();
+    candidate.onboarding_done = true;
+    if let Err(e) = candidate.save(&st.dir) {
+        wlog!("onboarding: сохранение настроек — {e:#}");
+    } else {
+        *st.settings.lock().unwrap() = candidate;
     }
     Json(json!({ "ok": true, "onboardingDone": true }))
 }
@@ -1600,13 +1643,20 @@ async fn channels(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> R
         current.xray_enabled
     });
     if enabled.is_some() {
-        let mut settings = st.settings.lock().unwrap();
+        let mut candidate = st.settings_snapshot();
         if channel == "wireguard" {
-            settings.wireguard_enabled = target;
+            candidate.wireguard_enabled = target;
         } else {
-            settings.xray_enabled = target;
+            candidate.xray_enabled = target;
         }
-        let _ = settings.save(&st.dir);
+        if let Err(e) = candidate.save(&st.dir) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
+        *st.settings.lock().unwrap() = candidate;
     }
     let engine = if channel == "wireguard" {
         &st.wg
@@ -1644,6 +1694,16 @@ async fn channels(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> R
 }
 
 async fn auto(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let hours = body.get("autoPoolRefreshHours").and_then(|v| v.as_f64());
+    if let Some(v) = hours {
+        if !(0.0..=168.0).contains(&v) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "autoPoolRefreshHours: 0..168" })),
+            )
+                .into_response();
+        }
+    }
     let mut s = st.settings.lock().unwrap();
     if let Some(v) = body.get("autoRotate").and_then(|v| v.as_bool()) {
         s.auto_rotate = v;
@@ -1654,17 +1714,16 @@ async fn auto(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Respo
             cache.clear();
         }
     }
-    if let Some(v) = body.get("autoPoolRefreshHours").and_then(|v| v.as_f64()) {
-        if !(0.0..=168.0).contains(&v) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "autoPoolRefreshHours: 0..168" })),
-            )
-                .into_response();
-        }
+    if let Some(v) = hours {
         s.auto_pool_refresh_hours = v;
     }
-    let _ = s.save(&st.dir);
+    if let Err(e) = s.save(&st.dir) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response();
+    }
     Json(json!({ "ok": true, "autoRotate": s.auto_rotate, "autoPoolRefreshHours": s.auto_pool_refresh_hours, "directFirst": s.direct_first })).into_response()
 }
 
@@ -1710,6 +1769,15 @@ async fn local_domains_post(State(st): State<Arc<AppState>>, Json(body): Json<Va
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({ "error": "порт должен быть 1..65535" })),
+                )
+                    .into_response();
+            }
+            let settings = st.settings_snapshot();
+            if port == settings.local_proxy_port as u64 || port == settings.local_https_port as u64
+            {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "нельзя направить домен на сам локальный прокси" })),
                 )
                     .into_response();
             }

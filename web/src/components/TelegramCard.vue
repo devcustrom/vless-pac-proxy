@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { Copy, ExternalLink, MessageCircle, RefreshCw, Send, ShieldAlert } from 'lucide-vue-next'
 import { api, notify } from '@/lib/store'
 import { useActionMutation } from '@/lib/queries'
+import { digitsOnly } from '@/lib/validators'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
@@ -56,6 +57,16 @@ function markDirty() {
   dirty.value = true
 }
 
+watch(
+  () => form.order,
+  (value) => {
+    if (value === 'direct-only' && !form.tryDirect) {
+      form.tryDirect = true
+      markDirty()
+    }
+  },
+)
+
 const setAction = useActionMutation(
   (payload) => api('/api/telegram', { action: 'set', ...payload }),
   [['status']],
@@ -98,6 +109,21 @@ const probingDirect = computed(() => probeDirectAction.isLoading.value)
 const rotating = computed(() => rotateAction.isLoading.value)
 const updating = computed(() => updateAction.isLoading.value || !!t.value.update?.checking)
 const updateState = computed(() => t.value.update || {})
+const anyBusy = computed(
+  () =>
+    saving.value ||
+    enabling.value ||
+    disabling.value ||
+    restarting.value ||
+    probing.value ||
+    probingDirect.value ||
+    rotating.value ||
+    updating.value,
+)
+const portValid = computed(() => {
+  const port = Number(form.port)
+  return Number.isInteger(port) && port >= 1 && port <= 65535
+})
 
 const orderLabels = {
   direct: 'напрямую',
@@ -119,8 +145,14 @@ function fmtBytes(value) {
 
 async function enable() {
   try {
-    await enableAction.mutateAsync()
-    notify('Telegram-прокси включён')
+    const result = await enableAction.mutateAsync()
+    if (result?.error) {
+      notify(`Telegram-прокси включён, но не запустился: ${result.error}`, 'error')
+    } else if (result?.running === false) {
+      notify('Telegram-прокси включён, но пока не отвечает', 'error')
+    } else {
+      notify('Telegram-прокси включён')
+    }
   } catch {
     /* тост показан */
   }
@@ -137,14 +169,22 @@ async function disable() {
 
 async function restart() {
   try {
-    await restartAction.mutateAsync()
-    notify('Telegram-прокси перезапускается')
+    const result = await restartAction.mutateAsync()
+    if (result?.error) {
+      notify(`Перезапуск не удался: ${result.error}`, 'error')
+    } else {
+      notify('Telegram-прокси перезапускается')
+    }
   } catch {
     /* тост показан */
   }
 }
 
 async function save() {
+  if (!portValid.value) {
+    notify('Порт должен быть числом 1..65535', 'error')
+    return
+  }
   try {
     await setAction.mutateAsync({
       port: Number(form.port),
@@ -280,16 +320,16 @@ async function openLink() {
           проверит sha256 и положит его в каталог данных. После этого включите
           плагин.
         </p>
-        <Button size="sm" variant="outline" :loading="updating" @click="checkUpdate">
+        <Button size="sm" variant="outline" :loading="updating" :disabled="anyBusy" @click="checkUpdate">
           Скачать / обновить sidecar
         </Button>
       </div>
 
       <div class="flex flex-wrap gap-2">
-        <Button v-if="!enabled" size="sm" :loading="enabling" @click="enable">
+        <Button v-if="!enabled" size="sm" :loading="enabling" :disabled="anyBusy" @click="enable">
           Включить Telegram-прокси
         </Button>
-        <Button v-else size="sm" variant="outline" :loading="disabling" @click="disable">
+        <Button v-else size="sm" variant="outline" :loading="disabling" :disabled="anyBusy" @click="disable">
           Выключить
         </Button>
         <Button
@@ -297,6 +337,7 @@ async function openLink() {
           size="sm"
           variant="outline"
           :loading="restarting"
+          :disabled="anyBusy"
           @click="restart"
         >
           <RefreshCw class="h-3.5 w-3.5" />
@@ -307,6 +348,7 @@ async function openLink() {
           size="sm"
           variant="outline"
           :loading="busyLink"
+          :disabled="anyBusy"
           @click="copyLink"
         >
           <Copy class="h-3.5 w-3.5" />
@@ -317,12 +359,13 @@ async function openLink() {
           size="sm"
           variant="outline"
           :loading="busyLink"
+          :disabled="anyBusy"
           @click="openLink"
         >
           <ExternalLink class="h-3.5 w-3.5" />
           Открыть в Telegram
         </Button>
-        <Button size="sm" variant="ghost" :loading="probing" @click="probe">
+        <Button size="sm" variant="ghost" :loading="probing" :disabled="anyBusy" @click="probe">
           <MessageCircle class="h-3.5 w-3.5" />
           Проверить прокси
         </Button>
@@ -331,7 +374,7 @@ async function openLink() {
       <div v-if="t.secretMasked" class="flex flex-wrap items-center gap-2 text-xs">
         <span class="text-muted-foreground">Secret:</span>
         <code class="rounded bg-muted px-1.5 py-0.5">{{ t.secretMasked }}</code>
-        <Button size="sm" variant="ghost" :loading="rotating" @click="rotateSecret">
+        <Button size="sm" variant="ghost" :loading="rotating" :disabled="anyBusy" @click="rotateSecret">
           Сгенерировать новый
         </Button>
       </div>
@@ -347,9 +390,13 @@ async function openLink() {
           </div>
           <Switch
             :model-value="form.tryDirect"
+            :disabled="saving || form.order === 'direct-only'"
             @update:model-value="(v) => { form.tryDirect = v; markDirty() }"
           />
         </div>
+        <p v-if="form.order === 'direct-only'" class="text-xs text-muted-foreground">
+          Для режима «только напрямую» direct включён принудительно.
+        </p>
 
         <div class="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
           <div class="space-y-1">
@@ -357,10 +404,11 @@ async function openLink() {
             <Select
               v-model="form.order"
               :options="orderOptions"
+              :disabled="saving"
               @update:model-value="markDirty"
             />
           </div>
-          <Button size="sm" variant="outline" :loading="saving" :disabled="!dirty" @click="save">
+          <Button size="sm" variant="outline" :loading="saving" :disabled="!dirty || !portValid || anyBusy" @click="save">
             Применить
           </Button>
         </div>
@@ -378,7 +426,7 @@ async function openLink() {
         </div>
 
         <div class="flex flex-wrap items-center gap-2">
-          <Button size="sm" variant="ghost" :loading="probingDirect" @click="probeDirect">
+          <Button size="sm" variant="ghost" :loading="probingDirect" :disabled="anyBusy" @click="probeDirect">
             Проверить напрямую
           </Button>
           <span v-if="t.probe?.at" class="text-xs text-muted-foreground">
@@ -402,7 +450,8 @@ async function openLink() {
             inputmode="numeric"
             maxlength="5"
             placeholder="1443"
-            @input="markDirty"
+            :disabled="saving"
+            @input="form.port = digitsOnly(form.port); markDirty()"
           />
         </div>
         <div class="space-y-1">
@@ -411,6 +460,7 @@ async function openLink() {
             v-model="form.fakeTls"
             placeholder="example.com"
             autocomplete="off"
+            :disabled="saving"
             @input="markDirty"
           />
         </div>
@@ -420,6 +470,7 @@ async function openLink() {
             v-model="form.cfWorker"
             placeholder="worker.example.workers.dev"
             autocomplete="off"
+            :disabled="saving"
             @input="markDirty"
           />
         </div>
@@ -429,6 +480,7 @@ async function openLink() {
             v-model="form.cfProxy"
             placeholder="example.com"
             autocomplete="off"
+            :disabled="saving"
             @input="markDirty"
           />
         </div>
@@ -443,7 +495,7 @@ async function openLink() {
         </div>
         <Switch
           :model-value="form.h2"
-          :disabled="form.order !== 'direct-only'"
+          :disabled="saving || form.order !== 'direct-only'"
           @update:model-value="(v) => { form.h2 = v; markDirty() }"
         />
       </div>
@@ -463,11 +515,12 @@ async function openLink() {
           </p>
         </div>
         <div class="flex shrink-0 items-center gap-2">
-          <Button size="sm" variant="outline" :loading="updating" @click="checkUpdate">
+          <Button size="sm" variant="outline" :loading="updating" :disabled="anyBusy" @click="checkUpdate">
             Проверить обновление
           </Button>
           <Switch
             :model-value="form.autoUpdate"
+            :disabled="saving"
             @update:model-value="(v) => { form.autoUpdate = v; markDirty() }"
           />
         </div>

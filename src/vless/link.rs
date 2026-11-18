@@ -230,7 +230,11 @@ pub fn parse_vmess(raw: &str) -> Result<ParsedLink> {
             v.as_u64()
                 .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
         })
-        .context("vmess: нет порта")? as u16;
+        .context("vmess: нет порта")?;
+    if !(1..=65535).contains(&port) {
+        bail!("vmess: порт должен быть 1..65535");
+    }
+    let port = port as u16;
     let id = value
         .get("id")
         .and_then(|v| v.as_str())

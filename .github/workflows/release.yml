@@ -6,7 +6,23 @@ on:
   workflow_dispatch:
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Версия совпадает с тегом
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          cargo=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
+          web=$(python3 -c "import json; print(json.load(open('web/package.json'))['version'])")
+          echo "tag=$tag cargo=$cargo web=$web"
+          test "$tag" = "$cargo"
+          test "$tag" = "$web"
+
   windows:
+    needs: preflight
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +48,7 @@ jobs:
           path: wireproxy-control-windows-x64.exe
 
   macos:
+    needs: preflight
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -98,6 +115,7 @@ jobs:
             wireproxy-control-macos-universal.dmg
 
   sidecar-windows:
+    needs: preflight
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -118,6 +136,7 @@ jobs:
           path: tgws-proxy-windows-x64.exe
 
   sidecar-macos-arm64:
+    needs: preflight
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -137,6 +156,7 @@ jobs:
           path: tgws-proxy-macos-arm64
 
   sidecar-macos-x64:
+    needs: preflight
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
@@ -158,6 +178,7 @@ jobs:
   release:
     needs:
       [
+        preflight,
         windows,
         macos,
         sidecar-windows,
@@ -197,6 +218,7 @@ jobs:
           PY
       - uses: softprops/action-gh-release@v2
         with:
+          fail_on_unmatched_files: true
           files: |
             artifacts/windows/wireproxy-control-windows-x64.exe
             artifacts/macos/wireproxy-control-macos-universal

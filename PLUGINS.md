@@ -64,9 +64,10 @@ Lua, blockcheck2) или Flowseal v1 (`bin/winws.exe`, `general*.bat`). Банд
 - `wg` — HTTP CONNECT через wireproxy `127.0.0.1:25345`;
 - `vless` — HTTP CONNECT через xray `127.0.0.1:25346`.
 
-Пресеты: `auto` (WS → VPN → direct), `vpn-first`, `direct-only`,
-`vpn-only`. При выключенном direct используются только VPN-пути; прямой
-TCP-пробник в панели показывает доступность DC без TLS/WS.
+Пресеты: `auto` (`direct → WireGuard → VLESS` при включённом direct),
+`vpn-first`, `direct-only`, `vpn-only`. При выключенном direct используются
+только VPN-пути; прямой TCP-пробник в панели показывает доступность DC без
+TLS/WS.
 
 API: `GET /api/telegram`, `POST /api/telegram` (`enable`, `disable`,
 `restart`, `set`, `probe`, `probe-direct`, `check-update`, `ensure-sidecar`,

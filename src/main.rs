@@ -103,7 +103,10 @@ fn main() -> anyhow::Result<()> {
         Command::Install => install::install(&dir),
         Command::Uninstall => install::uninstall(&dir),
         Command::Stop => stop_manager(&dir, cli.panel_port),
-        Command::TrustCerts => local_tls::trust_certs(&dir),
+        Command::TrustCerts => {
+            local_tls::trust_certs(&dir)?;
+            shell::run_elevated(&dir.join(local_tls::trust_script_name()))
+        }
         Command::SyncHosts => local_hosts::sync_hosts(&dir),
         Command::Mcp => mcp::run_stdio(&dir),
         Command::Version => {

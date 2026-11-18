@@ -60,14 +60,17 @@ async function add(section, domain) {
   try {
     await addAction.mutateAsync({ section, domain })
     notify('Домен добавлен: ' + domain)
+    return true
   } catch {
     /* тост показан */
+    return false
   } finally {
     addSection.value = ''
   }
 }
 
 async function remove(section, value) {
+  if (!confirm(`Убрать ${value} из «${section.title}»?`)) return
   const key = `${section.key}:${value}`
   removing.value = key
   try {
@@ -121,6 +124,7 @@ async function remove(section, value) {
         <DomainAddForm
           :submit="(output) => add(section, output.domain)"
           :loading="addSection === section.key"
+          :disabled="!!removing || (!!addSection && addSection !== section.key)"
         />
       </section>
     </div>

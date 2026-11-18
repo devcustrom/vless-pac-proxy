@@ -222,6 +222,17 @@ pub fn start(state: &Arc<AppState>) -> Result<()> {
     if !settings.telegram_enabled {
         bail!("Telegram-прокси выключен");
     }
+    // Уже запущенный sidecar не перечитывает tgws-config.json: не создаём
+    // иллюзию, что новые настройки применились. Для изменений есть restart.
+    if state
+        .telegram
+        .stop
+        .lock()
+        .map(|guard| guard.is_some())
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
     let cfg = TelegramConfig::from_settings(&settings, state.panel_port)?;
     cfg.write(&state.dir)?;
     if !sidecar_path(&state.dir).is_file() {

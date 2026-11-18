@@ -35,13 +35,15 @@ const ALL_TABS = {
 
 const statusQuery = useStatusQuery()
 const s = computed(() => statusQuery.data.value)
-const online = computed(() => !!s.value && (s.value.wgUp || s.value.vlessUp))
+const offline = computed(() => !!statusQuery.error.value)
+const online = computed(() => !offline.value && !!s.value && (s.value.wgUp || s.value.vlessUp))
 const docsOpen = ref(false)
 const routingOpen = ref(false)
 const firstRunOpen = ref(false)
 const firstRunDismissed = ref(false)
 const refreshing = ref(false)
 const tab = ref('overview')
+let pollTimer = null
 
 const tabs = computed(() => {
   const data = s.value
@@ -62,9 +64,11 @@ watch(tabs, (items) => {
 })
 
 watchEffect(() => {
+  // Ошибка важнее старых данных: Pinia Colada сохраняет последний успешный
+  // snapshot, но если менеджер умер, нельзя показывать «VPN активен».
+  store.offline = offline.value
   if (statusQuery.data.value) {
     store.status = statusQuery.data.value
-    store.offline = false
     const data = statusQuery.data.value
     if (!data.onboardingDone && !firstRunDismissed.value) {
       if (data.plugins?.localDomains) {
@@ -75,8 +79,6 @@ watchEffect(() => {
         firstRunOpen.value = true
       }
     }
-  } else if (statusQuery.error.value) {
-    store.offline = true
   }
 })
 
@@ -124,15 +126,29 @@ function refetchStatus() {
   })
 }
 
+function pollStatus() {
+  if (!document.hidden) refetchStatus()
+}
+
+function onVisibilityChange() {
+  if (!document.hidden) refetchStatus()
+}
+
 onMounted(() => {
   syncTabFromHash()
   window.addEventListener('hashchange', syncTabFromHash)
   window.addEventListener('wpc:status-refresh', refetchStatus)
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  // У @pinia/colada нет refetchInterval — держим polling сами, иначе
+  // здоровье каналов, прогресс загрузок и логи замирают без действий.
+  pollTimer = window.setInterval(pollStatus, 5000)
 })
 
 onUnmounted(() => {
   window.removeEventListener('hashchange', syncTabFromHash)
   window.removeEventListener('wpc:status-refresh', refetchStatus)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  if (pollTimer !== null) window.clearInterval(pollTimer)
 })
 
 watch(s, () => syncTabFromHash())
