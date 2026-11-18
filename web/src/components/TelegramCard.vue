@@ -447,6 +447,7 @@ async function openLink() {
           <Label>Порт</Label>
           <Input
             v-model="form.port"
+            data-testid="telegram-port"
             inputmode="numeric"
             maxlength="5"
             placeholder="1443"

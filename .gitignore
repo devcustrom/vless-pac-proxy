@@ -49,6 +49,8 @@ wireproxy.conf
 # Frontend
 web/node_modules/
 web/dist/
+web/test-results/
+web/playwright-report/
 
 # Telegram sidecar build artifacts
 sidecar/tgws/.build-venv/

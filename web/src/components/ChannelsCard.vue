@@ -213,6 +213,7 @@ async function setDirectFirst(value) {
           </div>
         </div>
         <Switch
+          data-testid="direct-first"
           :model-value="s.directFirst !== false"
           :disabled="directBusy"
           @update:model-value="setDirectFirst"

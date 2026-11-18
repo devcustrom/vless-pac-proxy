@@ -45,10 +45,11 @@ static UI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
 
 pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
     let panel_port = state.panel_port;
+    let test_mode = std::env::var_os("WPC_TEST_MODE").is_some();
     wlog!("панель: http://127.0.0.1:{panel_port}/  |  умный прокси: 127.0.0.1:{SMART_PROXY_PORT}");
 
     // движки: скачиваем отсутствующие, затем запускаем супервизор
-    {
+    if !test_mode {
         let st = state.clone();
         tokio::spawn(async move {
             let missing = [EngineKind::Wireproxy, EngineKind::Xray]
@@ -73,6 +74,8 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
                 }
             }
         });
+    } else {
+        start_enabled_engines(&state);
     }
     {
         let st = state.clone();
@@ -92,10 +95,12 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
             wlog!("telegram: автозапуск не удался — {e:#}");
         }
     }
-    crate::telegram::update::spawn_scheduler(state.clone());
-    crate::lists::spawn_scheduler(state.clone());
-    crate::vless::pool::spawn_scheduler(state.clone());
-    spawn_health_probes(state.clone());
+    if !test_mode {
+        crate::telegram::update::spawn_scheduler(state.clone());
+        crate::lists::spawn_scheduler(state.clone());
+        crate::vless::pool::spawn_scheduler(state.clone());
+        spawn_health_probes(state.clone());
+    }
 
     {
         let st = state.clone();

@@ -494,7 +494,7 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
-            "wpc-zapret-test-{}-{}",
+            "wpc-zapret-bundle-{}-{}",
             std::process::id(),
             N.fetch_add(1, Ordering::Relaxed)
         ));
@@ -527,10 +527,10 @@ mod tests {
     fn restores_backup_after_interrupted_swap() {
         let dir = temp_dir();
         let backup = dir.join("zapret.old");
-        std::fs::create_dir_all(backup.join("zapret-winws")).unwrap();
-        std::fs::write(backup.join("zapret-winws/winws2.exe"), b"exe").unwrap();
+        std::fs::create_dir_all(&backup).unwrap();
+        std::fs::write(backup.join("winws2.exe"), b"exe").unwrap();
         recover(&dir);
-        assert!(dir.join("zapret/zapret-winws/winws2.exe").is_file());
+        assert!(dir.join("zapret/winws2.exe").is_file());
         assert!(!backup.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
