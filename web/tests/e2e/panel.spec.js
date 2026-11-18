@@ -4,6 +4,23 @@ const PANEL = 'http://127.0.0.1:28180'
 const LOCAL_HTTP = 28080
 
 test.beforeEach(async ({ page }) => {
+  const headers = { 'X-WPC': '1' }
+  await page.request.post(`${PANEL}/api/channels`, {
+    headers,
+    data: { channel: 'wireguard', enabled: false },
+  })
+  await page.request.post(`${PANEL}/api/channels`, {
+    headers,
+    data: { channel: 'xray', enabled: false },
+  })
+  await page.request.post(`${PANEL}/api/vless`, {
+    headers,
+    data: { action: 'set-default', value: 'wireguard' },
+  })
+  await page.request.post(`${PANEL}/api/auto`, {
+    headers,
+    data: { directFirst: true },
+  })
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'wireproxy-control' })).toBeVisible()
 })
@@ -25,6 +42,39 @@ test('polling обновляет переключатель без переза�
   })
   expect(response.ok()).toBeTruthy()
   await expect(direct).toHaveAttribute('aria-checked', 'false', { timeout: 8_000 })
+})
+
+test('смена основного канала обновляет кнопки без перезагрузки', async ({ page }) => {
+  const wireguard = page.getByRole('button', { name: 'WireGuard', exact: true })
+  const vless = page.getByRole('button', { name: 'VLESS', exact: true })
+  await wireguard.click()
+  await expect(wireguard).toHaveClass(/bg-primary/)
+  await vless.click()
+  await expect(vless).toHaveClass(/bg-primary/)
+})
+
+test('переключатели каналов обновляются сразу', async ({ page }) => {
+  const wg = page.getByTestId('wireguard-channel')
+  const xray = page.getByTestId('xray-channel')
+  await expect(wg).toHaveAttribute('aria-checked', 'false')
+  await wg.click()
+  await expect(wg).toHaveAttribute('aria-checked', 'true')
+  await expect(xray).toHaveAttribute('aria-checked', 'false')
+  await xray.click()
+  await expect(xray).toHaveAttribute('aria-checked', 'true')
+})
+
+test('канал переключается оптимистично, не ожидая сервер', async ({ page }) => {
+  await page.route('**/api/channels', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1_500))
+    await route.continue()
+  })
+  const wg = page.getByTestId('wireguard-channel')
+  await expect(wg).toHaveAttribute('aria-checked', 'false')
+  const response = page.waitForResponse('**/api/channels')
+  await wg.click()
+  await expect(wg).toHaveAttribute('aria-checked', 'true', { timeout: 500 })
+  await response
 })
 
 test('локальный домен отдаёт backend, ошибка не стирает форму', async ({ page }) => {

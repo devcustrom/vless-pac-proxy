@@ -17,9 +17,27 @@ const defaultBusy = ref('')
 const channelBusy = ref('')
 const restartBusy = ref('')
 const directBusy = ref(false)
+// Оптимистичное состояние: переключатель меняется сразу, а не после
+// пятисекундного polling/refetch. При ошибке откатываемся.
+const wgEnabled = ref(props.s.channels?.wireguard !== false)
+const xrayEnabled = ref(props.s.channels?.xray !== false)
+const vpnDefault = ref(props.s.vpnDefault || 'wireguard')
+const directFirst = ref(props.s.directFirst !== false)
 const smartReady = computed(() => props.s.smartProxyReady !== false)
 watch(() => props.s.systemProxy?.enabled, (value) => {
-  sysProxy.value = !!value
+  if (!sysProxyBusy.value) sysProxy.value = !!value
+})
+watch(() => props.s.channels?.wireguard, (value) => {
+  if (!channelBusy.value) wgEnabled.value = value !== false
+})
+watch(() => props.s.channels?.xray, (value) => {
+  if (!channelBusy.value) xrayEnabled.value = value !== false
+})
+watch(() => props.s.vpnDefault, (value) => {
+  if (!defaultBusy.value) vpnDefault.value = value || 'wireguard'
+})
+watch(() => props.s.directFirst, (value) => {
+  if (!directBusy.value) directFirst.value = value !== false
 })
 
 const wgState = computed(() => {
@@ -57,25 +75,35 @@ async function setSystemProxy(value) {
 }
 
 async function setDefault(value) {
+  const previous = vpnDefault.value
+  vpnDefault.value = value
   defaultBusy.value = value
   try {
     await post('/api/vless', { action: 'set-default', value })
   } catch {
-    /* тост показан */
+    vpnDefault.value = previous
   } finally {
     await refreshStatus()
+    vpnDefault.value = props.s.vpnDefault || previous
     defaultBusy.value = ''
   }
 }
 
 async function setChannel(channel, enabled) {
+  const isWg = channel === 'wireguard'
+  const previous = isWg ? wgEnabled.value : xrayEnabled.value
+  if (isWg) wgEnabled.value = enabled
+  else xrayEnabled.value = enabled
   channelBusy.value = channel
   try {
     await post('/api/channels', { channel, enabled })
   } catch {
-    /* тост показан */
+    if (isWg) wgEnabled.value = previous
+    else xrayEnabled.value = previous
   } finally {
     await refreshStatus()
+    if (isWg) wgEnabled.value = props.s.channels?.wireguard !== false
+    else xrayEnabled.value = props.s.channels?.xray !== false
     channelBusy.value = ''
   }
 }
@@ -94,14 +122,17 @@ async function restartChannel(channel) {
 }
 
 async function setDirectFirst(value) {
+  const previous = directFirst.value
+  directFirst.value = value
   directBusy.value = true
   try {
     await post('/api/auto', { directFirst: value })
     notify(value ? 'Сначала напрямую, затем VPN' : 'VPN по правилам списков')
   } catch {
-    /* тост показан */
+    directFirst.value = previous
   } finally {
     await refreshStatus()
+    directFirst.value = props.s.directFirst !== false
     directBusy.value = false
   }
 }
@@ -130,7 +161,7 @@ async function setDirectFirst(value) {
           <Button
             size="icon"
             variant="ghost"
-            :disabled="s.channels?.wireguard === false || !!channelBusy || !!restartBusy"
+            :disabled="!wgEnabled || !!channelBusy || !!restartBusy"
             :loading="restartBusy === 'wireguard'"
             title="Перезапустить WireGuard"
             @click="restartChannel('wireguard')"
@@ -138,7 +169,8 @@ async function setDirectFirst(value) {
             <RotateCcw class="h-4 w-4" />
           </Button>
           <Switch
-            :model-value="s.channels?.wireguard !== false"
+            data-testid="wireguard-channel"
+            :model-value="wgEnabled"
             :disabled="!!channelBusy || restartBusy === 'wireguard'"
             @update:model-value="(value) => setChannel('wireguard', value)"
           />
@@ -158,14 +190,14 @@ async function setDirectFirst(value) {
             </span>
           </div>
           <div class="mt-1 text-xs text-muted-foreground">
-            основной канал: {{ s.vpnDefault === 'vless' ? 'VLESS' : 'WireGuard' }}
+            основной канал: {{ vpnDefault === 'vless' ? 'VLESS' : 'WireGuard' }}
           </div>
         </div>
         <div class="flex shrink-0 items-center gap-2">
           <Button
             size="icon"
             variant="ghost"
-            :disabled="s.channels?.xray === false || !!channelBusy || !!restartBusy"
+            :disabled="!xrayEnabled || !!channelBusy || !!restartBusy"
             :loading="restartBusy === 'xray'"
             title="Перезапустить Xray"
             @click="restartChannel('xray')"
@@ -173,7 +205,8 @@ async function setDirectFirst(value) {
             <RotateCcw class="h-4 w-4" />
           </Button>
           <Switch
-            :model-value="s.channels?.xray !== false"
+            data-testid="xray-channel"
+            :model-value="xrayEnabled"
             :disabled="!!channelBusy || restartBusy === 'xray'"
             @update:model-value="(value) => setChannel('xray', value)"
           />
@@ -185,7 +218,7 @@ async function setDirectFirst(value) {
         <div class="flex gap-1">
           <Button
             size="sm"
-            :variant="s.vpnDefault === 'wireguard' ? 'default' : 'outline'"
+            :variant="vpnDefault === 'wireguard' ? 'default' : 'outline'"
             :loading="defaultBusy === 'wireguard'"
             :disabled="!!defaultBusy"
             @click="setDefault('wireguard')"
@@ -194,7 +227,7 @@ async function setDirectFirst(value) {
           </Button>
           <Button
             size="sm"
-            :variant="s.vpnDefault === 'vless' ? 'default' : 'outline'"
+            :variant="vpnDefault === 'vless' ? 'default' : 'outline'"
             :loading="defaultBusy === 'vless'"
             :disabled="!!defaultBusy"
             @click="setDefault('vless')"
@@ -214,7 +247,7 @@ async function setDirectFirst(value) {
         </div>
         <Switch
           data-testid="direct-first"
-          :model-value="s.directFirst !== false"
+          :model-value="directFirst"
           :disabled="directBusy"
           @update:model-value="setDirectFirst"
         />

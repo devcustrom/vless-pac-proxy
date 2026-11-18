@@ -44,6 +44,20 @@ const firstRunDismissed = ref(false)
 const refreshing = ref(false)
 const tab = ref('overview')
 let pollTimer = null
+let reloading = false
+
+// Если вкладка была открыта до обновления бинарника, её JS-бандл старее
+// backend. Перезагружаем страницу один раз, чтобы не показывать старые
+// переключатели после апдейта.
+watch(
+  () => s.value?.version,
+  (version) => {
+    if (version && version !== __WPC_WEB_VERSION__ && !reloading) {
+      reloading = true
+      window.location.reload()
+    }
+  },
+)
 
 const tabs = computed(() => {
   const data = s.value

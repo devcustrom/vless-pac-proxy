@@ -82,15 +82,43 @@ async def status_loop(stop_event: Optional[asyncio.Event] = None) -> None:
         await asyncio.sleep(2.0)
 
 
+def _process_alive(pid: int) -> bool:
+    """Проверка pid без сигналов: os.kill(pid, 0) на Windows не работает."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        synchronize = 0x00100000
+        wait_timeout = 258
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        handle = kernel32.OpenProcess(synchronize, False, pid)
+        if not handle:
+            # 87/1168 — процесса нет; 5 — доступ запрещён, считаем живым.
+            return ctypes.get_last_error() not in (87, 1168)
+        try:
+            kernel32.WaitForSingleObject.restype = ctypes.c_ulong
+            kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
+            return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
+        finally:
+            kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
 async def parent_watch(pid: int) -> None:
     """Завершает sidecar, если менеджер исчез (закрыт терминал/краш)."""
     if pid <= 0:
         return
     while True:
         await asyncio.sleep(2.0)
-        try:
-            os.kill(pid, 0)
-        except OSError:
+        if not _process_alive(pid):
             logging.getLogger('tg-mtproto-proxy').warning(
                 "manager process %d is gone; shutting down", pid
             )
