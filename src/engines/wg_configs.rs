@@ -371,3 +371,40 @@ pub fn log_active(dir: &Path, slug: &str) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "wpc-wgcfg-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn config(host: &str) -> String {
+        format!(
+            "[Interface]\nPrivateKey = abc\nAddress = 10.0.0.2/32\n\
+             [Peer]\nPublicKey = def\nEndpoint = {host}:51820\n"
+        )
+    }
+
+    #[test]
+    fn overwriting_active_config_updates_wg_conf() {
+        let dir = temp();
+        add(&dir, "A", &config("1.2.3.4")).unwrap();
+        add(&dir, "B", &config("5.6.7.8")).unwrap();
+        activate(&dir, "a").unwrap();
+        add(&dir, "A", &config("9.9.9.9")).unwrap();
+        let wg = std::fs::read_to_string(dir.join("wg.conf")).unwrap();
+        assert!(wg.contains("9.9.9.9:51820"), "wg.conf: {wg}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -489,4 +489,49 @@ mod tests {
         assert!(dest.join(MARKER).is_file());
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    fn temp_dir() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "wpc-zapret-test-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn rejects_zip_slip() {
+        use std::io::Write as _;
+        let dir = temp_dir();
+        let archive = dir.join("slip.zip");
+        {
+            let file = std::fs::File::create(&archive).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("../escape.txt", options).unwrap();
+            zip.write_all(b"bad").unwrap();
+            zip.finish().unwrap();
+        }
+        let dest = dir.join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+        assert!(unpack_zip(&archive, &dest, BundleVariant::Flowseal).is_err());
+        assert!(!dir.join("escape.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restores_backup_after_interrupted_swap() {
+        let dir = temp_dir();
+        let backup = dir.join("zapret.old");
+        std::fs::create_dir_all(backup.join("zapret-winws")).unwrap();
+        std::fs::write(backup.join("zapret-winws/winws2.exe"), b"exe").unwrap();
+        recover(&dir);
+        assert!(dir.join("zapret/zapret-winws/winws2.exe").is_file());
+        assert!(!backup.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

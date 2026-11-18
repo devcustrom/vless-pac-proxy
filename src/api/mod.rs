@@ -1794,8 +1794,7 @@ async fn local_domains_post(State(st): State<Arc<AppState>>, Json(body): Json<Va
                     .into_response();
             }
             let settings = st.settings_snapshot();
-            if port == settings.local_proxy_port as u64 || port == settings.local_https_port as u64
-            {
+            if crate::net::local_proxy::is_self_target(port as u16, &settings) {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({ "error": "нельзя направить домен на сам локальный прокси" })),

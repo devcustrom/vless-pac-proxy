@@ -724,6 +724,19 @@ mod tests {
     }
 
     #[test]
+    fn rejects_vmess_port_overflow() {
+        use base64::Engine;
+        let payload = base64::engine::general_purpose::STANDARD.encode(
+            r#"{"v":"2","add":"1.2.3.4","port":70000,"id":"a1b2c3d4-1111-2222-3333-444455556666","aid":0,"net":"tcp","tls":"none"}"#,
+        );
+        assert!(parse_vmess(&format!("vmess://{payload}")).is_err());
+        let payload = base64::engine::general_purpose::STANDARD.encode(
+            r#"{"v":"2","add":"1.2.3.4","port":0,"id":"a1b2c3d4-1111-2222-3333-444455556666","aid":0,"net":"tcp","tls":"none"}"#,
+        );
+        assert!(parse_vmess(&format!("vmess://{payload}")).is_err());
+    }
+
+    #[test]
     fn parses_ss_plain_userinfo() {
         let p =
             parse_ss("ss://2022-blake3-aes-256-gcm:pass%2Fword%3D@example.com:8388#SS").unwrap();

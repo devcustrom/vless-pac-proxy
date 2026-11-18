@@ -25,6 +25,9 @@ jobs:
       - name: "Фронтенд: сборка"
         working-directory: web
         run: npm run build
+      - name: "Фронтенд: тесты"
+        working-directory: web
+        run: npm test
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

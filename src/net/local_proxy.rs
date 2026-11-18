@@ -381,6 +381,11 @@ pub fn stop(state: &Arc<AppState>) {
     }
 }
 
+/// Порт, на который нельзя проксировать: иначе запрос уйдёт сам в себя.
+pub(crate) fn is_self_target(port: u16, settings: &crate::settings::Settings) -> bool {
+    port == settings.local_proxy_port || port == settings.local_https_port
+}
+
 async fn handle_stream<S>(mut stream: S, state: Arc<AppState>)
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -438,7 +443,7 @@ where
     // Защита от петли: домен не должен указывать на сам локальный
     // HTTP/HTTPS-слушатель, иначе каждый запрос создаёт новое соединение.
     let local_ports = state.settings_snapshot();
-    if port == local_ports.local_proxy_port || port == local_ports.local_https_port {
+    if is_self_target(port, &local_ports) {
         let body = "локальный домен указывает на сам прокси; выберите другой порт";
         let response = format!(
             "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -528,5 +533,18 @@ mod tests {
         let d = parse_config(cfg);
         assert_eq!(d.len(), 2);
         assert_eq!(d[0].port, 1);
+    }
+
+    #[test]
+    fn rejects_self_target_ports() {
+        let settings = crate::settings::Settings {
+            local_proxy_port: 8088,
+            local_https_port: 8443,
+            ..Default::default()
+        };
+        assert!(is_self_target(8088, &settings));
+        assert!(is_self_target(8443, &settings));
+        assert!(!is_self_target(3000, &settings));
+        assert!(!is_self_target(8080, &settings));
     }
 }
