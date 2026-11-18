@@ -113,3 +113,20 @@ test('документация открывается и переключает 
   await page.getByRole('button', { name: 'Закрыть' }).click()
   await expect(page.getByRole('heading', { name: 'Документация' })).toHaveCount(0)
 })
+
+test('доступное обновление показывает кнопку установки', async ({ page }) => {
+  await page.route('**/api/update', (route) =>
+    route.fulfill({
+      json: {
+        current: '0.5.4',
+        latest: '9.9.9',
+        available: true,
+        asset: 'wireproxy-control-windows-x64.exe',
+        url: 'https://example.com/app.exe',
+        page: 'https://example.com',
+      },
+    }),
+  )
+  await page.getByRole('button', { name: 'Проверить обновления' }).click()
+  await expect(page.getByRole('button', { name: 'Установить v9.9.9' })).toBeVisible()
+})

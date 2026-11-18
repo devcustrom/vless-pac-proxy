@@ -155,6 +155,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/api/zapret", get(zapret_get).post(zapret_post))
         .route("/api/docs", get(docs))
         .route("/api/update", get(update_check))
+        .route("/api/update/install", post(update_install))
         .fallback(ui_fallback)
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state.clone(), guard));
@@ -174,6 +175,17 @@ pub fn cleanup(state: &AppState) {
     crate::vless::pool::cleanup_test_processes();
     crate::paths::clear_panel_port(&state.dir);
     wlog!("выход: системный прокси выключен, движки останавливаются");
+}
+
+/// Перед заменой бинарника: остановить движки, но оставить системный прокси
+/// включённым — новая версия поднимет 8081 через секунду.
+pub fn cleanup_for_update(state: &AppState) {
+    state.wg.shutdown();
+    state.xr.shutdown();
+    crate::telegram::supervisor::stop(state);
+    crate::net::local_proxy::stop(state);
+    crate::vless::pool::cleanup_test_processes();
+    wlog!("обновление: движки остановлены, системный прокси оставлен");
 }
 
 async fn quit(State(st): State<Arc<AppState>>) -> Json<Value> {
@@ -1102,6 +1114,51 @@ async fn update_check() -> Response {
         "page": data.get("html_url"),
     }))
     .into_response()
+}
+
+async fn update_install(State(st): State<Arc<AppState>>) -> Response {
+    if !crate::update::begin_install() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "обновление уже устанавливается" })),
+        )
+            .into_response();
+    }
+    let result = async {
+        let info = crate::update::latest().await?;
+        if !info.available() {
+            anyhow::bail!("установлена последняя версия");
+        }
+        let downloaded = crate::update::download(&st.dir, &info).await?;
+        crate::update::spawn_installer(&st, &downloaded)?;
+        Ok::<crate::update::ReleaseInfo, anyhow::Error>(info)
+    }
+    .await;
+    match result {
+        Ok(info) => {
+            let st = st.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                cleanup_for_update(&st);
+                tokio::time::sleep(Duration::from_millis(700)).await;
+                std::process::exit(0);
+            });
+            Json(json!({
+                "ok": true,
+                "version": info.version,
+                "restarting": true,
+            }))
+            .into_response()
+        }
+        Err(e) => {
+            crate::update::end_install();
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("{e:#}") })),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn engines_ensure(State(st): State<Arc<AppState>>) -> Response {

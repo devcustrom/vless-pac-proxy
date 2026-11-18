@@ -38,6 +38,7 @@ mod telegram;
 #[cfg(any(windows, target_os = "macos"))]
 mod tray;
 mod trust_status;
+mod update;
 mod vless;
 mod zapret;
 
@@ -85,6 +86,14 @@ enum Command {
     SyncHosts,
     /// MCP-сервер для агентов (stdio JSON-RPC)
     Mcp,
+    /// Служебный шаг обновления: заменить бинарник и перезапустить менеджер
+    #[command(hide = true)]
+    ApplyUpdate {
+        #[arg(long)]
+        pid: u32,
+        #[arg(long)]
+        target: PathBuf,
+    },
     /// Показать версию
     Version,
 }
@@ -109,6 +118,9 @@ fn main() -> anyhow::Result<()> {
         }
         Command::SyncHosts => local_hosts::sync_hosts(&dir),
         Command::Mcp => mcp::run_stdio(&dir),
+        Command::ApplyUpdate { pid, target } => {
+            update::apply_pending_update(pid, &target, &dir, cli.panel_port)
+        }
         Command::Version => {
             println!("wireproxy-control {}", env!("CARGO_PKG_VERSION"));
             Ok(())

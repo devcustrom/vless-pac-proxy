@@ -373,7 +373,7 @@ pub fn start(state: &Arc<AppState>) {
 }
 
 /// Выключает плагин локальных доменов.
-pub fn stop(state: &Arc<AppState>) {
+pub fn stop(state: &AppState) {
     if let Ok(mut guard) = state.local_proxy_stop.lock() {
         if let Some((_, tx)) = guard.take() {
             let _ = tx.send(true);

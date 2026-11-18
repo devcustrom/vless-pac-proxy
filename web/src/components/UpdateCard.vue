@@ -8,8 +8,11 @@ import Button from '@/components/ui/Button.vue'
 
 const info = ref(null)
 const busy = ref(false)
+const installing = ref(false)
 
 const current = computed(() => store.status?.version || '—')
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 async function check() {
   busy.value = true
@@ -24,6 +27,35 @@ async function check() {
     notify(error.message, 'error')
   } finally {
     busy.value = false
+  }
+}
+
+async function install() {
+  if (!info.value?.available || installing.value) return
+  installing.value = true
+  try {
+    await api('/api/update/install', {})
+    notify('Обновление скачано, менеджер перезапускается…')
+    // Ждём, пока старый процесс выйдет, updater заменит файл и поднимется
+    // новый менеджер, затем перезагружаем вкладку уже на новой версии.
+    for (let i = 0; i < 45; i += 1) {
+      await sleep(1000)
+      try {
+        const response = await fetch('/api/status')
+        if (!response.ok) continue
+        const status = await response.json()
+        if (status.version && status.version !== current.value) {
+          window.location.reload()
+          return
+        }
+      } catch {
+        /* менеджер перезапускается */
+      }
+    }
+    window.location.reload()
+  } catch (error) {
+    installing.value = false
+    notify(error.message, 'error')
   }
 }
 </script>
@@ -46,8 +78,9 @@ async function check() {
 
       <p v-if="info" class="text-xs text-muted-foreground">
         <template v-if="info.available">
-          Новая версия {{ info.asset || '' }}. Скачайте бинарник и замените им файл при
-          остановленном менеджере (Windows) или положите рядом и перезапустите (macOS).
+          Новая версия {{ info.asset || '' }}. Нажмите «Установить» — приложение
+          скачает бинарник, заменит его и перезапустит менеджер. Системный прокси
+          останется включённым, данные и настройки сохранятся.
         </template>
         <template v-else>
           Обновлений нет — установлена актуальная версия.
@@ -55,18 +88,27 @@ async function check() {
       </p>
 
       <div class="flex flex-wrap gap-2">
-        <Button size="sm" variant="outline" :disabled="busy" @click="check">
+        <Button size="sm" variant="outline" :disabled="busy || installing" @click="check">
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': busy }" />
           Проверить обновления
+        </Button>
+        <Button
+          v-if="info?.available"
+          size="sm"
+          :loading="installing"
+          @click="install"
+        >
+          <Download class="h-3.5 w-3.5" />
+          Установить v{{ info.latest }}
         </Button>
         <a
           v-if="info?.available && (info.url || info.page)"
           :href="info.url || info.page"
           target="_blank"
-          class="inline-flex h-8 items-center gap-2 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+          rel="noopener"
+          class="inline-flex h-8 items-center gap-2 rounded-md border border-input bg-background px-3 text-xs font-medium hover:bg-accent"
         >
-          <Download class="h-3.5 w-3.5" />
-          Скачать v{{ info.latest }}
+          Скачать вручную
         </a>
       </div>
     </div>
