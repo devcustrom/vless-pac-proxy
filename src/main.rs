@@ -98,11 +98,19 @@ enum Command {
     Version,
 }
 
+fn clean_cli_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    // Finder на macOS передаёт -psn_0_…; clap на нём падал бы до логирования,
+    // и приложение выглядело бы как «ничего не запустилось».
+    args.into_iter()
+        .filter(|arg| !arg.to_string_lossy().starts_with("-psn_"))
+        .collect()
+}
+
 fn main() -> anyhow::Result<()> {
     #[cfg(all(windows, not(debug_assertions)))]
     attach_console();
 
-    let cli = Cli::parse();
+    let cli = Cli::parse_from(clean_cli_args(std::env::args_os()));
     let dir = paths::resolve_data_dir(cli.data_dir.clone())?;
     paths::ensure_layout(&dir)?;
     logging::init(&dir)?;
@@ -141,10 +149,14 @@ fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool, hidden: bool) -> an
     let _instance = match single_instance::acquire(&dir)? {
         Some(instance) => instance,
         None => {
+            let existing_port = paths::read_panel_port(&dir).unwrap_or(panel_port);
             println!(
-                "уже запущен другой экземпляр (данные: {}); панель: http://127.0.0.1:{panel_port}/",
+                "уже запущен другой экземпляр (данные: {}); панель: http://127.0.0.1:{existing_port}/",
                 dir.display()
             );
+            if !hidden {
+                let _ = shell::open_url(&format!("http://127.0.0.1:{existing_port}/"));
+            }
             return Ok(());
         }
     };
@@ -260,5 +272,23 @@ fn attach_console() {
         // русский вывод в cmd/PowerShell: переключаем консоль на UTF-8
         SetConsoleOutputCP(65001);
         SetConsoleCP(65001);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clean_cli_args;
+    use std::ffi::OsString;
+
+    #[test]
+    fn strips_macos_process_serial_number() {
+        let args = vec![
+            OsString::from("/Applications/WireproxyControl.app/Contents/MacOS/wireproxy-control"),
+            OsString::from("-psn_0_123456"),
+            OsString::from("--hidden"),
+        ];
+        let cleaned = clean_cli_args(args);
+        assert_eq!(cleaned.len(), 2);
+        assert_eq!(cleaned[1], OsString::from("--hidden"));
     }
 }

@@ -66,13 +66,6 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
                 }
             }
             start_enabled_engines(&st);
-            if missing && st.interactive {
-                let url = format!("http://127.0.0.1:{}/", st.panel_port);
-                wlog!("первый запуск: открываю панель {url}");
-                if let Err(e) = crate::shell::open_url(&url) {
-                    wlog!("панель: не удалось открыть браузер — {e:#}");
-                }
-            }
         });
     } else {
         start_enabled_engines(&state);
@@ -162,6 +155,17 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", panel_port)).await?;
     crate::paths::write_panel_port(&state.dir, panel_port);
+    if state.interactive {
+        // Панель уже слушает — можно сразу открыть браузер, не дожидаясь
+        // скачивания движков на первом запуске.
+        let url = format!("http://127.0.0.1:{panel_port}/");
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            if let Err(e) = crate::shell::open_url(&url) {
+                wlog!("панель: не удалось открыть браузер — {e:#}");
+            }
+        });
+    }
     axum::serve(listener, app).await?;
     Ok(())
 }
