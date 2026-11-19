@@ -57,6 +57,9 @@ pub struct Settings {
     pub zapret_preset: String,
     #[serde(rename = "directFirst", default = "default_true")]
     pub direct_first: bool,
+    /// Постоянный идентификатор устройства для подписок (заголовок x-hwid).
+    #[serde(rename = "hwid", default)]
+    pub hwid: String,
 }
 
 fn default_vpn() -> String {
@@ -114,8 +117,26 @@ impl Default for Settings {
             zapret_enabled: false,
             zapret_preset: default_zapret_preset(),
             direct_first: true,
+            hwid: String::new(),
         }
     }
+}
+
+/// Устойчивый идентификатор устройства: 32 hex-символа.
+pub fn generate_hwid() -> String {
+    use rand::rngs::OsRng;
+    use rand::RngCore;
+    let mut bytes = [0u8; 16];
+    OsRng.fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+pub fn valid_hwid(value: &str) -> bool {
+    let len = value.len();
+    (8..=128).contains(&len)
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 impl Settings {
@@ -130,8 +151,16 @@ impl Settings {
         };
         // Старые установки с уже включённым плагином не должны получать
         // мастер первого запуска после обновления.
+        let mut changed = false;
         if settings.local_domains_enabled && !settings.onboarding_done {
             settings.onboarding_done = true;
+            changed = true;
+        }
+        if !valid_hwid(&settings.hwid) {
+            settings.hwid = generate_hwid();
+            changed = true;
+        }
+        if changed {
             let _ = settings.save(dir);
         }
         settings
@@ -185,6 +214,7 @@ mod tests {
             zapret_enabled: false,
             zapret_preset: default_zapret_preset(),
             direct_first: true,
+            hwid: "test-hwid-0123456789".to_string(),
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"vpnDefault\":\"vless\""));
@@ -202,5 +232,16 @@ mod tests {
         assert!(!s.local_domains_enabled);
         assert!(s.wireguard_enabled);
         assert!(s.xray_enabled);
+    }
+
+    #[test]
+    fn hwid_is_stable_and_valid() {
+        let a = generate_hwid();
+        let b = generate_hwid();
+        assert!(valid_hwid(&a));
+        assert!(valid_hwid(&b));
+        assert_ne!(a, b);
+        assert!(!valid_hwid(""));
+        assert!(!valid_hwid("bad hwid"));
     }
 }

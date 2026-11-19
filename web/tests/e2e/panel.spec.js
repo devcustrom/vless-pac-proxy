@@ -130,3 +130,10 @@ test('доступное обновление показывает кнопку 
   await page.getByRole('button', { name: 'Проверить обновления' }).click()
   await expect(page.getByRole('button', { name: 'Установить v9.9.9' })).toBeVisible()
 })
+
+test('в настройках показан HWID и кнопка копирования', async ({ page }) => {
+  await page.getByRole('button', { name: 'Настройки' }).click()
+  await expect(page.getByText('HWID устройства')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Копировать' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Сменить HWID' })).toBeVisible()
+})

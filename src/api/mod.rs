@@ -143,6 +143,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/api/trust-certs", post(trust_certs_handler))
         .route("/api/plugins", get(plugins_get).post(plugins_set))
         .route("/api/autostart", post(autostart_set))
+        .route("/api/hwid", post(hwid_set))
         .route("/api/telegram", get(telegram_get).post(telegram_post))
         .route("/api/telegram/link", post(telegram_link))
         .route("/api/zapret", get(zapret_get).post(zapret_post))
@@ -233,6 +234,36 @@ async fn autostart_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>)
         )
             .into_response(),
     }
+}
+
+async fn hwid_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let requested = body.get("hwid").and_then(Value::as_str);
+    let value = match requested {
+        Some(raw) if !raw.trim().is_empty() => {
+            let value = raw.trim().to_string();
+            if !crate::settings::valid_hwid(&value) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "HWID: 8..128 символов, только буквы/цифры/-/_" })),
+                )
+                    .into_response();
+            }
+            value
+        }
+        _ => crate::settings::generate_hwid(),
+    };
+    let mut candidate = st.settings_snapshot();
+    candidate.hwid = value.clone();
+    if let Err(e) = candidate.save(&st.dir) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response();
+    }
+    *st.settings.lock().unwrap() = candidate;
+    wlog!("HWID обновлён");
+    Json(json!({ "ok": true, "hwid": value })).into_response()
 }
 
 async fn plugins_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
@@ -1436,6 +1467,7 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         },
         "vpnDefault": settings.vpn_default,
         "version": env!("CARGO_PKG_VERSION"),
+        "hwid": settings.hwid,
         "onboardingDone": settings.onboarding_done,
         "plugins": {
             "localDomains": settings.local_domains_enabled,

@@ -4,10 +4,11 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+use reqwest::header::{HeaderMap, HeaderValue};
 use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
@@ -234,11 +235,81 @@ pub async fn validate_subscription_url(raw: &str) -> Result<()> {
     validate_url(raw).await.map(|_| ())
 }
 
-fn no_redirect_client(proxy_port: Option<u16>) -> Result<reqwest::Client> {
+fn os_version() -> String {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    VERSION
+        .get_or_init(|| {
+            #[cfg(windows)]
+            {
+                use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
+                use winreg::RegKey;
+                if let Ok(key) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey_with_flags(
+                    r"SOFTWARE\Microsoft\Windows NT\CurrentVersion",
+                    KEY_READ,
+                ) {
+                    if let Ok(value) = key.get_value::<String, _>("CurrentVersion") {
+                        return value;
+                    }
+                }
+                "Windows".to_string()
+            }
+            #[cfg(target_os = "macos")]
+            {
+                if let Ok(out) = std::process::Command::new("sw_vers")
+                    .arg("-productVersion")
+                    .output()
+                {
+                    let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    if !value.is_empty() {
+                        return value;
+                    }
+                }
+                "macOS".to_string()
+            }
+            #[cfg(not(any(windows, target_os = "macos")))]
+            {
+                std::env::consts::OS.to_string()
+            }
+        })
+        .clone()
+}
+
+fn hwid_headers(hwid: &str) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    let os = std::env::consts::OS;
+    let version = os_version();
+    let model = if cfg!(windows) {
+        "PC"
+    } else if cfg!(target_os = "macos") {
+        "Mac"
+    } else {
+        "Desktop"
+    };
+    let values = [
+        ("x-hwid", hwid),
+        ("x-device-os", os),
+        ("x-ver-os", version.as_str()),
+        ("x-device-model", model),
+        ("x-hwid-version", "1"),
+        ("x-app-version", env!("CARGO_PKG_VERSION")),
+    ];
+    for (name, value) in values {
+        if value.is_empty() {
+            continue;
+        }
+        if let Ok(parsed) = HeaderValue::from_str(value) {
+            headers.insert(name, parsed);
+        }
+    }
+    headers
+}
+
+fn no_redirect_client(proxy_port: Option<u16>, hwid: &str) -> Result<reqwest::Client> {
     let mut b = reqwest::Client::builder()
         .redirect(Policy::none())
         .timeout(Duration::from_secs(30))
-        .user_agent("wireproxy-control/1.0");
+        .default_headers(hwid_headers(hwid))
+        .user_agent(concat!("wireproxy-control/", env!("CARGO_PKG_VERSION")));
     if let Some(port) = proxy_port {
         b = b.proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{port}"))?);
     }
@@ -277,9 +348,10 @@ enum FetchOutcome {
     Redirect(String),
 }
 
-pub async fn safe_fetch_text(_state: &Arc<AppState>, raw: &str) -> Result<String> {
-    let direct = no_redirect_client(None)?;
-    let proxied = no_redirect_client(Some(crate::vless::WIREPROXY_HTTP_PORT)).ok();
+pub async fn safe_fetch_text(state: &Arc<AppState>, raw: &str) -> Result<String> {
+    let hwid = state.settings_snapshot().hwid;
+    let direct = no_redirect_client(None, &hwid)?;
+    let proxied = no_redirect_client(Some(crate::vless::WIREPROXY_HTTP_PORT), &hwid).ok();
     let mut current = validate_url(raw).await?;
     for _ in 0..=4 {
         let outcome = match fetch_once(&direct, current.as_str()).await {
@@ -989,5 +1061,17 @@ mod tests {
             vec!["b".into(), "c".into()],
         ]);
         assert_eq!(out, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn hwid_headers_are_present() {
+        let headers = hwid_headers("0123456789abcdef0123456789abcdef");
+        assert_eq!(
+            headers.get("x-hwid").and_then(|v| v.to_str().ok()),
+            Some("0123456789abcdef0123456789abcdef")
+        );
+        assert!(headers.get("x-device-os").is_some());
+        assert!(headers.get("x-ver-os").is_some());
+        assert!(headers.get("x-device-model").is_some());
     }
 }

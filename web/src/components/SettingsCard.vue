@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { Blocks, Info, Power } from 'lucide-vue-next'
+import { Blocks, Copy, Info, Power, RefreshCw } from 'lucide-vue-next'
 import { api, notify } from '@/lib/store'
 import { useActionMutation } from '@/lib/queries'
 import Card from '@/components/ui/Card.vue'
@@ -21,6 +21,11 @@ const autostartAction = useActionMutation(
   [['status']],
 )
 const autostartLoading = computed(() => autostartAction.isLoading.value)
+const hwidAction = useActionMutation(
+  () => api('/api/hwid', { regenerate: true }),
+  [['status']],
+)
+const hwidLoading = computed(() => hwidAction.isLoading.value)
 const disableAction = useActionMutation(
   () => api('/api/plugins', { localDomains: false }),
   [['status']],
@@ -95,6 +100,31 @@ async function toggleAutostart(value) {
   try {
     await autostartAction.mutateAsync(value)
     notify(value ? 'Автозапуск включён' : 'Автозапуск выключен')
+  } catch {
+    /* тост показан */
+  }
+}
+
+async function copyHwid() {
+  try {
+    await navigator.clipboard.writeText(props.s.hwid || '')
+    notify('HWID скопирован')
+  } catch (error) {
+    notify(error.message || 'Не удалось скопировать HWID', 'error')
+  }
+}
+
+async function regenerateHwid() {
+  if (
+    !confirm(
+      'Сменить HWID? Подписки, привязанные к текущему устройству, могут потребовать повторной авторизации.',
+    )
+  ) {
+    return
+  }
+  try {
+    await hwidAction.mutateAsync()
+    notify('HWID изменён')
   } catch {
     /* тост показан */
   }
@@ -223,6 +253,30 @@ async function toggleAutostart(value) {
         :disabled="autostartLoading"
         @update:model-value="toggleAutostart"
       />
+    </div>
+
+    <div class="mt-3 rounded-lg border bg-muted/30 px-3 py-3">
+      <div class="flex flex-wrap items-center gap-2">
+        <span class="text-sm font-medium">HWID устройства</span>
+        <Badge variant="outline">x-hwid</Badge>
+      </div>
+      <code class="mt-1 block break-all rounded bg-background/60 px-2 py-1 text-xs">
+        {{ s.hwid || 'генерируется…' }}
+      </code>
+      <p class="mt-1 text-xs text-muted-foreground">
+        Передаётся в заголовках при загрузке подписок. Один и тот же ID
+        сохраняется между обновлениями и перезапусками.
+      </p>
+      <div class="mt-2 flex flex-wrap gap-2">
+        <Button size="sm" variant="outline" @click="copyHwid">
+          <Copy class="h-3.5 w-3.5" />
+          Копировать
+        </Button>
+        <Button size="sm" variant="ghost" :loading="hwidLoading" @click="regenerateHwid">
+          <RefreshCw class="h-3.5 w-3.5" />
+          Сменить HWID
+        </Button>
+      </div>
     </div>
   </Card>
 
