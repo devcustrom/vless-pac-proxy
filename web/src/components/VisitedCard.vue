@@ -55,7 +55,7 @@ const filtered = computed(() => {
     if (filter.value === 'vpn') return !!item.route
     if (filter.value === 'direct') return !item.route
     if (filter.value === 'needs') return check?.verdict === 'vpn-helps'
-    if (filter.value === 'unchecked') return !check
+    if (filter.value === 'unchecked') return !item.checked
     return true
   })
 })

@@ -16,6 +16,7 @@ pub struct VisitedRow {
     pub domain: String,
     pub count: u64,
     pub last: i64,
+    pub checked: bool,
 }
 
 pub struct Store {
@@ -97,7 +98,7 @@ impl Store {
             [],
         );
         let mut stmt = conn.prepare(
-            "SELECT domain, count, last_seen FROM visited
+            "SELECT domain, count, last_seen, checked_at IS NOT NULL FROM visited
              WHERE last_seen >= ?1 ORDER BY last_seen DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![cutoff, limit as i64], |row| {
@@ -105,6 +106,7 @@ impl Store {
                 domain: row.get(0)?,
                 count: row.get::<_, i64>(1)? as u64,
                 last: row.get(2)?,
+                checked: row.get::<_, i64>(3)? != 0,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()

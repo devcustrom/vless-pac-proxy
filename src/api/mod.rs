@@ -1497,6 +1497,7 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
                     "count": row.count,
                     "last": row.last,
                     "route": route,
+                    "checked": row.checked,
                 })
             })
             .collect();
