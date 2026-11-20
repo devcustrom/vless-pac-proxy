@@ -16,7 +16,7 @@ log = logging.getLogger('tg-mtproto-proxy')
 
 
 class _WsPool:
-    WS_POOL_MAX_AGE = 120.0
+    WS_POOL_MAX_AGE = 60.0
     WS_POOL_CHECK_INTERVAL = 5.0
     REFILL_BACKOFF_INITIAL = 1.0
     REFILL_BACKOFF_MAX = 3600.0
@@ -169,6 +169,9 @@ class _WsPool:
         finally:
             if self._rotating.get(key) is asyncio.current_task():
                 self._rotating.pop(key, None)
+
+    def idle_count(self) -> int:
+        return sum(len(bucket) for bucket in self._idle.values())
 
     async def _connect_one(self, target_ip, domains, path=WS_PATH) -> Optional[RawWebSocket]:
         for domain in domains:

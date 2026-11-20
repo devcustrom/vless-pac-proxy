@@ -319,10 +319,10 @@ async def _handle_client(reader, writer, secret: bytes):
         ctx = _build_crypto_ctx(client_dec_prekey_iv, secret, relay_init)
 
         media_tag = " media" if is_media else ""
-        ws = await ws_pool.get(dc, is_media, is_test_dc=is_test_dc)
-        if ws is None:
-            log.info("[%s] DC%d%s WS pool unavailable -> fallback",
-                     label, dc, media_tag)
+
+        async def use_fallback(reason: str):
+            log.info("[%s] DC%d%s %s -> fallback",
+                     label, dc, media_tag, reason)
             splitter_fb = None
             try:
                 splitter_fb = MsgSplitter(proto_int)
@@ -335,7 +335,12 @@ async def _handle_client(reader, writer, secret: bytes):
             if ok:
                 log.info("[%s] DC%d%s fallback closed", label, dc, media_tag)
             else:
-                log.warning("[%s] DC%d%s no fallback available", label, dc, media_tag)
+                log.warning("[%s] DC%d%s no fallback available",
+                            label, dc, media_tag)
+
+        ws = await ws_pool.get(dc, is_media, is_test_dc=is_test_dc)
+        if ws is None:
+            await use_fallback("WS pool unavailable")
             return
 
         log.info("[%s] DC%d%s -> WS pool hit", label, dc, media_tag)
@@ -349,7 +354,19 @@ async def _handle_client(reader, writer, secret: bytes):
         except Exception:
             pass
 
-        await ws.send(relay_init)
+        try:
+            await ws.send(relay_init)
+        except (ConnectionError, OSError, asyncio.TimeoutError) as exc:
+            # Сокет мог умереть в пуле, пока ждал клиента (особенно за
+            # VPN/NAT). Не рвём соединение клиента, а уходим в fallback.
+            log.info("[%s] DC%d%s WS broken before init (%r) -> fallback",
+                     label, dc, media_tag, exc)
+            try:
+                await asyncio.wait_for(ws.close(), timeout=2.0)
+            except Exception:
+                pass
+            await use_fallback("WS broken before init")
+            return
 
         await bridge_ws_reencrypt(clt_reader, clt_writer, ws, label, ctx,
                                    dc=dc, is_media=is_media,
@@ -509,7 +526,8 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
                 if now < next_stats:
                     continue
                 next_stats = now + 60
-                log.info("stats: %s", stats.summary())
+                log.info("stats: %s idle_ws=%d", stats.summary(),
+                         ws_pool.idle_count())
                 if cf_h2_pool is not None:
                     cf_h2_pool.log_stats()
         except asyncio.CancelledError:
