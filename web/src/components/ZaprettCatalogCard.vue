@@ -362,6 +362,15 @@ function codeVariant(code) {
             <p class="text-[11px] text-muted-foreground">
               {{ result.kind === 'nfqws' ? 'winws v1' : 'winws2' }} · автор:
               {{ result.author || 'не указан' }}
+              <a
+                v-if="strategyFor(result.id)?.source"
+                :href="strategyFor(result.id).source"
+                target="_blank"
+                rel="noreferrer"
+                class="ml-1 text-primary hover:underline"
+              >
+                источник
+              </a>
             </p>
           </div>
           <Button size="sm" variant="ghost" :disabled="testBusy" @click="resetTest">

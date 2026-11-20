@@ -772,7 +772,7 @@ fn expand_strategy(
         "# wireproxy-control: merged Zaprett ipsets",
     )?;
     let mut out = String::new();
-    let mut rest = text;
+    let mut rest = text.trim_start_matches('\u{feff}');
     while let Some(pos) = rest.find("${") {
         out.push_str(&rest[..pos]);
         let after = &rest[pos + 2..];
