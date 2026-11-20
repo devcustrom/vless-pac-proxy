@@ -1143,17 +1143,6 @@ pub fn run_test_helper(data_dir: &Path) -> Result<()> {
             results: Vec::new(),
         };
         save_test_results(data_dir, &results)?;
-        let was_running = crate::zapret::service::query(data_dir).running;
-        if was_running {
-            if let Err(e) = crate::zapret::service::stop() {
-                results.running = false;
-                results.error = Some(format!("не удалось остановить службу Zapret: {e:#}"));
-                results.finished_at = chrono::Utc::now().to_rfc3339();
-                let _ = save_test_results(data_dir, &results);
-                return Err(e);
-            }
-            std::thread::sleep(Duration::from_millis(1500));
-        }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1167,6 +1156,17 @@ pub fn run_test_helper(data_dir: &Path) -> Result<()> {
             ))
             .build()
             .context("не удалось создать HTTP-клиент проверки")?;
+        let was_running = crate::zapret::service::query(data_dir).running;
+        if was_running {
+            if let Err(e) = crate::zapret::service::stop() {
+                results.running = false;
+                results.error = Some(format!("не удалось остановить службу Zapret: {e:#}"));
+                results.finished_at = chrono::Utc::now().to_rfc3339();
+                let _ = save_test_results(data_dir, &results);
+                return Err(e);
+            }
+            std::thread::sleep(Duration::from_millis(1500));
+        }
         let outcome = (|| -> Result<()> {
             for (index, strategy) in payload.strategies.iter().enumerate() {
                 if strategy.args.is_empty()
