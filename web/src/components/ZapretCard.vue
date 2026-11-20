@@ -49,6 +49,11 @@ const poolAutoAction = useActionMutation(
   () => api('/api/pool/auto', {}),
   [['status']],
 )
+const probeAction = useActionMutation(
+  () => api('/api/zapret', { action: 'probe' }),
+  [['status']],
+)
+const probeResult = ref(null)
 const removeAction = useActionMutation(
   () => api('/api/zapret', { action: 'remove' }),
   [['status']],
@@ -76,6 +81,7 @@ const busy = computed(
     downloadAction.isLoading.value ||
     autoAction.isLoading.value ||
     poolAutoAction.isLoading.value ||
+    probeAction.isLoading.value ||
     removeAction.isLoading.value ||
     startAction.isLoading.value ||
     stopAction.isLoading.value ||
@@ -149,6 +155,21 @@ async function autoAll() {
     await autoTune()
   } else {
     notify(provider + 'Для автоподбора стратегии нужен zapret2 с blockcheck2.', 'error')
+  }
+}
+
+async function probeStrategy() {
+  try {
+    const result = await probeAction.mutateAsync()
+    probeResult.value = result
+    if (!result.running) {
+      notify(result.error || 'Служба Zapret не запущена', 'error')
+      return
+    }
+    const ok = (result.targets || []).filter((item) => item.code !== '000').length
+    notify(`Стратегия проверена: ${ok}/${(result.targets || []).length} целей отвечают`)
+  } catch {
+    /* тост показан */
   }
 }
 
@@ -234,6 +255,55 @@ async function togglePlugin(value) {
         <Badge :variant="z.engine === 'winws2' ? 'success' : 'outline'">Zapret 2 (winws2)</Badge>
         <Badge :variant="z.engine === 'winws' ? 'success' : 'outline'">Flowseal v1 (winws)</Badge>
         <span class="text-muted-foreground">другие проекты можно добавить сюда же</span>
+      </div>
+
+      <div
+        v-if="supported && bundle"
+        class="space-y-2 rounded-lg border bg-muted/30 px-3 py-3"
+      >
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div class="text-sm font-medium">Проверка стратегии</div>
+            <p class="text-xs text-muted-foreground">
+              Проверит YouTube и Discord через запущенную службу Zapret.
+              Полный перебор стратегий — blockcheck2.
+            </p>
+          </div>
+          <div class="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              :loading="probeAction.isLoading.value"
+              :disabled="busy"
+              @click="probeStrategy"
+            >
+              Проверить стратегию
+            </Button>
+            <Button
+              v-if="z.blockcheck"
+              size="sm"
+              :loading="autoRunning"
+              :disabled="busy"
+              @click="autoTune"
+            >
+              Перебрать стратегии
+            </Button>
+          </div>
+        </div>
+        <div v-if="probeResult" class="space-y-1 text-xs">
+          <div v-if="!probeResult.running" class="text-destructive">
+            {{ probeResult.error }}
+          </div>
+          <div v-else class="flex flex-wrap gap-1.5">
+            <Badge
+              v-for="item in probeResult.targets"
+              :key="item.name"
+              :variant="item.code !== '000' ? 'success' : 'destructive'"
+            >
+              {{ item.name }}: {{ item.code === '000' ? 'нет ответа' : item.code }} · {{ item.ms }} мс
+            </Badge>
+          </div>
+        </div>
       </div>
 
       <div v-if="!supported" class="rounded-lg border bg-muted/30 px-3 py-2 text-sm">

@@ -860,6 +860,47 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
             )
                 .into_response(),
         },
+        "probe" => {
+            if !crate::zapret::service_running_cached(&st) {
+                return Json(json!({
+                    "ok": false,
+                    "running": false,
+                    "error": "служба Zapret не запущена — установите и запустите её",
+                }))
+                .into_response();
+            }
+            let client = st.client("zapret-probe", None);
+            let targets = [
+                ("YouTube", "https://www.youtube.com/"),
+                ("Discord", "https://discord.com/"),
+            ];
+            let mut results = Vec::new();
+            for (name, url) in targets {
+                let started = std::time::Instant::now();
+                let response = tokio::time::timeout(
+                    Duration::from_secs(8),
+                    client.get(url).send(),
+                )
+                .await;
+                let (code, error) = match response {
+                    Ok(Ok(resp)) => (resp.status().as_u16().to_string(), None),
+                    Ok(Err(e)) => ("000".to_string(), Some(e.to_string())),
+                    Err(_) => ("000".to_string(), Some("таймаут".to_string())),
+                };
+                results.push(json!({
+                    "name": name,
+                    "code": code,
+                    "ms": started.elapsed().as_millis() as u64,
+                    "error": error,
+                }));
+            }
+            Json(json!({
+                "ok": true,
+                "running": true,
+                "targets": results,
+            }))
+            .into_response()
+        }
         "auto-tune" => match crate::zapret::autotune::start(&st) {
             Ok(()) => Json(json!({
                 "ok": true,
@@ -880,7 +921,7 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
         _ => (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "action должен быть install|remove|start|stop|set-preset|open-folder|auto-tune|refresh"
+                "error": "action должен быть install|remove|start|stop|set-preset|open-folder|auto-tune|probe|refresh"
             })),
         )
             .into_response(),
