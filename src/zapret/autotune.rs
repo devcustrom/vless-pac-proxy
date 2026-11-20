@@ -579,4 +579,33 @@ curl_test_https_tls13 ipv4 example.com : winws2 --lua-init=timer_set('x') --filt
         assert!(parse_candidates(log).is_empty());
         assert!(parse_strategy(log).is_none());
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn blockcheck_cmd_uses_plain_paths() {
+        use super::{build_cmd, BlockcheckPaths};
+        use std::path::PathBuf;
+
+        let base = std::env::temp_dir().join(format!("wpc-blockcheck-cmd-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("cygwin").join("bin")).unwrap();
+        let verbatim = PathBuf::from(format!("\\\\?\\{}", base.display()));
+        let paths = BlockcheckPaths {
+            bash: base.join("cygwin").join("bin").join("bash.exe"),
+            cygpath: base.join("cygwin").join("bin").join("cygpath.exe"),
+            script: base.join("blockcheck2.sh"),
+            winws2: base.join("winws2.exe"),
+        };
+        let cmd = build_cmd(&verbatim, &paths, "example.com", "quick", false).unwrap();
+        let text = std::fs::read_to_string(cmd).unwrap();
+        assert!(!text.contains("\\\\?\\"));
+        assert!(!text.contains("//?/"));
+        assert!(text.contains("set /p DOMAINS"));
+        assert!(text.contains(
+            &base
+                .join("blockcheck2.sh")
+                .to_string_lossy()
+                .replace('\\', "/")
+        ));
+        let _ = std::fs::remove_dir_all(base);
+    }
 }
