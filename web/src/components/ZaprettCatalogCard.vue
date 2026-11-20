@@ -420,6 +420,9 @@ function codeVariant(code) {
           входят. Если ничего не выбрано, эти переменные станут пустыми и профили стратегии будут
           применяться без фильтра по доменам/IP.
         </p>
+        <p v-if="selectedLists.includes('list-extended')" class="text-amber-600 dark:text-amber-400">
+          list-extended содержит около 675 тысяч доменов — winws может долго его разбирать.
+        </p>
       </div>
 
       <div v-if="!cat.cached" class="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-3 text-xs">

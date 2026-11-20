@@ -25,6 +25,9 @@ const selectedPresets = ref([])
 const presetOptions = computed(() =>
   (z.value.presets || []).map((item) => ({ value: item.name, label: item.label })),
 )
+const activeCatalog = computed(
+  () => (z.value.catalog?.strategies || []).find((item) => item.active) || null,
+)
 
 function selectionKey(items) {
   return [...items].sort().join('|')
@@ -294,6 +297,29 @@ async function togglePlugin(value) {
         <Badge :variant="z.engine === 'winws2' ? 'success' : 'outline'">Zapret 2 (winws2)</Badge>
         <Badge :variant="z.engine === 'winws' ? 'success' : 'outline'">Flowseal v1 (winws)</Badge>
         <span class="text-muted-foreground">другие проекты можно добавить сюда же</span>
+      </div>
+
+      <div
+        v-if="activeCatalog"
+        class="flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-xs"
+      >
+        <Badge variant="success">каталог Zaprett</Badge>
+        <span>
+          активна стратегия <b>{{ activeCatalog.name || activeCatalog.id }}</b>
+          <template v-if="activeCatalog.author"> · автор {{ activeCatalog.author }}</template>
+        </span>
+        <a
+          v-if="activeCatalog.source"
+          :href="activeCatalog.source"
+          target="_blank"
+          rel="noreferrer"
+          class="text-primary hover:underline"
+        >
+          источник
+        </a>
+        <span class="text-muted-foreground">
+          Применение пресета ниже заменит её.
+        </span>
       </div>
 
       <div
