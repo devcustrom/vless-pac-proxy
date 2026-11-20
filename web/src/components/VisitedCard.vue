@@ -218,65 +218,67 @@ async function addToVpn(domain) {
           :key="item.domain"
           class="px-3 py-2 text-sm"
         >
-          <div class="flex flex-wrap items-center gap-2">
-            <span class="min-w-0 flex-1 truncate">
-              {{ item.domain }}
+          <div class="space-y-2">
+            <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span class="min-w-0 break-all text-sm font-medium">{{ item.domain }}</span>
               <span class="text-xs text-muted-foreground">×{{ item.count }}</span>
-            </span>
-            <Badge :variant="item.route ? 'success' : 'outline'">
-              {{ routeLabel(item) }}
-            </Badge>
-            <Button
-              size="sm"
-              variant="outline"
-              :loading="!!checks[item.domain]?.busy"
-              :disabled="anyChecking || !!adding"
-              @click="runCheck(item.domain)"
-            >
-              <Check class="h-3.5 w-3.5" />
-              Проверить
-            </Button>
-            <Button
-              v-if="canGenerate"
-              size="sm"
-              variant="ghost"
-              :disabled="anyChecking || !!adding || bulk.running"
-              title="Подобрать стратегии Zapret для этого домена"
-              @click="strategyFor = item.domain"
-            >
-              <Wand2 class="h-3.5 w-3.5" />
-              стратегии
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              :loading="adding === item.domain"
-              :disabled="!!adding || bulk.running"
-              @click="addToVpn(item.domain)"
-            >
-              <Plus class="h-3.5 w-3.5" />
-              через VPN
-            </Button>
-          </div>
-          <div v-if="checkFor(item.domain)?.busy" class="mt-1 text-xs text-muted-foreground">
-            проверяю…
-          </div>
-          <div v-else-if="checkFor(item.domain)" class="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
-            <Badge :variant="codeVariant(checkFor(item.domain).direct)">
-              напрямую {{ codeText(checkFor(item.domain).direct) }}
-            </Badge>
-            <Badge :variant="codeVariant(checkFor(item.domain).vpn)">
-              VPN {{ codeText(checkFor(item.domain).vpn) }}
-            </Badge>
-            <Badge :variant="zapretVariant(checkFor(item.domain))">
-              Zapret {{ zapretText(checkFor(item.domain)) }}
-            </Badge>
-            <span class="text-muted-foreground">
-              {{ VERDICTS[checkFor(item.domain).verdict] || checkFor(item.domain).verdict }}
-            </span>
-            <span v-if="checkFor(item.domain).error" class="text-destructive">
-              {{ checkFor(item.domain).error }}
-            </span>
+              <Badge :variant="item.route ? 'success' : 'outline'">
+                {{ routeLabel(item) }}
+              </Badge>
+            </div>
+            <div class="flex flex-wrap items-center gap-1.5">
+              <Button
+                size="sm"
+                variant="outline"
+                :loading="!!checks[item.domain]?.busy"
+                :disabled="anyChecking || !!adding"
+                @click="runCheck(item.domain)"
+              >
+                <Check class="h-3.5 w-3.5" />
+                Проверить
+              </Button>
+              <Button
+                v-if="canGenerate"
+                size="sm"
+                variant="ghost"
+                :disabled="anyChecking || !!adding || bulk.running"
+                title="Подобрать стратегии Zapret для этого домена"
+                @click="strategyFor = item.domain"
+              >
+                <Wand2 class="h-3.5 w-3.5" />
+                стратегии
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                :loading="adding === item.domain"
+                :disabled="!!adding || bulk.running"
+                @click="addToVpn(item.domain)"
+              >
+                <Plus class="h-3.5 w-3.5" />
+                через VPN
+              </Button>
+            </div>
+            <div v-if="checkFor(item.domain)?.busy" class="text-xs text-muted-foreground">
+              проверяю…
+            </div>
+            <div v-else-if="checkFor(item.domain)" class="flex flex-wrap items-center gap-1.5 text-xs">
+              <Badge :variant="codeVariant(checkFor(item.domain).direct)">
+                напрямую {{ codeText(checkFor(item.domain).direct) }}
+              </Badge>
+              <Badge :variant="codeVariant(checkFor(item.domain).vpn)">
+                VPN {{ codeText(checkFor(item.domain).vpn) }}
+              </Badge>
+              <Badge :variant="zapretVariant(checkFor(item.domain))">
+                Zapret {{ zapretText(checkFor(item.domain)) }}
+              </Badge>
+              <span class="text-muted-foreground">
+                {{ VERDICTS[checkFor(item.domain).verdict] || checkFor(item.domain).verdict }}
+              </span>
+              <span v-if="checkFor(item.domain).error" class="text-destructive">
+                {{ checkFor(item.domain).error }}
+              </span>
+            </div>
           </div>
         </li>
       </ul>
