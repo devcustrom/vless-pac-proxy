@@ -18,6 +18,7 @@ const VERDICTS = {
   'vpn-helps': ['success', 'через VPN открывается — добавляйте'],
   'direct-only': ['destructive', 'через VPN хуже — не добавляйте'],
   'both-ok': ['outline', 'работает и напрямую — VPN не нужен'],
+  'zapret-helps': ['success', 'через Zapret открывается — VPN не нужен'],
   challenge: ['warning', '403 на обоих путях — анти-бот; в браузере через VPN часто работает'],
   'blocked-everywhere': ['destructive', 'не отвечает даже через VPN'],
 }
@@ -32,6 +33,18 @@ function codeVariant(code) {
 
 function codeText(code) {
   return code === '000' ? 'нет ответа' : code
+}
+
+function zapretText(item) {
+  if (!item?.zapretSupported) return 'нет'
+  if (!item?.zapretRunning) return 'выключен'
+  return codeText(item.zapret)
+}
+
+function zapretVariant(item) {
+  if (!item?.zapretSupported) return 'outline'
+  if (!item?.zapretRunning) return 'secondary'
+  return codeVariant(item.zapret)
 }
 
 async function check() {
@@ -62,7 +75,7 @@ async function addToVpn(value) {
 </script>
 
 <template>
-  <Card title="Проверка сайта" description="Сравним напрямую и через VPN, добавим в список одной кнопкой.">
+  <Card title="Проверка сайта" description="Сравним напрямую, через VPN и Zapret, добавим в список одной кнопкой.">
     <template #icon>
       <Search class="h-4 w-4 text-primary" />
     </template>
@@ -82,7 +95,12 @@ async function addToVpn(value) {
           <Badge :variant="codeVariant(result.direct)">{{ codeText(result.direct) }}</Badge>
           <span>Через VPN:</span>
           <Badge :variant="codeVariant(result.vpn)">{{ codeText(result.vpn) }}</Badge>
+          <span>Через Zapret:</span>
+          <Badge :variant="zapretVariant(result)">{{ zapretText(result) }}</Badge>
         </div>
+        <p v-if="result.zapretRunning" class="text-xs text-muted-foreground">
+          Zapret работает прозрачно: прямой запрос уже проходит через него.
+        </p>
         <div class="flex flex-wrap items-center gap-2">
           <Badge :variant="verdict(result.verdict)[0]">{{ verdict(result.verdict)[1] }}</Badge>
           <Button
@@ -109,6 +127,7 @@ async function addToVpn(value) {
             <span class="min-w-0 flex-1 truncate">{{ item.domain }}</span>
             <Badge :variant="codeVariant(item.direct)">{{ codeText(item.direct) }}</Badge>
             <Badge :variant="codeVariant(item.vpn)">{{ codeText(item.vpn) }}</Badge>
+            <Badge :variant="zapretVariant(item)">{{ zapretText(item) }}</Badge>
             <Button
               v-if="['vpn-helps', 'challenge'].includes(item.verdict) && !(s.extra || []).includes(item.domain)"
               size="sm"

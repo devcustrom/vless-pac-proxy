@@ -136,4 +136,27 @@ test('в настройках показан HWID и кнопка копиров
   await expect(page.getByText('HWID устройства')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Копировать' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Сменить HWID' })).toBeVisible()
+  await expect(page.getByText('Автопроверка новых сайтов')).toBeVisible()
+  await expect(page.getByText('Добавлять недоступные в VPN')).toBeVisible()
+})
+
+test('проверка сайта показывает результат Zapret', async ({ page }) => {
+  await page.route('**/api/check', (route) =>
+    route.fulfill({
+      json: {
+        domain: 'example.com',
+        direct: '000',
+        vpn: '200',
+        zapret: '200',
+        zapretRunning: true,
+        zapretSupported: true,
+        verdict: 'vpn-helps',
+        at: new Date().toISOString(),
+      },
+    }),
+  )
+  await page.getByPlaceholder('example.com').fill('example.com')
+  await page.getByRole('button', { name: 'Проверить', exact: true }).click()
+  await expect(page.getByText('Через Zapret:')).toBeVisible()
+  await expect(page.getByText('Zapret работает прозрачно')).toBeVisible()
 })

@@ -57,6 +57,13 @@ pub struct Settings {
     pub zapret_preset: String,
     #[serde(rename = "directFirst", default = "default_true")]
     pub direct_first: bool,
+    /// Фоновая проверка новых доменов из «Недавних сайтов».
+    #[serde(rename = "autoCheckSites", default = "default_true")]
+    pub auto_check_sites: bool,
+    /// Добавлять в VPN-список домены, которые не открываются напрямую,
+    /// но открываются через VPN.
+    #[serde(rename = "autoAddUnavailable", default = "default_true")]
+    pub auto_add_unavailable: bool,
     /// Постоянный идентификатор устройства для подписок (заголовок x-hwid).
     #[serde(rename = "hwid", default)]
     pub hwid: String,
@@ -117,6 +124,8 @@ impl Default for Settings {
             zapret_enabled: false,
             zapret_preset: default_zapret_preset(),
             direct_first: true,
+            auto_check_sites: true,
+            auto_add_unavailable: true,
             hwid: String::new(),
         }
     }
@@ -214,6 +223,8 @@ mod tests {
             zapret_enabled: false,
             zapret_preset: default_zapret_preset(),
             direct_first: true,
+            auto_check_sites: true,
+            auto_add_unavailable: true,
             hwid: "test-hwid-0123456789".to_string(),
         };
         let json = serde_json::to_string(&s).unwrap();

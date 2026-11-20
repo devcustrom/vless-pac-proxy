@@ -92,6 +92,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         crate::telegram::update::spawn_scheduler(state.clone());
         crate::lists::spawn_scheduler(state.clone());
         crate::vless::pool::spawn_scheduler(state.clone());
+        crate::site_check::spawn_scheduler(state.clone());
         spawn_health_probes(state.clone());
     }
 
@@ -1448,6 +1449,8 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         "autoRotate": settings.auto_rotate,
         "autoPoolRefreshHours": settings.auto_pool_refresh_hours,
         "directFirst": settings.direct_first,
+        "autoCheckSites": settings.auto_check_sites,
+        "autoAddUnavailable": settings.auto_add_unavailable,
         "nextPoolRefreshAt": next_pool_refresh,
         "subscriptions": subscriptions,
         "localProxy": {
@@ -1836,6 +1839,12 @@ async fn auto(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Respo
     if let Some(v) = hours {
         s.auto_pool_refresh_hours = v;
     }
+    if let Some(v) = body.get("autoCheckSites").and_then(|v| v.as_bool()) {
+        s.auto_check_sites = v;
+    }
+    if let Some(v) = body.get("autoAddUnavailable").and_then(|v| v.as_bool()) {
+        s.auto_add_unavailable = v;
+    }
     if let Err(e) = s.save(&st.dir) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1843,7 +1852,7 @@ async fn auto(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Respo
         )
             .into_response();
     }
-    Json(json!({ "ok": true, "autoRotate": s.auto_rotate, "autoPoolRefreshHours": s.auto_pool_refresh_hours, "directFirst": s.direct_first })).into_response()
+    Json(json!({ "ok": true, "autoRotate": s.auto_rotate, "autoPoolRefreshHours": s.auto_pool_refresh_hours, "directFirst": s.direct_first, "autoCheckSites": s.auto_check_sites, "autoAddUnavailable": s.auto_add_unavailable })).into_response()
 }
 
 async fn local_domains_get(State(st): State<Arc<AppState>>) -> Json<Value> {
@@ -2152,52 +2161,18 @@ async fn check(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
         )
             .into_response();
     };
-    let url = format!("https://{domain}/");
-    let direct_client = st.client("check-direct", None);
-    let direct = http_code(&direct_client, &url).await;
-
-    let settings = st.settings_snapshot();
-    let (_, vless_ok) = st.health_snapshot();
-    let port = if settings.vpn_default == "vless" && vless_ok {
-        crate::vless::XRAY_HTTP_PORT
-    } else {
-        crate::vless::WIREPROXY_HTTP_PORT
-    };
-    let vpn_client = st.client(&format!("check-vpn-{port}"), Some(port));
-    let vpn = http_code(&vpn_client, &url).await;
-
-    let ok = |c: &str| c != "000" && c != "403" && c != "451";
-    let verdict = if ok(&vpn) && !ok(&direct) {
-        "vpn-helps"
-    } else if ok(&direct) && !ok(&vpn) {
-        "direct-only"
-    } else if ok(&direct) && ok(&vpn) {
-        "both-ok"
-    } else if vpn == "000" {
-        "blocked-everywhere"
-    } else {
-        "challenge"
-    };
-    let entry = CheckEntry {
-        domain: domain.clone(),
-        direct: direct.clone(),
-        vpn: vpn.clone(),
-        verdict: verdict.to_string(),
-        at: chrono::Utc::now().to_rfc3339(),
-    };
-    if let Ok(mut checks) = st.checks.lock() {
-        checks.insert(0, entry.clone());
-        checks.truncate(25);
-    }
-    wlog!("проверка {domain}: напрямую {direct}, через VPN {vpn} -> {verdict}");
-    Json(json!({ "domain": entry.domain, "direct": entry.direct, "vpn": entry.vpn, "verdict": entry.verdict, "at": entry.at })).into_response()
-}
-
-async fn http_code(client: &reqwest::Client, url: &str) -> String {
-    match client.get(url).send().await {
-        Ok(resp) => resp.status().as_u16().to_string(),
-        Err(_) => "000".to_string(),
-    }
+    let entry = crate::site_check::check_domain(&st, &domain).await;
+    Json(json!({
+        "domain": entry.domain,
+        "direct": entry.direct,
+        "vpn": entry.vpn,
+        "zapret": entry.zapret,
+        "zapretRunning": entry.zapret_running,
+        "zapretSupported": entry.zapret_supported,
+        "verdict": entry.verdict,
+        "at": entry.at,
+    }))
+    .into_response()
 }
 
 async fn pool_refresh(State(st): State<Arc<AppState>>) -> Response {

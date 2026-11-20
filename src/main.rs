@@ -32,6 +32,7 @@ mod routing;
 mod settings;
 mod shell;
 mod single_instance;
+mod site_check;
 mod state;
 mod systemproxy;
 mod telegram;

@@ -26,6 +26,13 @@ const hwidAction = useActionMutation(
   [['status']],
 )
 const hwidLoading = computed(() => hwidAction.isLoading.value)
+const autoCheck = computed(() => props.s.autoCheckSites !== false)
+const autoAdd = computed(() => props.s.autoAddUnavailable !== false)
+const autoCheckAction = useActionMutation(
+  (payload) => api('/api/auto', payload),
+  [['status']],
+)
+const autoCheckLoading = computed(() => autoCheckAction.isLoading.value)
 const disableAction = useActionMutation(
   () => api('/api/plugins', { localDomains: false }),
   [['status']],
@@ -125,6 +132,24 @@ async function regenerateHwid() {
   try {
     await hwidAction.mutateAsync()
     notify('HWID изменён')
+  } catch {
+    /* тост показан */
+  }
+}
+
+async function toggleAutoCheckSites(value) {
+  try {
+    await autoCheckAction.mutateAsync({ autoCheckSites: value })
+    notify(value ? 'Автопроверка новых сайтов включена' : 'Автопроверка выключена')
+  } catch {
+    /* тост показан */
+  }
+}
+
+async function toggleAutoAdd(value) {
+  try {
+    await autoCheckAction.mutateAsync({ autoAddUnavailable: value })
+    notify(value ? 'Недоступные сайты будут добавляться в VPN' : 'Автодобавление выключено')
   } catch {
     /* тост показан */
   }
@@ -276,6 +301,35 @@ async function regenerateHwid() {
           <RefreshCw class="h-3.5 w-3.5" />
           Сменить HWID
         </Button>
+      </div>
+      <div class="mt-3 flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-3">
+        <div class="min-w-0">
+          <div class="text-sm font-medium">Автопроверка новых сайтов</div>
+          <p class="mt-1 text-xs text-muted-foreground">
+            Фоновая задача раз в 90 секунд проверяет новые домены из «Недавних
+            сайтов» напрямую, через VPN и Zapret.
+          </p>
+        </div>
+        <Switch
+          :model-value="autoCheck"
+          :disabled="autoCheckLoading"
+          @update:model-value="toggleAutoCheckSites"
+        />
+      </div>
+
+      <div class="mt-3 flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-3">
+        <div class="min-w-0">
+          <div class="text-sm font-medium">Добавлять недоступные в VPN</div>
+          <p class="mt-1 text-xs text-muted-foreground">
+            Если сайт не открывается напрямую, но открывается через VPN, домен
+            автоматически попадёт в VPN-список.
+          </p>
+        </div>
+        <Switch
+          :model-value="autoAdd"
+          :disabled="autoCheckLoading || !autoCheck"
+          @update:model-value="toggleAutoAdd"
+        />
       </div>
     </div>
   </Card>

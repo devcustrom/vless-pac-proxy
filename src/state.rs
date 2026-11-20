@@ -76,10 +76,14 @@ impl Visited {
 }
 
 #[derive(Clone, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CheckEntry {
     pub domain: String,
     pub direct: String,
     pub vpn: String,
+    pub zapret: String,
+    pub zapret_running: bool,
+    pub zapret_supported: bool,
     pub verdict: String,
     pub at: String,
 }
@@ -111,6 +115,8 @@ pub struct AppState {
     pub pool: Mutex<Pool>,
     pub visited: Mutex<Visited>,
     pub checks: Mutex<Vec<CheckEntry>>,
+    /// Когда домен последний раз проверялся фоновой задачей.
+    pub auto_checked: Mutex<HashMap<String, i64>>,
     pub http_clients: Mutex<HashMap<String, reqwest::Client>>,
 }
 
@@ -155,6 +161,7 @@ impl AppState {
             pool: Mutex::new(Pool::default()),
             visited: Mutex::new(Visited::default()),
             checks: Mutex::new(Vec::new()),
+            auto_checked: Mutex::new(HashMap::new()),
             http_clients: Mutex::new(HashMap::new()),
         });
         crate::vless::pool::load_pool_state(&st);
