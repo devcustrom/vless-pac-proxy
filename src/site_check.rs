@@ -62,9 +62,8 @@ pub async fn check_domain(st: &Arc<AppState>, domain: &str) -> CheckEntry {
         verdict: verdict.to_string(),
         at: chrono::Utc::now().to_rfc3339(),
     };
-    if let Ok(mut checks) = st.checks.lock() {
-        checks.insert(0, entry.clone());
-        checks.truncate(40);
+    if let Err(e) = st.store.insert_check(&entry) {
+        wlog!("история проверок: {e:#}");
     }
     wlog!("проверка {domain}: напрямую {direct}, через VPN {vpn}, Zapret {zapret} -> {verdict}");
     entry
@@ -116,29 +115,19 @@ async fn run_cycle(st: &Arc<AppState>) {
     }
     let now = chrono::Utc::now().timestamp();
     let cutoff = now - 86_400;
-    let checked = st
-        .auto_checked
-        .lock()
-        .map(|map| map.clone())
-        .unwrap_or_default();
+    let checked = st.store.checked_domains(cutoff).unwrap_or_default();
     let candidates: Vec<String> = st
-        .visited
-        .lock()
-        .map(|visited| {
-            visited
-                .items
-                .iter()
-                .filter(|(domain, _, last)| {
-                    *last >= cutoff && !checked.contains_key(domain) && valid_candidate(domain)
-                })
-                .map(|(domain, _, _)| domain.clone())
-                .take(3)
-                .collect()
-        })
-        .unwrap_or_default();
+        .store
+        .visited(cutoff, 50)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|row| !checked.contains(&row.domain) && valid_candidate(&row.domain))
+        .map(|row| row.domain)
+        .take(3)
+        .collect();
     for domain in candidates {
-        if let Ok(mut map) = st.auto_checked.lock() {
-            map.insert(domain.clone(), now);
+        if let Err(e) = st.store.mark_checked(&domain, now) {
+            wlog!("автопроверка: {e:#}");
         }
         let entry = check_domain(st, &domain).await;
         if settings.auto_add_unavailable && entry.verdict == "vpn-helps" {

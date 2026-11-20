@@ -2,7 +2,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Request, State};
+use axum::body::Bytes;
+use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{header, Method, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -138,6 +139,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/api/local-ports", get(local_ports))
         .route("/api/check", post(check))
         .route("/api/pool/refresh", post(pool_refresh))
+        .route("/api/pool/auto", post(pool_auto))
         .route("/api/pool/use", post(pool_use))
         .route("/api/subscriptions", post(subscriptions))
         .route("/api/engines/ensure", post(engines_ensure))
@@ -151,8 +153,11 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/api/docs", get(docs))
         .route("/api/update", get(update_check))
         .route("/api/update/install", post(update_install))
+        .route("/api/backup", get(backup_download))
+        .route("/api/backup/restore", post(backup_restore))
         .fallback(ui_fallback)
         .with_state(state.clone())
+        .layer(DefaultBodyLimit::max(100 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), guard));
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", panel_port)).await?;
@@ -1197,6 +1202,73 @@ async fn update_install(State(st): State<Arc<AppState>>) -> Response {
     }
 }
 
+async fn backup_download(State(st): State<Arc<AppState>>) -> Response {
+    let result = tokio::task::spawn_blocking(move || crate::backup::create(&st)).await;
+    match result {
+        Ok(Ok(bytes)) => {
+            let name = format!(
+                "wireproxy-backup-{}.zip",
+                chrono::Local::now().format("%Y%m%d-%H%M%S")
+            );
+            (
+                [
+                    (header::CONTENT_TYPE, "application/zip".to_string()),
+                    (
+                        header::CONTENT_DISPOSITION,
+                        format!("attachment; filename=\"{name}\""),
+                    ),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("{e:#}") })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn backup_restore(State(st): State<Arc<AppState>>, body: Bytes) -> Response {
+    if body.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "пустой архив" })),
+        )
+            .into_response();
+    }
+    let path = crate::backup::restore_zip_path(&st.dir);
+    if let Err(e) = std::fs::write(&path, &body) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response();
+    }
+    if let Err(e) = crate::backup::spawn_restore(&st, &path) {
+        let _ = std::fs::remove_file(&path);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("{e:#}") })),
+        )
+            .into_response();
+    }
+    let st = st.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        cleanup_for_update(&st);
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        std::process::exit(0);
+    });
+    Json(json!({ "ok": true, "restarting": true })).into_response()
+}
+
 async fn engines_ensure(State(st): State<Arc<AppState>>) -> Response {
     let st = st.clone();
     tokio::spawn(async move {
@@ -1373,7 +1445,8 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         (domains, http_err, https_err)
     };
     let sys_proxy = crate::systemproxy::get_system_proxy().unwrap_or_default();
-    let checks: Vec<CheckEntry> = st.checks.lock().map(|c| c.clone()).unwrap_or_default();
+    let checks: Vec<CheckEntry> = st.store.checks(40).unwrap_or_default();
+    let routing = st.routing_snapshot();
     let (pool_view, pool_testing, pool_updated, pool_error, next_pool_refresh) = {
         let p = st.pool.lock().unwrap();
         let view: Vec<Value> = p
@@ -1409,20 +1482,23 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         )
     };
     let (visited, visited_total) = {
-        let v = st.visited.lock().unwrap();
         let cutoff = chrono::Utc::now().timestamp() - 86_400;
-        let mut items: Vec<(String, u64, i64)> = v
-            .items
-            .iter()
-            .filter(|(_, _, last)| *last >= cutoff)
-            .cloned()
-            .collect();
-        items.sort_by_key(|(_, _, ts)| std::cmp::Reverse(*ts));
-        let total = items.len();
-        let view: Vec<Value> = items
+        let rows = st.store.visited(cutoff, 300).unwrap_or_default();
+        let total = rows.len();
+        let view: Vec<Value> = rows
             .into_iter()
-            .take(300)
-            .map(|(domain, count, last)| json!({ "domain": domain, "count": count, "last": last }))
+            .map(|row| {
+                let route = routing.route_for(&row.domain).map(|channel| match channel {
+                    crate::routing::Channel::Wireguard => "wireguard",
+                    crate::routing::Channel::Vless => "vless",
+                });
+                json!({
+                    "domain": row.domain,
+                    "count": row.count,
+                    "last": row.last,
+                    "route": route,
+                })
+            })
             .collect();
         (view, total)
     };
@@ -2190,6 +2266,22 @@ async fn pool_refresh(State(st): State<Arc<AppState>>) -> Response {
         }
     });
     (StatusCode::ACCEPTED, Json(json!({ "ok": true }))).into_response()
+}
+
+async fn pool_auto(State(st): State<Arc<AppState>>) -> Response {
+    match crate::vless::pool::auto_select_best(&st) {
+        Ok(info) => Json(json!({
+            "ok": true,
+            "info": info,
+            "provider": "pool",
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("{e:#}") })),
+        )
+            .into_response(),
+    }
 }
 
 async fn pool_use(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {

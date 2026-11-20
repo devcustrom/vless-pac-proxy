@@ -97,7 +97,7 @@ async function toggleTelegram(value) {
 async function toggleZapret(value) {
   try {
     await zapretAction.mutateAsync(value)
-    notify(value ? 'Плагин Zapret включён' : 'Плагин Zapret выключен')
+    notify(value ? 'Обход DPI включён' : 'Обход DPI выключен')
   } catch {
     /* тост показан */
   }
@@ -212,14 +212,14 @@ async function toggleAutoAdd(value) {
       >
         <div class="min-w-0">
           <div class="flex flex-wrap items-center gap-2">
-            <span class="text-sm font-medium">Zapret</span>
+            <span class="text-sm font-medium">Обход DPI (Zapret)</span>
             <Badge :variant="zapret ? 'success' : 'secondary'">
               {{ zapret ? 'включён' : 'выключен' }}
             </Badge>
           </div>
           <p class="mt-1 text-xs text-muted-foreground">
-            WinDivert и Windows-служба Zapret: general-пресеты, запуск и
-            остановка из вкладки «Zapret».
+            WinDivert и Windows-служба Zapret: методы zapret2/Flowseal,
+            автоподбор стратегии и запуск из вкладки «Обход DPI».
           </p>
         </div>
         <Switch

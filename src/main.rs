@@ -19,6 +19,7 @@ use clap::{Parser, Subcommand};
 
 mod api;
 mod autostart;
+mod backup;
 mod engines;
 mod install;
 mod lists;
@@ -34,6 +35,7 @@ mod shell;
 mod single_instance;
 mod site_check;
 mod state;
+mod store;
 mod systemproxy;
 mod telegram;
 #[cfg(any(windows, target_os = "macos"))]
@@ -95,6 +97,14 @@ enum Command {
         #[arg(long)]
         target: PathBuf,
     },
+    /// Служебный шаг восстановления бэкапа после выхода менеджера
+    #[command(hide = true)]
+    Restore {
+        #[arg(long)]
+        pid: u32,
+        #[arg(long)]
+        zip: PathBuf,
+    },
     /// Показать версию
     Version,
 }
@@ -130,6 +140,7 @@ fn main() -> anyhow::Result<()> {
         Command::ApplyUpdate { pid, target } => {
             update::apply_pending_update(pid, &target, &dir, cli.panel_port)
         }
+        Command::Restore { pid, zip } => backup::apply_restore(pid, &zip, &dir, cli.panel_port),
         Command::Version => {
             println!("wireproxy-control {}", env!("CARGO_PKG_VERSION"));
             Ok(())

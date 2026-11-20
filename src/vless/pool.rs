@@ -838,6 +838,27 @@ pub fn load_pool_state(state: &Arc<AppState>) {
     pool.active_link = file.active_link;
 }
 
+fn best_index(entries: &[PoolEntry]) -> Option<usize> {
+    entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| entry.ok)
+        .min_by_key(|(_, entry)| entry.ms.unwrap_or(u64::MAX))
+        .map(|(index, _)| index)
+}
+
+/// Индекс самого быстрого рабочего конфига (по последнему тесту).
+pub fn best_entry_index(state: &Arc<AppState>) -> Option<usize> {
+    let pool = state.pool.lock().ok()?;
+    best_index(&pool.entries)
+}
+
+/// Применяет лучший рабочий конфиг из уже проверенного пула.
+pub fn auto_select_best(state: &Arc<AppState>) -> Result<link::LinkInfo> {
+    let index = best_entry_index(state).context("в пуле нет проверенных рабочих конфигов")?;
+    apply_entry(state, index)
+}
+
 pub fn apply_entry(state: &Arc<AppState>, index: usize) -> Result<link::LinkInfo> {
     let (entry, _link) = {
         let pool = state.pool.lock().unwrap();
@@ -1061,6 +1082,28 @@ mod tests {
             vec!["b".into(), "c".into()],
         ]);
         assert_eq!(out, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn chooses_fastest_working_entry() {
+        let entry = |ok, ms| PoolEntry {
+            link: "vless://x".into(),
+            name: "x".into(),
+            protocol: "vless".into(),
+            address: "example.com".into(),
+            port: 443,
+            ok,
+            ms,
+            ip: None,
+        };
+        let entries = vec![
+            entry(true, Some(300)),
+            entry(false, Some(10)),
+            entry(true, Some(80)),
+            entry(true, None),
+        ];
+        assert_eq!(best_index(&entries), Some(2));
+        assert_eq!(best_index(&[]), None);
     }
 
     #[test]

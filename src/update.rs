@@ -261,7 +261,7 @@ fn shell_safe(value: &str) -> bool {
 
 /// Запускает процесс отдельно, без shell-конкатенации пользовательских строк.
 #[cfg(windows)]
-fn run_detached(exe: &Path, args: &[std::ffi::OsString]) -> Result<()> {
+pub(crate) fn run_detached(exe: &Path, args: &[std::ffi::OsString]) -> Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::System::Threading::{
@@ -329,7 +329,7 @@ fn run_detached(exe: &Path, args: &[std::ffi::OsString]) -> Result<()> {
 }
 
 #[cfg(not(windows))]
-fn run_detached(exe: &Path, args: &[std::ffi::OsString]) -> Result<()> {
+pub(crate) fn run_detached(exe: &Path, args: &[std::ffi::OsString]) -> Result<()> {
     let mut cmd = std::process::Command::new("/usr/bin/env");
     cmd.arg(exe)
         .args(args)
@@ -404,7 +404,7 @@ fn pid_alive(_pid: u32) -> bool {
     false
 }
 
-fn wait_for_exit(pid: u32) -> Result<()> {
+pub(crate) fn wait_for_exit(pid: u32) -> Result<()> {
     for _ in 0..600 {
         if !pid_alive(pid) {
             std::thread::sleep(Duration::from_millis(500));
@@ -415,7 +415,7 @@ fn wait_for_exit(pid: u32) -> Result<()> {
     bail!("менеджер не завершился за 2 минуты")
 }
 
-fn start_target(target: &Path, data_dir: &Path, panel_port: u16) -> Result<()> {
+pub(crate) fn start_target(target: &Path, data_dir: &Path, panel_port: u16) -> Result<()> {
     let args = vec![
         std::ffi::OsString::from("--hidden"),
         std::ffi::OsString::from("--data-dir"),

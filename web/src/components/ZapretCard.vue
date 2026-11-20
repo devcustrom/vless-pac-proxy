@@ -45,6 +45,10 @@ const autoAction = useActionMutation(
   () => api('/api/zapret', { action: 'auto-tune' }),
   [['status']],
 )
+const poolAutoAction = useActionMutation(
+  () => api('/api/pool/auto', {}),
+  [['status']],
+)
 const removeAction = useActionMutation(
   () => api('/api/zapret', { action: 'remove' }),
   [['status']],
@@ -71,6 +75,7 @@ const busy = computed(
     installAction.isLoading.value ||
     downloadAction.isLoading.value ||
     autoAction.isLoading.value ||
+    poolAutoAction.isLoading.value ||
     removeAction.isLoading.value ||
     startAction.isLoading.value ||
     stopAction.isLoading.value ||
@@ -78,6 +83,7 @@ const busy = computed(
 )
 const auto = computed(() => z.value.autoTune || {})
 const autoRunning = computed(() => !!auto.value.running || !!autoAction.isLoading.value)
+const autoAllRunning = computed(() => poolAutoAction.isLoading.value || autoAction.isLoading.value)
 const openBusy = computed(() => openAction.isLoading.value)
 const downloading = computed(() => downloadAction.isLoading.value)
 const bundleInfo = computed(() => z.value.bundle || {})
@@ -130,6 +136,22 @@ async function autoTune() {
   }
 }
 
+async function autoAll() {
+  let provider = ''
+  try {
+    const result = await poolAutoAction.mutateAsync()
+    provider = result?.info?.name ? `Провайдер: ${result.info.name}. ` : ''
+  } catch {
+    provider = 'Провайдер: нет проверенных конфигов. '
+  }
+  if (z.value.blockcheck) {
+    notify(provider + 'Запускаю подбор стратегии DPI — подтвердите UAC.')
+    await autoTune()
+  } else {
+    notify(provider + 'Для автоподбора стратегии нужен zapret2 с blockcheck2.', 'error')
+  }
+}
+
 async function remove() {
   if (!confirm('Удалить службу Zapret? Бандл и списки останутся.')) return
   try {
@@ -178,8 +200,8 @@ async function togglePlugin(value) {
 
 <template>
   <Card
-    title="Zapret"
-    description="Обход DPI через WinDivert: zapret2/Flowseal, автоматический подбор стратегии. Только Windows."
+    title="Обход DPI"
+    description="Zapret (zapret2 и Flowseal v1) как методы обхода DPI. Сюда же можно добавлять другие проекты."
   >
     <template #icon>
       <ShieldAlert class="h-4 w-4 text-primary" />
@@ -205,6 +227,13 @@ async function togglePlugin(value) {
         <Badge v-if="bundleInfo.variant" variant="outline">
           {{ bundleLabel }}<template v-if="bundleInfo.version"> · {{ bundleInfo.version }}</template>
         </Badge>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-2 text-xs">
+        <span class="text-muted-foreground">Методы обхода DPI:</span>
+        <Badge :variant="z.engine === 'winws2' ? 'success' : 'outline'">Zapret 2 (winws2)</Badge>
+        <Badge :variant="z.engine === 'winws' ? 'success' : 'outline'">Flowseal v1 (winws)</Badge>
+        <span class="text-muted-foreground">другие проекты можно добавить сюда же</span>
       </div>
 
       <div v-if="!supported" class="rounded-lg border bg-muted/30 px-3 py-2 text-sm">
@@ -276,18 +305,30 @@ async function togglePlugin(value) {
           <div>
             <div class="text-sm font-medium">Автоматический подбор</div>
             <p class="text-xs text-muted-foreground">
-              Запустит blockcheck2, проверит стратегии на YouTube и Discord и
-              сама установит рабочую. Стратегии вручную добавлять не нужно.
+              Выберет самый быстрый рабочий конфиг из пула, затем запустит
+              blockcheck2 и установит рабочую стратегию DPI. Стратегии вручную
+              добавлять не нужно.
             </p>
           </div>
-          <Button
-            size="sm"
-            :loading="autoRunning"
-            :disabled="busy"
-            @click="autoTune"
-          >
-            Подобрать стратегию автоматически
-          </Button>
+          <div class="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              :loading="autoAllRunning"
+              :disabled="busy"
+              @click="autoAll"
+            >
+              Подобрать провайдера и стратегию
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              :loading="autoRunning"
+              :disabled="busy"
+              @click="autoTune"
+            >
+              Только стратегию
+            </Button>
+          </div>
           <p v-if="auto.phase" class="text-xs text-muted-foreground">
             Этап: {{ auto.phase }}
             <span v-if="auto.error" class="text-destructive"> · {{ auto.error }}</span>

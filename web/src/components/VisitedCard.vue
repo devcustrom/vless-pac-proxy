@@ -5,6 +5,7 @@ import { api, notify, post, refresh } from '@/lib/store'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
+import Input from '@/components/ui/Input.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
 
@@ -13,6 +14,16 @@ const page = ref(1)
 const adding = ref('')
 const checks = reactive({})
 const bulk = reactive({ running: false, done: 0, total: 0 })
+const filter = ref('all')
+const query = ref('')
+
+const FILTERS = [
+  { value: 'all', label: 'Все' },
+  { value: 'vpn', label: 'Через VPN' },
+  { value: 'direct', label: 'Напрямую' },
+  { value: 'needs', label: 'Нужен VPN' },
+  { value: 'unchecked', label: 'Без проверки' },
+]
 
 const VERDICTS = {
   'vpn-helps': 'нужен VPN',
@@ -27,12 +38,6 @@ const items = computed(() => {
   const cutoff = Math.floor(Date.now() / 1000) - 86_400
   return (props.s.visited || []).filter((item) => item.last >= cutoff)
 })
-const total = computed(() => props.s.visitedTotal ?? items.value.length)
-const pageCount = computed(() => Math.max(1, Math.ceil(items.value.length / PAGE_SIZE)))
-const visible = computed(() => {
-  const start = (page.value - 1) * PAGE_SIZE
-  return items.value.slice(start, start + PAGE_SIZE)
-})
 
 const latestChecks = computed(() => {
   const map = {}
@@ -42,13 +47,41 @@ const latestChecks = computed(() => {
   return map
 })
 
+const filtered = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  return items.value.filter((item) => {
+    if (q && !item.domain.toLowerCase().includes(q)) return false
+    const check = latestChecks.value[item.domain]
+    if (filter.value === 'vpn') return !!item.route
+    if (filter.value === 'direct') return !item.route
+    if (filter.value === 'needs') return check?.verdict === 'vpn-helps'
+    if (filter.value === 'unchecked') return !check
+    return true
+  })
+})
+
+const total = computed(() => filtered.value.length)
+const pageCount = computed(() => Math.max(1, Math.ceil(filtered.value.length / PAGE_SIZE)))
+const visible = computed(() => {
+  const start = (page.value - 1) * PAGE_SIZE
+  return filtered.value.slice(start, start + PAGE_SIZE)
+})
+
 const anyChecking = computed(
   () => bulk.running || Object.values(checks).some((item) => item?.busy),
 )
 
+watch([pageCount, filter, query], () => {
+  page.value = 1
+})
 watch(pageCount, (count) => {
   if (page.value > count) page.value = count
 })
+
+function routeLabel(item) {
+  if (!item.route) return 'напрямую'
+  return item.route === 'vless' ? 'VPN · VLESS' : 'VPN · WireGuard'
+}
 
 function checkFor(domain) {
   return checks[domain] || latestChecks.value[domain] || null
@@ -149,6 +182,26 @@ async function addToVpn(domain) {
         </span>
       </div>
 
+      <div class="flex flex-wrap items-center gap-2">
+        <Input
+          v-model="query"
+          placeholder="Фильтр по домену…"
+          class="h-8 w-full sm:w-56"
+          autocomplete="off"
+        />
+        <div class="flex flex-wrap gap-1">
+          <Button
+            v-for="item in FILTERS"
+            :key="item.value"
+            size="sm"
+            :variant="filter === item.value ? 'secondary' : 'ghost'"
+            @click="filter = item.value"
+          >
+            {{ item.label }}
+          </Button>
+        </div>
+      </div>
+
       <ul v-if="visible.length" class="divide-y rounded-lg border">
         <li
           v-for="item in visible"
@@ -160,6 +213,9 @@ async function addToVpn(domain) {
               {{ item.domain }}
               <span class="text-xs text-muted-foreground">×{{ item.count }}</span>
             </span>
+            <Badge :variant="item.route ? 'success' : 'outline'">
+              {{ routeLabel(item) }}
+            </Badge>
             <Button
               size="sm"
               variant="outline"
@@ -208,7 +264,7 @@ async function addToVpn(domain) {
       </p>
 
       <div
-        v-if="items.length > PAGE_SIZE"
+        v-if="filtered.length > PAGE_SIZE"
         class="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground"
       >
         <span>

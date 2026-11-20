@@ -13,6 +13,11 @@ tgws-proxy.bak
 
 # Генерируется менеджером автоматически
 proxy.pac
+wireproxy.db
+wireproxy.db-wal
+wireproxy.db-shm
+restore-upload.zip
+.backup-wireproxy.db
 xray-pool-*.json
 certs/
 hosts-entries.txt

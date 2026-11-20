@@ -1,6 +1,6 @@
 [package]
 name = "wireproxy-control"
-version = "0.5.7"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.88"
 description = "Умный прокси-стек: WireGuard (wireproxy) + VLESS/SS (xray) с панелью, треем и локальными доменами"
@@ -35,6 +35,7 @@ hex = "0.4"
 rand = "0.8"
 fs2 = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 flate2 = "1"
 tar = "0.4"
 dirs = "5"

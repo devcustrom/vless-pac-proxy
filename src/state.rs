@@ -55,26 +55,6 @@ pub struct DownloadInfo {
     pub error: Option<String>,
 }
 
-#[derive(Default)]
-pub struct Visited {
-    pub items: Vec<(String, u64, i64)>, // domain, count, last_ts
-}
-
-impl Visited {
-    pub fn note(&mut self, host: &str) {
-        let now = chrono::Utc::now().timestamp();
-        if let Some(pos) = self.items.iter().position(|(d, _, _)| d == host) {
-            let (d, c, _) = self.items.remove(pos);
-            self.items.push((d, c + 1, now));
-            return;
-        }
-        self.items.push((host.to_string(), 1, now));
-        if self.items.len() > 300 {
-            self.items.remove(0);
-        }
-    }
-}
-
 #[derive(Clone, Default, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckEntry {
@@ -113,10 +93,7 @@ pub struct AppState {
     pub health: Mutex<Health>,
     pub lists: Mutex<Lists>,
     pub pool: Mutex<Pool>,
-    pub visited: Mutex<Visited>,
-    pub checks: Mutex<Vec<CheckEntry>>,
-    /// Когда домен последний раз проверялся фоновой задачей.
-    pub auto_checked: Mutex<HashMap<String, i64>>,
+    pub store: crate::store::Store,
     pub http_clients: Mutex<HashMap<String, reqwest::Client>>,
 }
 
@@ -137,6 +114,13 @@ impl AppState {
             .and_then(|p| std::fs::read_to_string(p).ok())
             .map(|t| crate::net::local_proxy::parse_config(&t))
             .unwrap_or_default();
+        let store = match crate::store::Store::open(&dir) {
+            Ok(store) => store,
+            Err(e) => {
+                crate::wlog!("SQLite недоступен ({e:#}); история только в памяти");
+                crate::store::Store::memory()
+            }
+        };
         let st = std::sync::Arc::new(Self {
             dir,
             panel_port,
@@ -159,9 +143,7 @@ impl AppState {
             health: Mutex::new(Health::default()),
             lists: Mutex::new(Lists::default()),
             pool: Mutex::new(Pool::default()),
-            visited: Mutex::new(Visited::default()),
-            checks: Mutex::new(Vec::new()),
-            auto_checked: Mutex::new(HashMap::new()),
+            store,
             http_clients: Mutex::new(HashMap::new()),
         });
         crate::vless::pool::load_pool_state(&st);

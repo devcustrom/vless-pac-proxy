@@ -21,14 +21,16 @@ import CheckCard from '@/components/CheckCard.vue'
 import VisitedCard from '@/components/VisitedCard.vue'
 import UpdateCard from '@/components/UpdateCard.vue'
 import SettingsCard from '@/components/SettingsCard.vue'
+import BackupCard from '@/components/BackupCard.vue'
 import DocsDialog from '@/components/DocsDialog.vue'
 import Toast from '@/components/Toast.vue'
 
 const ALL_TABS = {
   overview: { value: 'overview', label: 'Обзор' },
   configs: { value: 'configs', label: 'Конфиги' },
+  sites: { value: 'sites', label: 'Сайты' },
   telegram: { value: 'telegram', label: 'Telegram' },
-  zapret: { value: 'zapret', label: 'Zapret' },
+  dpi: { value: 'dpi', label: 'Обход DPI' },
   domains: { value: 'domains', label: 'Домены' },
   settings: { value: 'settings', label: 'Настройки' },
 }
@@ -62,9 +64,9 @@ watch(
 const tabs = computed(() => {
   const data = s.value
   const plugins = data?.plugins || {}
-  const items = [ALL_TABS.overview, ALL_TABS.configs]
+  const items = [ALL_TABS.overview, ALL_TABS.configs, ALL_TABS.sites]
   if (plugins.telegram) items.push(ALL_TABS.telegram)
-  if (plugins.zapret && data?.zapret?.supported) items.push(ALL_TABS.zapret)
+  if (plugins.zapret && data?.zapret?.supported) items.push(ALL_TABS.dpi)
   if (plugins.localDomains) items.push(ALL_TABS.domains)
   items.push(ALL_TABS.settings)
   return items
@@ -221,6 +223,13 @@ watch(s, () => syncTabFromHash())
             </div>
             <div class="space-y-4">
               <UpdateCard />
+            </div>
+          </div>
+        </template>
+
+        <template v-else-if="tab === 'sites'">
+          <div class="grid items-start gap-4 lg:grid-cols-2">
+            <div class="space-y-4">
               <VisitedCard :s="s" />
             </div>
           </div>
@@ -246,7 +255,7 @@ watch(s, () => syncTabFromHash())
           </div>
         </template>
 
-        <template v-else-if="tab === 'zapret'">
+        <template v-else-if="tab === 'dpi'">
           <div class="grid items-start gap-4 lg:grid-cols-2">
             <div class="space-y-4">
               <ZapretCard :s="s" />
@@ -269,6 +278,7 @@ watch(s, () => syncTabFromHash())
             </div>
             <div class="space-y-4">
               <UpdateCard />
+              <BackupCard />
             </div>
           </div>
         </template>

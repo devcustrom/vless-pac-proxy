@@ -19,7 +19,7 @@ test.beforeEach(async ({ page }) => {
   })
   await page.request.post(`${PANEL}/api/auto`, {
     headers,
-    data: { directFirst: true },
+    data: { directFirst: true, autoCheckSites: true, autoAddUnavailable: true },
   })
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'wireproxy-control' })).toBeVisible()
@@ -28,9 +28,10 @@ test.beforeEach(async ({ page }) => {
 test('вкладки показываются только для включённых плагинов', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Обзор' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Конфиги' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Сайты' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Домены' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Telegram' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Zapret' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Обход DPI' })).toHaveCount(0)
 })
 
 test('polling обновляет переключатель без перезагрузки', async ({ page }) => {
@@ -114,6 +115,14 @@ test('документация открывается и переключает 
   await expect(page.getByRole('heading', { name: 'Документация' })).toHaveCount(0)
 })
 
+test('вкладка сайтов показывает фильтры и проверку списка', async ({ page }) => {
+  await page.getByRole('button', { name: 'Сайты' }).click()
+  await expect(page.getByText('Недавние сайты')).toBeVisible()
+  await expect(page.getByText('Через VPN')).toBeVisible()
+  await expect(page.getByText('Без проверки')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Проверить все' })).toBeVisible()
+})
+
 test('доступное обновление показывает кнопку установки', async ({ page }) => {
   await page.route('**/api/update', (route) =>
     route.fulfill({
@@ -138,6 +147,8 @@ test('в настройках показан HWID и кнопка копиров
   await expect(page.getByRole('button', { name: 'Сменить HWID' })).toBeVisible()
   await expect(page.getByText('Автопроверка новых сайтов')).toBeVisible()
   await expect(page.getByText('Добавлять недоступные в VPN')).toBeVisible()
+  await expect(page.getByText('Резервная копия')).toBeVisible()
+  await expect(page.getByText('Скачать бэкап')).toBeVisible()
 })
 
 test('проверка сайта показывает результат Zapret', async ({ page }) => {

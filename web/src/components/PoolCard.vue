@@ -30,6 +30,10 @@ const refreshAction = useActionMutation(
   () => api('/api/pool/refresh', {}),
   [['status']],
 )
+const bestAction = useActionMutation(
+  () => api('/api/pool/auto', {}),
+  [['status']],
+)
 const importAction = useActionMutation(
   (groups) => api('/api/subscriptions', { action: 'import-igareck', groups }),
   [['status']],
@@ -47,6 +51,7 @@ const autoAction = useActionMutation(
   [['status']],
 )
 const refreshLoading = computed(() => refreshAction.isLoading.value)
+const bestLoading = computed(() => bestAction.isLoading.value)
 const importLoading = computed(() => importAction.isLoading.value)
 const useLoading = computed(() => useAction.isLoading.value)
 const subBusy = ref('')
@@ -94,6 +99,15 @@ async function refreshPool() {
   try {
     await refreshAction.mutateAsync()
     notify('Проверка конфигов запущена')
+  } catch {
+    /* тост уже показан */
+  }
+}
+
+async function selectBest() {
+  try {
+    const result = await bestAction.mutateAsync()
+    notify('Выбран провайдер: ' + (result?.info?.name || 'лучший из пула'))
   } catch {
     /* тост уже показан */
   }
@@ -226,6 +240,16 @@ async function toggleRotate(value) {
         >
           <RefreshCw class="h-3.5 w-3.5" />
           {{ s.poolTesting ? 'Проверяю…' : 'Проверить конфиги' }}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          :disabled="s.poolTesting || bestLoading"
+          :loading="bestLoading"
+          @click="selectBest"
+        >
+          <Zap class="h-3.5 w-3.5" />
+          Лучший автоматически
         </Button>
         <span class="text-xs text-muted-foreground">
           <template v-if="s.poolUpdatedAt">

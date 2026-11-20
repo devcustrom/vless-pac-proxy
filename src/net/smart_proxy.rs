@@ -167,8 +167,8 @@ async fn tunnel(
 
     let routing = state.routing_snapshot();
     let route = effective_route(&state, &routing, &host, port).await;
-    if route.is_none() {
-        state.visited.lock().unwrap().note(&host);
+    if let Err(e) = state.store.note_visit(&host) {
+        wlog!("история сайтов: {e:#}");
     }
     let route_label = route
         .map(|c| match c {
@@ -210,8 +210,8 @@ async fn forward_http(
 
     let routing = state.routing_snapshot();
     let route = effective_route(&state, &routing, &host, port).await;
-    if route.is_none() {
-        state.visited.lock().unwrap().note(&host);
+    if let Err(e) = state.store.note_visit(&host) {
+        wlog!("история сайтов: {e:#}");
     }
     let route_label = route
         .map(|c| match c {
