@@ -367,6 +367,26 @@ test('каталог Zaprett показывает источник и умеет
     ],
     ipsets: [],
     bins: [],
+    test: {
+      running: false,
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      done: 1,
+      total: 1,
+      current: '',
+      error: null,
+      results: [
+        {
+          id: 'strategy-default',
+          name: 'strategy-default',
+          kind: 'nfqws',
+          author: 'zaprett-devs',
+          reachable: ['example.com'],
+          codes: [{ domain: 'example.com', code: '200', ms: 120 }],
+          error: null,
+        },
+      ],
+    },
   }
   await page.route('**/api/status', async (route) => {
     const response = await route.fetch()
@@ -380,6 +400,7 @@ test('каталог Zaprett показывает источник и умеет
   await expect(page.getByRole('link', { name: source })).toBeVisible()
   await expect(page.getByText('Стандартная стратегия')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Проверить скачанные' })).toBeVisible()
+  await expect(page.getByText('1 / 1')).toBeVisible()
 
   let downloaded = null
   let applied = null
@@ -424,7 +445,7 @@ test('каталог Zaprett показывает источник и умеет
 
   await page.getByRole('button', { name: /^Стратегии/ }).click()
   page.once('dialog', (dialog) => dialog.accept())
-  await page.getByRole('button', { name: 'Применить', exact: true }).click()
+  await page.getByRole('button', { name: 'Применить', exact: true }).last().click()
   await expect.poll(() => applied).not.toBeNull()
   expect(applied.id).toBe('strategy-default')
 

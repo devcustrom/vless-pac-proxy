@@ -899,7 +899,7 @@ pub fn prepare(state: &AppState, id: &str) -> Result<PreparedStrategy> {
     full.append(&mut args);
     let bin = match item.kind.as_str() {
         "nfqws" => crate::zapret::preset::engine_path_v1(data_dir)?,
-        "nfqws2" => crate::zapret::preset::engine_path(data_dir)?,
+        "nfqws2" => crate::zapret::preset::engine_path_v2(data_dir)?,
         _ => unreachable!(),
     };
     Ok(PreparedStrategy {
@@ -1090,37 +1090,21 @@ pub fn reset_test(state: &AppState, force: bool) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn probe_domain(domain: &str, timeout_secs: u64) -> CatalogTestCode {
+fn probe_domain(
+    runtime: &tokio::runtime::Runtime,
+    client: &reqwest::Client,
+    domain: &str,
+    timeout_secs: u64,
+) -> CatalogTestCode {
     let started = std::time::Instant::now();
-    let timeout = timeout_secs.clamp(2, 15).to_string();
+    let timeout = Duration::from_secs(timeout_secs.clamp(2, 15));
     let url = format!("https://{domain}/");
-    let output = Command::new("curl.exe")
-        .args([
-            "-sS",
-            "-o",
-            "NUL",
-            "-w",
-            "%{http_code}",
-            "--max-time",
-            &timeout,
-            "--noproxy",
-            "*",
-            &url,
-        ])
-        .creation_flags(0x08000000)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output();
-    let mut code = match output {
-        Ok(output) if output.status.success() => {
-            String::from_utf8_lossy(&output.stdout).trim().to_string()
+    let code = runtime.block_on(async {
+        match tokio::time::timeout(timeout, client.get(&url).send()).await {
+            Ok(Ok(response)) => response.status().as_u16().to_string(),
+            _ => "000".to_string(),
         }
-        _ => "000".to_string(),
-    };
-    if code.is_empty() || code.len() > 3 || !code.bytes().all(|b| b.is_ascii_digit()) {
-        code = "000".to_string();
-    }
+    });
     CatalogTestCode {
         domain: domain.to_string(),
         code,
@@ -1168,8 +1152,21 @@ pub fn run_test_helper(data_dir: &Path) -> Result<()> {
                 let _ = save_test_results(data_dir, &results);
                 return Err(e);
             }
-            std::thread::sleep(Duration::from_millis(1200));
+            std::thread::sleep(Duration::from_millis(1500));
         }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("не удалось создать runtime проверки")?;
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(20))
+            .user_agent(format!(
+                "wireproxy-control/{} catalog-test",
+                env!("CARGO_PKG_VERSION")
+            ))
+            .build()
+            .context("не удалось создать HTTP-клиент проверки")?;
         let outcome = (|| -> Result<()> {
             for (index, strategy) in payload.strategies.iter().enumerate() {
                 if strategy.args.is_empty()
@@ -1196,7 +1193,7 @@ pub fn run_test_helper(data_dir: &Path) -> Result<()> {
                 save_test_results(data_dir, &results)?;
                 let bin = match strategy.kind.as_str() {
                     "nfqws" => crate::zapret::preset::engine_path_v1(data_dir),
-                    "nfqws2" => crate::zapret::preset::engine_path(data_dir),
+                    "nfqws2" => crate::zapret::preset::engine_path_v2(data_dir),
                     _ => {
                         bail!("неизвестный движок стратегии");
                     }
@@ -1223,7 +1220,12 @@ pub fn run_test_helper(data_dir: &Path) -> Result<()> {
                             Ok(mut child) => {
                                 std::thread::sleep(Duration::from_millis(1800));
                                 for domain in &payload.domains {
-                                    let code = probe_domain(domain, payload.timeout_secs);
+                                    let code = probe_domain(
+                                        &runtime,
+                                        &client,
+                                        domain,
+                                        payload.timeout_secs,
+                                    );
                                     if code.code != "000" {
                                         result.reachable.push(domain.clone());
                                     }
@@ -1274,7 +1276,7 @@ pub fn status_json(state: &AppState) -> Value {
         }
     }
     let engine_v1 = crate::zapret::preset::engine_path_v1(data_dir).is_ok();
-    let engine_v2 = crate::zapret::preset::engine_path(data_dir).is_ok();
+    let engine_v2 = crate::zapret::preset::engine_path_v2(data_dir).is_ok();
     let mut strategies = Vec::new();
     let mut lists = Vec::new();
     let mut ipsets = Vec::new();

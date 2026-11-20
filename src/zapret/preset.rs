@@ -77,6 +77,14 @@ pub fn engine_path_v1(data_dir: &Path) -> Result<PathBuf> {
     bail!("не найден winws.exe (zapret v1) в папке zapret")
 }
 
+/// Движок zapret2 (winws2) строго из V2-бандла.
+pub fn engine_path_v2(data_dir: &Path) -> Result<PathBuf> {
+    if bundle_kind(data_dir) != Some(BundleKind::V2) {
+        bail!("не найден winws2.exe (zapret2) в папке zapret");
+    }
+    engine_path(data_dir)
+}
+
 pub fn engine_dir(data_dir: &Path) -> Result<PathBuf> {
     engine_path(data_dir)?
         .parent()
