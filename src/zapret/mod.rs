@@ -45,11 +45,22 @@ pub fn status_json(state: &AppState) -> Value {
     let settings = state.settings_snapshot();
     let bundle = preset::bundle_dir(&state.dir);
     let installed = preset::is_bundle_installed(&state.dir);
-    let presets: Vec<Value> = preset::list_presets(&state.dir)
-        .into_iter()
+    let available = preset::list_presets(&state.dir);
+    let presets: Vec<Value> = available
+        .iter()
         .map(|item| json!({ "name": item.name, "label": item.label }))
         .collect();
     let selected = selected_preset(state);
+    let selected_presets: Vec<String> = if settings.zapret_presets.is_empty() {
+        vec![selected.clone()]
+    } else {
+        settings
+            .zapret_presets
+            .iter()
+            .filter(|name| available.iter().any(|item| &item.name == *name))
+            .cloned()
+            .collect()
+    };
     let service = service::query(&state.dir);
     let installed_bundle = bundle::installed_info(&state.dir);
     let auto = state
@@ -77,6 +88,7 @@ pub fn status_json(state: &AppState) -> Value {
         "blockcheck": preset::blockcheck_paths(&state.dir).is_some(),
         "presets": presets,
         "preset": selected,
+        "selectedPresets": selected_presets,
         "service": service,
         "autoTune": auto,
         "error": error,

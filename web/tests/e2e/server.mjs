@@ -45,6 +45,22 @@ const settings = {
 writeFileSync(path.join(dataDir, 'settings.json'), JSON.stringify(settings, null, 2))
 writeFileSync(path.join(dataDir, 'local-domains.txt'), `app.localhost = ${BACKEND_PORT}\n`)
 
+// Фиктивный бандл Zapret для проверки выбора нескольких стратегий в UI.
+// Служба не устанавливается, а запрос на установку тест перехватывает.
+const zapretDir = path.join(dataDir, 'zapret')
+mkdirSync(path.join(zapretDir, 'bin'), { recursive: true })
+for (const name of ['bin/winws.exe', 'bin/WinDivert.dll', 'bin/WinDivert64.sys']) {
+  writeFileSync(path.join(zapretDir, name), '')
+}
+writeFileSync(
+  path.join(zapretDir, 'general.bat'),
+  '@echo off\r\nstart "" "%~dp0bin\\winws.exe" --wf-tcp=80,443 --filter-tcp=443 --dpi-desync=fake --new\r\n',
+)
+writeFileSync(
+  path.join(zapretDir, 'general-alt.bat'),
+  '@echo off\r\nstart "" "%~dp0bin\\winws.exe" --wf-udp=443 --filter-udp=443 --dpi-desync=fake --new\r\n',
+)
+
 const backend = createServer((_req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' })
   res.end('e2e local domain ok')

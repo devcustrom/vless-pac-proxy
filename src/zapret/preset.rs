@@ -254,6 +254,78 @@ pub fn parse_preset(data_dir: &Path, name: &str) -> Result<Vec<String>> {
     extract_args(&text, &dir, marker).context("в пресете не найдена команда winws.exe/winws2.exe")
 }
 
+fn add_global(globals: &mut Vec<String>, arg: String) {
+    if let Some((name, value)) = arg.split_once('=') {
+        if matches!(
+            name,
+            "--wf-tcp" | "--wf-udp" | "--wf-tcp-out" | "--wf-udp-out"
+        ) {
+            let prefix = format!("{name}=");
+            if let Some(existing) = globals.iter_mut().find(|item| item.starts_with(&prefix)) {
+                let mut values: Vec<String> = existing[prefix.len()..]
+                    .split(',')
+                    .filter(|item| !item.is_empty())
+                    .map(ToString::to_string)
+                    .collect();
+                for item in value.split(',').filter(|item| !item.is_empty()) {
+                    if !values.iter().any(|have| have == item) {
+                        values.push(item.to_string());
+                    }
+                }
+                *existing = format!("{prefix}{}", values.join(","));
+                return;
+            }
+        }
+    }
+    if !globals.iter().any(|item| item == &arg) {
+        globals.push(arg);
+    }
+}
+
+/// Объединяет несколько пресетов в одну команду winws: общие аргументы
+/// (--wf-*, --lua-init, --blob и т.п.) дублируются один раз, наборы
+/// профилей соединяются через --new.
+pub fn merge_args(groups: Vec<Vec<String>>) -> Result<Vec<String>> {
+    let mut globals = Vec::new();
+    let mut profiles = Vec::new();
+    for args in groups {
+        let split = args
+            .iter()
+            .position(|arg| arg.starts_with("--filter-"))
+            .context("в пресете нет --filter-* стратегий")?;
+        let (head, mut tail) = args.split_at(split);
+        for arg in head {
+            add_global(&mut globals, arg.clone());
+        }
+        while tail.last().map(|arg| arg == "--new").unwrap_or(false) {
+            tail = &tail[..tail.len() - 1];
+        }
+        if tail.is_empty() {
+            bail!("в пресете нет стратегий");
+        }
+        if !profiles.is_empty() {
+            profiles.push("--new".to_string());
+        }
+        profiles.extend(tail.iter().cloned());
+    }
+    if globals.is_empty() || profiles.is_empty() {
+        bail!("не удалось собрать общую стратегию");
+    }
+    globals.extend(profiles);
+    Ok(globals)
+}
+
+pub fn parse_presets(data_dir: &Path, names: &[String]) -> Result<Vec<String>> {
+    if names.is_empty() {
+        bail!("не выбран ни один пресет");
+    }
+    let mut groups = Vec::new();
+    for name in names {
+        groups.push(parse_preset(data_dir, name)?);
+    }
+    merge_args(groups)
+}
+
 pub fn blockcheck_paths(data_dir: &Path) -> Option<BlockcheckPaths> {
     if bundle_kind(data_dir) != Some(BundleKind::V2) {
         return None;
@@ -334,5 +406,32 @@ start "zapret: test" /min "%BIN%winws.exe" --wf-tcp=80,443,%GameFilterTCP% ^
         assert!(!valid_preset_name(&dir, "../general.bat"));
         assert!(!valid_preset_name(&dir, "service.bat"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn merges_multiple_presets() {
+        let first = vec![
+            "--wf-tcp=80,443".to_string(),
+            "--lua-init=a".to_string(),
+            "--filter-tcp=443".to_string(),
+            "--dpi-desync=fake".to_string(),
+            "--new".to_string(),
+        ];
+        let second = vec![
+            "--wf-tcp=443,8443".to_string(),
+            "--lua-init=a".to_string(),
+            "--filter-udp=443".to_string(),
+            "--dpi-desync=fake".to_string(),
+        ];
+        let args = merge_args(vec![first, second]).unwrap();
+        assert_eq!(
+            args.iter()
+                .filter(|arg| *arg == "--wf-tcp=80,443,8443")
+                .count(),
+            1
+        );
+        assert_eq!(args.iter().filter(|arg| *arg == "--lua-init=a").count(), 1);
+        assert_eq!(args.last().map(String::as_str), Some("--dpi-desync=fake"));
+        assert_eq!(args.iter().filter(|arg| *arg == "--new").count(), 1);
     }
 }

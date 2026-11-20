@@ -171,3 +171,34 @@ test('проверка сайта показывает результат Zapret
   await expect(page.getByText('Через Zapret:')).toBeVisible()
   await expect(page.getByText('Zapret работает прозрачно')).toBeVisible()
 })
+
+test('несколько стратегий Zapret выбираются и уходят одним набором', async ({ page }) => {
+  test.skip(process.platform !== 'win32', 'Zapret доступен только на Windows')
+
+  const headers = { 'X-WPC': '1' }
+  await page.request.post(`${PANEL}/api/plugins`, { headers, data: { zapret: true } })
+  await page.reload()
+  await page.getByRole('button', { name: 'Обход DPI', exact: true }).click()
+  await expect(page.getByText('Стратегии Zapret')).toBeVisible()
+
+  const first = page.getByRole('checkbox', { name: 'general', exact: true })
+  const second = page.getByRole('checkbox', { name: 'general-alt', exact: true })
+  await expect(first).toBeChecked()
+  await expect(second).not.toBeChecked()
+  await second.check()
+
+  let payload = null
+  await page.route('**/api/zapret', async (route) => {
+    if (route.request().method() === 'POST') {
+      payload = route.request().postDataJSON()
+      await route.fulfill({ json: { ok: true } })
+      return
+    }
+    await route.continue()
+  })
+  await page.getByRole('button', { name: /Установить службу|Применить пресет/ }).click()
+  await expect.poll(() => payload).not.toBeNull()
+  expect(payload.action).toBe('install')
+  expect(payload.presets).toEqual(['general.bat', 'general-alt.bat'])
+  await page.request.post(`${PANEL}/api/plugins`, { headers, data: { zapret: false } })
+})

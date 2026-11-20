@@ -724,28 +724,61 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
             }
         }
         "install" => {
-            let preset = body
-                .get("preset")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let preset = if preset.is_empty() {
-                crate::zapret::selected_preset(&st)
-            } else {
-                preset.to_string()
-            };
             let available = crate::zapret::preset::list_presets(&st.dir);
-            if !crate::zapret::preset::valid_preset_name(&st.dir, &preset)
-                || !available.iter().any(|item| item.name == preset)
-            {
+            let mut names: Vec<String> = body
+                .get("presets")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .map(ToString::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut seen = std::collections::HashSet::new();
+            names.retain(|name| seen.insert(name.clone()));
+            if names.is_empty() {
+                let preset = body
+                    .get("preset")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                names.push(if preset.is_empty() {
+                    crate::zapret::selected_preset(&st)
+                } else {
+                    preset.to_string()
+                });
+            }
+            if names.iter().any(|name| {
+                !crate::zapret::preset::valid_preset_name(&st.dir, name)
+                    || !available.iter().any(|item| &item.name == name)
+            }) {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({ "error": "некорректный или неизвестный пресет Zapret" })),
                 )
                     .into_response();
             }
+            let merged = if names.len() > 1 {
+                match crate::zapret::preset::parse_presets(&st.dir, &names) {
+                    Ok(args) => Some(args),
+                    Err(e) => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({ "error": format!("{e:#}") })),
+                        )
+                            .into_response()
+                    }
+                }
+            } else {
+                None
+            };
             {
                 let mut settings = st.settings.lock().unwrap();
-                settings.zapret_preset = preset.clone();
+                settings.zapret_preset = names[0].clone();
+                settings.zapret_presets = names.clone();
                 if let Err(e) = settings.save(&st.dir) {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -754,7 +787,12 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
                         .into_response();
                 }
             }
-            match crate::zapret::install(&st, &preset) {
+            let result = match merged {
+                Some(args) => crate::zapret::preset::ensure_user_lists(&st.dir)
+                    .and_then(|_| crate::zapret::service::install_args(&st.dir, args)),
+                None => crate::zapret::install(&st, &names[0]),
+            };
+            match result {
                 Ok(()) => {
                     tokio::time::sleep(Duration::from_millis(500)).await;
                     Json(json!({

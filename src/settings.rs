@@ -55,6 +55,8 @@ pub struct Settings {
     pub zapret_enabled: bool,
     #[serde(rename = "zapretPreset", default = "default_zapret_preset")]
     pub zapret_preset: String,
+    #[serde(rename = "zapretPresets", default)]
+    pub zapret_presets: Vec<String>,
     #[serde(rename = "directFirst", default = "default_true")]
     pub direct_first: bool,
     /// Фоновая проверка новых доменов из «Недавних сайтов».
@@ -123,6 +125,7 @@ impl Default for Settings {
             telegram_auto_update: true,
             zapret_enabled: false,
             zapret_preset: default_zapret_preset(),
+            zapret_presets: Vec::new(),
             direct_first: true,
             auto_check_sites: true,
             auto_add_unavailable: true,
@@ -222,6 +225,7 @@ mod tests {
             telegram_auto_update: true,
             zapret_enabled: false,
             zapret_preset: default_zapret_preset(),
+            zapret_presets: Vec::new(),
             direct_first: true,
             auto_check_sites: true,
             auto_add_unavailable: true,

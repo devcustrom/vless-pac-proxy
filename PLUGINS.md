@@ -48,10 +48,12 @@ Lua, blockcheck2) или Flowseal v1 (`bin/winws.exe`, `general*.bat`). Банд
 скачивается кнопкой в панели (URL и sha256 закреплены) либо кладётся вручную.
 Читает `preset2*.cmd`/`general*.bat` и извлекает аргументы движка (сами `.bat`
 не исполняются). Служба `wireproxy-zapret` создаётся через UAC, после чего
-запуск/остановка доступны из панели без UAC. Для zapret2 доступен
-автоподбор стратегии через blockcheck2 с автоматической установкой
-результата. API: `GET /api/zapret`, `POST /api/zapret` (`download`, `install`,
-`remove`, `start`, `stop`, `set-preset`, `auto-tune`, `open-folder`).
+запуск/остановка доступны из панели без UAC. Можно выбрать сразу несколько
+пресетов: они объединяются в одну службу с профилями через `--new`, а общие
+`--wf-*`/`--lua-init` дедуплицируются. Для zapret2 доступен автоподбор стратегии
+через blockcheck2 с автоматической установкой результата. API:
+`GET /api/zapret`, `POST /api/zapret` (`download`, `install` с массивом
+`presets`, `remove`, `start`, `stop`, `probe`, `auto-tune`, `open-folder`).
 Подробнее — [ZAPRET.md](ZAPRET.md).
 
 ## Telegram-прокси

@@ -6,7 +6,6 @@ import { useActionMutation } from '@/lib/queries'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
-import Select from '@/components/ui/Select.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
 
@@ -19,22 +18,51 @@ const running = computed(() => !!service.value.running)
 const installed = computed(() => !!service.value.installed)
 const form = reactive({ preset: 'general.bat' })
 const saved = ref('')
+const savedPresets = ref([])
 const dirty = ref(false)
+const selectedPresets = ref([])
 
 const presetOptions = computed(() =>
   (z.value.presets || []).map((item) => ({ value: item.name, label: item.label })),
 )
 
+function selectionKey(items) {
+  return [...items].sort().join('|')
+}
+
+const savedKey = computed(() =>
+  selectionKey(
+    savedPresets.value.length ? savedPresets.value : saved.value ? [saved.value] : [],
+  ),
+)
+const selectedKey = computed(() => selectionKey(selectedPresets.value))
+
+function togglePreset(name) {
+  const index = selectedPresets.value.indexOf(name)
+  if (index >= 0) {
+    selectedPresets.value.splice(index, 1)
+  } else {
+    selectedPresets.value.push(name)
+  }
+  form.preset = selectedPresets.value[0] || form.preset
+  dirty.value = true
+}
+
 function syncForm() {
   const current = z.value.preset || 'general.bat'
   saved.value = current
-  if (!dirty.value) form.preset = current
+  const selected = z.value.selectedPresets || []
+  savedPresets.value = selected.length ? [...selected] : [current]
+  if (!dirty.value) {
+    form.preset = current
+    selectedPresets.value = savedPresets.value.length ? [...savedPresets.value] : [current]
+  }
 }
 
 watch(z, syncForm, { immediate: true, deep: true })
 
 const installAction = useActionMutation(
-  () => api('/api/zapret', { action: 'install', preset: form.preset }),
+  (presets) => api('/api/zapret', { action: 'install', presets }),
   [['status']],
 )
 const downloadAction = useActionMutation(
@@ -100,10 +128,21 @@ const bundleLabel = computed(() => {
 })
 
 async function install() {
+  const presets = selectedPresets.value.length
+    ? selectedPresets.value
+    : [form.preset].filter(Boolean)
+  if (!presets.length) {
+    notify('Выберите хотя бы один пресет', 'error')
+    return
+  }
   try {
-    await installAction.mutateAsync()
+    await installAction.mutateAsync(presets)
     dirty.value = false
-    notify('Установщик службы Zapret запущен — подтвердите UAC')
+    notify(
+      presets.length > 1
+        ? `Установщик службы с ${presets.length} стратегиями запущен — подтвердите UAC`
+        : 'Установщик службы Zapret запущен — подтвердите UAC',
+    )
   } catch {
     /* тост показан */
   }
@@ -412,17 +451,41 @@ async function togglePlugin(value) {
           </p>
         </div>
 
-        <div class="space-y-1">
-          <div class="text-sm font-medium">Или выбрать пресет вручную</div>
-          <Select
-            v-model="form.preset"
-            :options="presetOptions"
-            :disabled="busy || !presetOptions.length"
-            @update:model-value="dirty = true"
-          />
+        <div class="space-y-2">
+          <div class="text-sm font-medium">Стратегии Zapret</div>
           <p class="text-xs text-muted-foreground">
-            Выбранный пресет применяется к службе. При смене пресета нажмите
-            «Установить / применить».
+            Можно выбрать несколько пресетов сразу: они объединяются в одну
+            службу Zapret с отдельными профилями под разные сайты и протоколы.
+            Если профили пересекаются, применяется первый подходящий.
+          </p>
+          <div
+            v-if="presetOptions.length"
+            class="max-h-56 space-y-1 overflow-auto rounded-lg border bg-background/60 p-2"
+          >
+            <label
+              v-for="item in presetOptions"
+              :key="item.value"
+              class="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/60"
+              :class="{ 'bg-primary/5': selectedPresets.includes(item.value) }"
+            >
+              <input
+                type="checkbox"
+                class="mt-0.5 h-4 w-4 shrink-0 accent-primary"
+                :value="item.value"
+                :checked="selectedPresets.includes(item.value)"
+                :disabled="busy"
+                @change="togglePreset(item.value)"
+              />
+              <span class="min-w-0 break-all">{{ item.label }}</span>
+            </label>
+          </div>
+          <p v-else class="text-xs text-muted-foreground">
+            В бандле не найдено ни одного пресета — переустановите бандл.
+          </p>
+          <p class="text-xs text-muted-foreground">
+            Выбрано: {{ selectedPresets.length || 0 }}. После изменения нажмите
+            «{{ installed ? 'Применить пресет' : 'Установить службу' }}».
+            Telegram-плагин работает через собственный sidecar и Zapret не использует.
           </p>
         </div>
 
@@ -469,8 +532,9 @@ async function togglePlugin(value) {
           </Button>
         </div>
 
-        <p v-if="dirty && form.preset !== saved" class="text-xs text-amber-600 dark:text-amber-400">
-          Пресет изменён, но служба ещё работает со старым — нажмите «Применить пресет».
+        <p v-if="dirty && selectedKey !== savedKey" class="text-xs text-amber-600 dark:text-amber-400">
+          Набор стратегий изменён, но служба ещё работает со старым — нажмите
+          «{{ installed ? 'Применить пресет' : 'Установить службу' }}».
         </p>
       </div>
 
