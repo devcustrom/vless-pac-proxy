@@ -193,6 +193,11 @@ fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool, hidden: bool) -> an
         let _guard = rt.enter();
         state::AppState::new(dir, panel_port, !hidden)
     };
+    if autostart::installed() {
+        if let Err(e) = autostart::ensure_current(&st.dir) {
+            wlog!("автозапуск: не удалось обновить путь — {e:#}");
+        }
+    }
 
     #[cfg(any(windows, target_os = "macos"))]
     {

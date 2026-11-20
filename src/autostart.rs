@@ -18,6 +18,13 @@ pub fn installed() -> bool {
     imp::installed()
 }
 
+/// Если автозапуск включён, он должен указывать на текущий бинарник.
+/// Иначе после переезда/обновления из другого места при загрузке остаётся
+/// старая копия приложения.
+pub fn ensure_current(dir: &Path) -> Result<()> {
+    imp::ensure_current(dir)
+}
+
 #[cfg(windows)]
 mod imp {
     use anyhow::Result;
@@ -60,6 +67,23 @@ mod imp {
         hkcu.open_subkey_with_flags(RUN_KEY, KEY_READ)
             .and_then(|key| key.get_value::<String, _>(VALUE))
             .is_ok()
+    }
+
+    pub fn ensure_current(dir: &Path) -> Result<()> {
+        let exe = std::env::current_exe()?;
+        let expected = format!(
+            "\"{}\" --hidden --data-dir \"{}\"",
+            exe.display(),
+            dir.display()
+        );
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let key = hkcu.open_subkey_with_flags(RUN_KEY, KEY_READ)?;
+        match key.get_value::<String, _>(VALUE) {
+            Ok(value) if value == expected => Ok(()),
+            Ok(_) => install(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 }
 
@@ -142,5 +166,18 @@ mod imp {
 
     pub fn installed() -> bool {
         plist_path().map(|p| p.is_file()).unwrap_or(false)
+    }
+
+    pub fn ensure_current(dir: &Path) -> Result<()> {
+        let path = plist_path()?;
+        if !path.is_file() {
+            return Ok(());
+        }
+        let exe = xml_escape(&std::env::current_exe()?.to_string_lossy());
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        if text.contains(&exe) {
+            return Ok(());
+        }
+        install(dir)
     }
 }
