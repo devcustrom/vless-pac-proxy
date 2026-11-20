@@ -326,6 +326,95 @@ pub fn parse_presets(data_dir: &Path, names: &[String]) -> Result<Vec<String>> {
     merge_args(groups)
 }
 
+fn generated_slug(domain: &str) -> String {
+    let mut slug: String = domain
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if slug.len() > 80 {
+        // FNV-1a: короткий стабильный суффикс, чтобы длинные домены не
+        // создавали слишком длинные имена файлов.
+        let mut hash: u32 = 0x811c_9dc5;
+        for byte in domain.as_bytes() {
+            hash ^= u32::from(*byte);
+            hash = hash.wrapping_mul(0x0100_0193);
+        }
+        slug.truncate(64);
+        slug.push('_');
+        slug.push_str(&format!("{hash:08x}"));
+    }
+    slug
+}
+
+fn quote_arg(arg: &str) -> Result<String> {
+    if arg.contains(['\r', '\n', '"']) {
+        bail!("в сгенерированной стратегии недопустимые символы");
+    }
+    if arg.chars().any(char::is_whitespace) {
+        Ok(format!("\"{arg}\""))
+    } else {
+        Ok(arg.to_string())
+    }
+}
+
+/// Сохраняет стратегию blockcheck2 как обычный пресет zapret2, чтобы её
+/// можно было выбрать вручную или объединить с другими пресетами.
+pub fn write_generated_preset(data_dir: &Path, domain: &str, args: &[String]) -> Result<String> {
+    if bundle_kind(data_dir) != Some(BundleKind::V2) {
+        bail!("генерация стратегий доступна только для zapret2");
+    }
+    let domain =
+        crate::lists::validate_hostname(domain).context("некорректный домен для стратегии")?;
+    if domain == "localhost" || domain.ends_with(".localhost") || domain.ends_with(".local") {
+        bail!("для локального домена стратегия не нужна");
+    }
+    if args.is_empty() {
+        bail!("пустая стратегия");
+    }
+    if args.iter().any(|arg| {
+        !arg.starts_with("--")
+            || arg.contains('\r')
+            || arg.contains('\n')
+            || arg.contains("exit_guard")
+            || arg.contains("timer_set")
+    }) {
+        bail!("в сгенерированной стратегии недопустимые аргументы");
+    }
+    if !args.iter().any(|arg| arg.starts_with("--filter-")) {
+        bail!("в сгенерированной стратегии нет фильтров");
+    }
+    let dir = preset_dir(data_dir)?;
+    let name = format!("preset2_gen_{}.cmd", generated_slug(&domain));
+    let mut content =
+        String::from("@echo off\r\nstart \"zapret2: generated\" /min \"%~dp0winws2.exe\" ^\r\n");
+    if !args.iter().any(|arg| arg == "--wf-tcp-empty=1") {
+        content.push_str("--wf-tcp-empty=1 ^\r\n");
+    }
+    content.push_str("--lua-init=@\"%~dp0lua\\zapret-lib.lua\" ^\r\n");
+    content.push_str("--lua-init=@\"%~dp0lua\\zapret-antidpi.lua\" ^\r\n");
+    for arg in args {
+        content.push_str(&quote_arg(arg)?);
+        content.push(' ');
+    }
+    content.push_str("\r\n");
+    let path = dir.join(&name);
+    let tmp = path.with_extension("cmd.tmp");
+    std::fs::write(&tmp, content)
+        .with_context(|| format!("не удалось записать {}", tmp.display()))?;
+    if path.exists() {
+        let _ = std::fs::remove_file(&path);
+    }
+    std::fs::rename(&tmp, &path)
+        .with_context(|| format!("не удалось сохранить {}", path.display()))?;
+    Ok(name)
+}
+
 pub fn blockcheck_paths(data_dir: &Path) -> Option<BlockcheckPaths> {
     if bundle_kind(data_dir) != Some(BundleKind::V2) {
         return None;
@@ -433,5 +522,46 @@ start "zapret: test" /min "%BIN%winws.exe" --wf-tcp=80,443,%GameFilterTCP% ^
         assert_eq!(args.iter().filter(|arg| *arg == "--lua-init=a").count(), 1);
         assert_eq!(args.last().map(String::as_str), Some("--dpi-desync=fake"));
         assert_eq!(args.iter().filter(|arg| *arg == "--new").count(), 1);
+    }
+
+    #[test]
+    fn writes_generated_preset_for_zapret2() {
+        let dir = temp();
+        let engine = dir.join("zapret").join("zapret-winws");
+        std::fs::create_dir_all(engine.join("lua")).unwrap();
+        std::fs::write(engine.join("winws2.exe"), "").unwrap();
+        std::fs::write(engine.join("lua").join("zapret-lib.lua"), "").unwrap();
+        std::fs::write(engine.join("lua").join("zapret-antidpi.lua"), "").unwrap();
+        let args = vec![
+            "--wf-tcp=443".to_string(),
+            "--filter-tcp=443".to_string(),
+            "--lua-desync=fake:tcp_md5".to_string(),
+        ];
+        let name = write_generated_preset(&dir, "Example.COM", &args).unwrap();
+        assert_eq!(name, "preset2_gen_example.com.cmd");
+        let parsed = parse_preset(&dir, &name).unwrap();
+        assert!(parsed.iter().any(|arg| arg == "--wf-tcp-empty=1"));
+        assert!(parsed.iter().any(|arg| arg.ends_with("zapret-antidpi.lua")));
+        assert!(parsed.iter().any(|arg| arg == "--filter-tcp=443"));
+        assert!(!parsed.iter().any(|arg| arg.contains("%~dp0")));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rejects_unsafe_generated_args() {
+        let dir = temp();
+        let engine = dir.join("zapret").join("zapret-winws");
+        std::fs::create_dir_all(&engine).unwrap();
+        std::fs::write(engine.join("winws2.exe"), "").unwrap();
+        let base = ["--filter-tcp=443".to_string()];
+        assert!(write_generated_preset(&dir, "example.com", &[]).is_err());
+        let mut bad = base.to_vec();
+        bad.push("calc.exe".to_string());
+        assert!(write_generated_preset(&dir, "example.com", &bad).is_err());
+        let mut timer = base.to_vec();
+        timer.push("--lua-init=timer_set('x')".to_string());
+        assert!(write_generated_preset(&dir, "example.com", &timer).is_err());
+        assert!(write_generated_preset(&dir, "app.localhost", &base).is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

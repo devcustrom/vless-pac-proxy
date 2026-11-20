@@ -1,3 +1,6 @@
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { test, expect } from '@playwright/test'
 
 const PANEL = 'http://127.0.0.1:28180'
@@ -200,5 +203,113 @@ test('несколько стратегий Zapret выбираются и ух�
   await expect.poll(() => payload).not.toBeNull()
   expect(payload.action).toBe('install')
   expect(payload.presets).toEqual(['general.bat', 'general-alt.bat'])
+  await page.request.post(`${PANEL}/api/plugins`, { headers, data: { zapret: false } })
+})
+
+test('из проверки сайта можно сгенерировать и сохранить стратегии', async ({ page }) => {
+  test.skip(process.platform !== 'win32', 'Zapret доступен только на Windows')
+
+  const zapret = path.join(tmpdir(), 'wpc-e2e-data', 'zapret')
+  const engine = path.join(zapret, 'zapret-winws')
+  mkdirSync(engine, { recursive: true })
+  for (const name of ['winws2.exe', 'WinDivert.dll', 'WinDivert64.sys']) {
+    writeFileSync(path.join(engine, name), '')
+  }
+  mkdirSync(path.join(zapret, 'cygwin', 'bin'), { recursive: true })
+  writeFileSync(path.join(zapret, 'cygwin', 'bin', 'bash.exe'), '')
+  writeFileSync(path.join(zapret, 'cygwin', 'bin', 'cygpath.exe'), '')
+  mkdirSync(path.join(zapret, 'blockcheck', 'zapret2'), { recursive: true })
+  writeFileSync(path.join(zapret, 'blockcheck', 'zapret2', 'blockcheck2.sh'), '')
+
+  const headers = { 'X-WPC': '1' }
+  await page.request.post(`${PANEL}/api/plugins`, { headers, data: { zapret: true } })
+
+  let autoState = null
+  await page.route('**/api/status', async (route) => {
+    const response = await route.fetch()
+    const data = await response.json()
+    if (autoState) data.zapret.autoTune = autoState
+    await route.fulfill({ response, json: data })
+  })
+  await page.reload()
+
+  await page.route('**/api/check', (route) =>
+    route.fulfill({
+      json: {
+        domain: 'example.com',
+        direct: '000',
+        vpn: '200',
+        zapret: 'n/a',
+        zapretRunning: false,
+        zapretSupported: true,
+        verdict: 'vpn-helps',
+        at: new Date().toISOString(),
+      },
+    }),
+  )
+
+  let generated = null
+  let saved = null
+  let applied = null
+  await page.route('**/api/zapret', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue()
+      return
+    }
+    const body = route.request().postDataJSON()
+    if (body.action === 'generate-strategies') {
+      generated = body
+      await route.fulfill({ json: { ok: true } })
+      return
+    }
+    if (body.action === 'save-strategy') {
+      saved = body
+      await route.fulfill({ json: { ok: true, preset: 'preset2_gen_example.com.cmd' } })
+      return
+    }
+    if (body.action === 'apply-strategy') {
+      applied = body
+      await route.fulfill({ json: { ok: true } })
+      return
+    }
+    await route.continue()
+  })
+
+  await page.getByPlaceholder('example.com').fill('example.com')
+  await page.getByRole('button', { name: 'Проверить', exact: true }).click()
+  await page.getByRole('button', { name: 'Подобрать стратегии Zapret' }).click()
+
+  await expect(page.getByRole('heading', { name: 'Стратегии для example.com' })).toBeVisible()
+  await expect.poll(() => generated).not.toBeNull()
+  expect(generated.domain).toBe('example.com')
+  expect(generated.scan).toBe('quick')
+
+  autoState = {
+    running: false,
+    phase: 'done',
+    log: 'blockcheck summary',
+    error: null,
+    strategy: null,
+    domain: 'example.com',
+    candidates: [
+      {
+        index: 0,
+        label: 'curl_test_https_tls13 ipv4 example.com',
+        strategy: '--wf-tcp-out=443 --filter-tcp=443 --lua-desync=fake',
+      },
+    ],
+    preset: null,
+  }
+  await expect(page.getByText('Найдено стратегий: 1')).toBeVisible({ timeout: 12_000 })
+
+  await page.getByRole('button', { name: 'В пресеты' }).click()
+  await expect.poll(() => saved).not.toBeNull()
+  expect(saved.index).toBe(0)
+
+  await page.getByRole('button', { name: 'Применить', exact: true }).click()
+  await expect.poll(() => applied).not.toBeNull()
+  expect(applied.index).toBe(0)
+
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
   await page.request.post(`${PANEL}/api/plugins`, { headers, data: { zapret: false } })
 })

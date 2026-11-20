@@ -1,11 +1,12 @@
 <script setup>
-import { ref } from 'vue'
-import { Plus, Search } from 'lucide-vue-next'
+import { computed, ref } from 'vue'
+import { Plus, Search, Wand2 } from 'lucide-vue-next'
 import { api, notify, post, refresh } from '@/lib/store'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
 import Input from '@/components/ui/Input.vue'
+import StrategyDialog from '@/components/StrategyDialog.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
 
@@ -13,6 +14,15 @@ const domain = ref('')
 const result = ref(null)
 const busy = ref(false)
 const adding = ref('')
+const strategyFor = ref('')
+const z = computed(() => props.s.zapret || {})
+const canGenerate = computed(
+  () =>
+    !!props.s.plugins?.zapret &&
+    !!z.value.supported &&
+    !!z.value.bundleInstalled &&
+    !!z.value.blockcheck,
+)
 
 const VERDICTS = {
   'vpn-helps': ['success', 'через VPN открывается — добавляйте'],
@@ -113,6 +123,15 @@ async function addToVpn(value) {
             <Plus class="h-3.5 w-3.5" />
             Добавить в VPN-список
           </Button>
+          <Button
+            v-if="canGenerate && ['000', '403', '451'].includes(result.direct)"
+            size="sm"
+            variant="outline"
+            @click="strategyFor = result.domain"
+          >
+            <Wand2 class="h-3.5 w-3.5" />
+            Подобрать стратегии Zapret
+          </Button>
         </div>
       </div>
 
@@ -142,5 +161,12 @@ async function addToVpn(value) {
         </ul>
       </div>
     </div>
+
+    <StrategyDialog
+      :open="!!strategyFor"
+      :domain="strategyFor"
+      :s="s"
+      @close="strategyFor = ''"
+    />
   </Card>
 </template>

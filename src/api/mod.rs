@@ -955,11 +955,89 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
                     .into_response()
             }
         },
+        "generate-strategies" => {
+            let domain = body.get("domain").and_then(Value::as_str).unwrap_or("");
+            let scan = body.get("scan").and_then(Value::as_str).unwrap_or("quick");
+            match crate::zapret::autotune::start_for_domain(&st, domain, scan) {
+                Ok(()) => Json(json!({
+                    "ok": true,
+                    "message": "генерация стратегий запущена (подтвердите UAC)",
+                    "status": crate::zapret::status_json(&st),
+                }))
+                .into_response(),
+                Err(e) => {
+                    crate::zapret::record_error(&st, &e);
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": format!("{e:#}") })),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        "apply-strategy" => {
+            let Some(index) = body
+                .get("index")
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+            else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "нужен index стратегии" })),
+                )
+                    .into_response();
+            };
+            match crate::zapret::autotune::apply_candidate(&st, index) {
+                Ok(()) => Json(json!({
+                    "ok": true,
+                    "message": "установщик стратегии запущен (подтвердите UAC)",
+                    "status": crate::zapret::status_json(&st),
+                }))
+                .into_response(),
+                Err(e) => {
+                    crate::zapret::record_error(&st, &e);
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": format!("{e:#}") })),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        "save-strategy" => {
+            let Some(index) = body
+                .get("index")
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+            else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "нужен index стратегии" })),
+                )
+                    .into_response();
+            };
+            match crate::zapret::autotune::save_candidate(&st, index) {
+                Ok(preset) => Json(json!({
+                    "ok": true,
+                    "preset": preset,
+                    "status": crate::zapret::status_json(&st),
+                }))
+                .into_response(),
+                Err(e) => {
+                    crate::zapret::record_error(&st, &e);
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": format!("{e:#}") })),
+                    )
+                        .into_response()
+                }
+            }
+        }
         "refresh" => Json(crate::zapret::status_json(&st)).into_response(),
         _ => (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "action должен быть install|remove|start|stop|set-preset|open-folder|auto-tune|probe|refresh"
+                "error": "action должен быть install|remove|start|stop|set-preset|open-folder|auto-tune|generate-strategies|apply-strategy|save-strategy|probe|refresh"
             })),
         )
             .into_response(),

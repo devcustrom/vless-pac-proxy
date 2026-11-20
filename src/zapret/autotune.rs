@@ -1,33 +1,65 @@
+use std::collections::HashSet;
 use std::path::Path;
 #[cfg(windows)]
 use std::path::PathBuf;
-#[cfg(windows)]
-use std::process::Command;
 use std::sync::Arc;
 #[cfg(windows)]
 use std::time::Duration;
 
-#[cfg(windows)]
-use anyhow::Context;
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::state::AppState;
 #[cfg(windows)]
 use crate::wlog;
 
+use super::preset;
 #[cfg(windows)]
-use super::preset::{self, BlockcheckPaths};
+use super::preset::BlockcheckPaths;
 #[cfg(windows)]
 use super::service;
-use super::AutoTuneState;
+use super::{AutoTuneState, StrategyCandidate};
 
 const LOG_FILE: &str = "zapret-blockcheck.log";
 const DONE_FILE: &str = "zapret-blockcheck.done";
 const CMD_FILE: &str = "zapret-blockcheck.cmd";
+const DOMAINS_FILE: &str = "zapret-blockcheck.domains";
+const SCAN_FILE: &str = "zapret-blockcheck.scan";
+const DEFAULT_DOMAINS: &str = "www.youtube.com discord.com";
+const MAX_CANDIDATES: usize = 40;
 
 fn set_state(state: &AppState, f: impl FnOnce(&mut AutoTuneState)) {
     if let Ok(mut guard) = state.zapret_auto.lock() {
         f(&mut guard);
+    }
+}
+
+fn fail(state: &AppState, message: impl Into<String>) {
+    let message = message.into();
+    set_state(state, |s| {
+        s.running = false;
+        s.phase = "error".to_string();
+        s.error = Some(message);
+        s.finished_at = Some(chrono::Utc::now().to_rfc3339());
+    });
+    #[cfg(windows)]
+    restore_service(state);
+}
+
+#[cfg(windows)]
+fn restore_service(state: &AppState) {
+    let paused = state
+        .zapret_auto
+        .lock()
+        .map(|s| s.service_paused)
+        .unwrap_or(false);
+    if !paused {
+        return;
+    }
+    if service::query(&state.dir).running {
+        return;
+    }
+    if let Err(e) = service::start() {
+        wlog!("zapret: не удалось вернуть службу после blockcheck — {e:#}");
     }
 }
 
@@ -37,23 +69,44 @@ fn tail(path: &Path) -> String {
     lines[lines.len().saturating_sub(18)..].join("\n")
 }
 
-#[cfg(windows)]
-fn cygpath(exe: &Path, path: &Path) -> Result<String> {
-    let output = Command::new(exe)
-        .args(["-C", "OEM", "-a", "-u"])
-        .arg(path)
-        .output()
-        .context("не удалось запустить cygpath")?;
-    if !output.status.success() {
-        bail!("cygpath: {}", String::from_utf8_lossy(&output.stderr));
+fn normalize_scan(value: &str) -> &'static str {
+    match value {
+        "veryquick" => "veryquick",
+        "quick" => "quick",
+        "force" => "force",
+        _ => "standard",
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Cygwin понимает пути Windows с прямыми слэшами; отдельный cygpath.exe
+/// не нужен, поэтому внешняя команда с путём из данных не запускается.
+fn posix_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 #[cfg(windows)]
-fn build_cmd(data_dir: &Path, paths: &BlockcheckPaths) -> Result<PathBuf> {
-    let script = cygpath(&paths.cygpath, &paths.script)?;
-    let log = cygpath(&paths.cygpath, &data_dir.join(LOG_FILE))?;
+fn build_cmd(
+    data_dir: &Path,
+    paths: &BlockcheckPaths,
+    domains: &str,
+    scan: &str,
+    restart_service: bool,
+) -> Result<PathBuf> {
+    if domains.is_empty()
+        || domains
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || c == ' ' || c == '.' || c == '-'))
+    {
+        bail!("некорректный список доменов для blockcheck");
+    }
+    // Домен и уровень сканирования передаём файлами: в текст .cmd они не
+    // попадают, поэтому даже специальные символы не станут командой.
+    let domains_path = data_dir.join(DOMAINS_FILE);
+    let scan_path = data_dir.join(SCAN_FILE);
+    std::fs::write(&domains_path, format!("{domains}\n"))?;
+    std::fs::write(&scan_path, format!("{}\n", normalize_scan(scan)))?;
+    let script = posix_path(&paths.script);
+    let log = posix_path(&data_dir.join(LOG_FILE));
     let cygwin_bin = paths.bash.parent().context("нет каталога cygwin")?;
     let done = data_dir.join(DONE_FILE);
     let log_win = data_dir.join(LOG_FILE);
@@ -64,14 +117,21 @@ fn build_cmd(data_dir: &Path, paths: &BlockcheckPaths) -> Result<PathBuf> {
          set \"BATCH=1\"\r\n\
          set \"CURL_CMD=1\"\r\n\
          set \"SKIP_DNSCHECK=1\"\r\n\
-         set \"SCANLEVEL=standard\"\r\n\
+         set /p SCANLEVEL=<\"{}\"\r\n\
          set \"IPV=4\"\r\n\
-         set \"DOMAINS=www.youtube.com discord.com\"\r\n\
+         set /p DOMAINS=<\"{}\"\r\n\
+         set \"WPC_RESTART={}\"\r\n\
+         sc stop wireproxy-zapret >nul 2>&1\r\n\
+         ping 127.0.0.1 -n 3 >nul\r\n\
          del \"{}\" 2>nul\r\n\
          del \"{}\" 2>nul\r\n\
          \"{}\" -l -c \"'{}' 2>&1 | tee '{}'\"\r\n\
+         if \"%WPC_RESTART%\"==\"1\" sc start wireproxy-zapret >nul 2>&1\r\n\
          echo %errorlevel%>\"{}\"\r\n",
         cygwin_bin.display(),
+        scan_path.display(),
+        domains_path.display(),
+        if restart_service { 1 } else { 0 },
         log_win.display(),
         done.display(),
         paths.bash.display(),
@@ -84,96 +144,217 @@ fn build_cmd(data_dir: &Path, paths: &BlockcheckPaths) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn parse_strategy(log: &str) -> Option<String> {
-    let mut fallback = None;
-    for line in log.lines() {
+fn valid_candidate_args(args: &[String]) -> bool {
+    !args.is_empty()
+        && args.iter().all(|arg| arg.starts_with("--"))
+        && args.iter().any(|arg| arg.starts_with("--filter-"))
+        && !args
+            .iter()
+            .any(|arg| arg.contains("exit_guard") || arg.contains("timer_set"))
+}
+
+fn parse_candidates(log: &str) -> Vec<StrategyCandidate> {
+    // Берём только SUMMARY: строки «!!!!! ... working strategy ...» могут
+    // содержать хвост из восклицательных знаков и дубликаты.
+    let section = log
+        .split_once("* SUMMARY")
+        .map(|(_, rest)| rest)
+        .unwrap_or("");
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for line in section.lines() {
         let lower = line.to_ascii_lowercase();
         let Some(pos) = lower.find(" : winws2 ") else {
             continue;
         };
-        let args = line[pos + " : winws2 ".len()..].trim();
-        if args.is_empty()
-            || lower.contains("not working")
-            || lower.contains("working without bypass")
-            || lower.contains("test aborted")
-        {
+        let prefix = line[..pos]
+            .trim()
+            .trim_matches(|c: char| c == '!' || c == '-' || c.is_whitespace());
+        let args = line[pos + " : winws2 ".len()..]
+            .trim()
+            .trim_end_matches(|c: char| c == '!' || c.is_whitespace());
+        if args.is_empty() {
             continue;
         }
-        if lower.contains("https") {
-            return Some(args.to_string());
+        let tokens = preset::split_args(args);
+        if !valid_candidate_args(&tokens) {
+            continue;
         }
-        fallback.get_or_insert_with(|| args.to_string());
+        if !seen.insert(args.to_string()) {
+            continue;
+        }
+        let label = if prefix.is_empty() {
+            format!("Стратегия {}", out.len() + 1)
+        } else {
+            prefix.to_string()
+        };
+        out.push(StrategyCandidate {
+            index: out.len(),
+            label,
+            strategy: args.to_string(),
+        });
+        if out.len() >= MAX_CANDIDATES {
+            break;
+        }
     }
-    fallback
+    out
+}
+
+fn select_best(candidates: &[StrategyCandidate]) -> Option<&StrategyCandidate> {
+    candidates
+        .iter()
+        .find(|item| item.label.contains("https_tls13"))
+        .or_else(|| candidates.iter().find(|item| item.label.contains("https")))
+        .or_else(|| candidates.first())
+}
+
+fn parse_strategy(log: &str) -> Option<String> {
+    select_best(&parse_candidates(log)).map(|item| item.strategy.clone())
+}
+
+fn strategy_args(raw: &str) -> Result<Vec<String>> {
+    let args = preset::split_args(raw);
+    if !valid_candidate_args(&args) {
+        bail!("стратегия содержит недопустимые аргументы");
+    }
+    Ok(args)
 }
 
 pub fn start(state: &Arc<AppState>) -> Result<()> {
+    start_inner(state, None, "standard")
+}
+
+/// Генерирует стратегии blockcheck2 для конкретного домена. В отличие от
+/// общего автоподбора, ничего не устанавливает: кандидаты возвращаются в
+/// состоянии и применяются из UI.
+pub fn start_for_domain(state: &Arc<AppState>, domain: &str, scan: &str) -> Result<()> {
+    let Some(domain) = crate::lists::validate_hostname(domain) else {
+        bail!("некорректный домен для генерации стратегий");
+    };
+    if domain == "localhost" || domain.ends_with(".localhost") || domain.ends_with(".local") {
+        bail!("для локального домена стратегия не нужна");
+    }
+    start_inner(state, Some(domain), scan)
+}
+
+fn start_inner(state: &Arc<AppState>, domain: Option<String>, scan: &str) -> Result<()> {
     #[cfg(not(windows))]
     {
-        let _ = state;
+        let _ = (state, domain, scan);
         bail!("Zapret поддерживается только на Windows");
     }
     #[cfg(windows)]
     {
         {
-            let mut guard = state
+            let guard = state
                 .zapret_auto
                 .lock()
                 .map_err(|_| anyhow::anyhow!("состояние автоподбора повреждено"))?;
             if guard.running {
                 bail!("автоподбор уже выполняется");
             }
-            *guard = AutoTuneState {
+        }
+        let paths = match preset::blockcheck_paths(&state.dir)
+            .context("для генерации нужен zapret2-бандл с blockcheck2.sh и cygwin")
+        {
+            Ok(paths) => paths,
+            Err(e) => {
+                fail(state, format!("{e:#}"));
+                return Err(e);
+            }
+        };
+        let was_running = service::query(&state.dir).running;
+        let domains = domain
+            .clone()
+            .unwrap_or_else(|| DEFAULT_DOMAINS.to_string());
+        let cmd = match build_cmd(
+            &state.dir,
+            &paths,
+            &domains,
+            normalize_scan(scan),
+            was_running,
+        ) {
+            Ok(cmd) => cmd,
+            Err(e) => {
+                fail(state, format!("{e:#}"));
+                return Err(e);
+            }
+        };
+        set_state(state, |s| {
+            *s = AutoTuneState {
                 running: true,
                 phase: "starting".to_string(),
                 log: String::new(),
                 error: None,
                 strategy: None,
+                domain: domain.clone(),
+                candidates: Vec::new(),
+                preset: None,
+                service_paused: was_running,
                 started_at: Some(chrono::Utc::now().to_rfc3339()),
                 finished_at: None,
             };
-        }
-        let paths = match preset::blockcheck_paths(&state.dir)
-            .context("для автоподбора нужен zapret2-бандл с blockcheck2.sh и cygwin")
-        {
-            Ok(paths) => paths,
-            Err(e) => {
-                set_state(state, |s| {
-                    s.running = false;
-                    s.phase = "error".to_string();
-                    s.error = Some(format!("{e:#}"));
-                });
-                return Err(e);
-            }
-        };
-        let cmd = match build_cmd(&state.dir, &paths) {
-            Ok(cmd) => cmd,
-            Err(e) => {
-                set_state(state, |s| {
-                    s.running = false;
-                    s.phase = "error".to_string();
-                    s.error = Some(format!("{e:#}"));
-                });
-                return Err(e);
-            }
-        };
+        });
         let _ = std::fs::remove_file(state.dir.join(DONE_FILE));
         let _ = std::fs::remove_file(state.dir.join(LOG_FILE));
         set_state(state, |s| {
             s.phase = "blockcheck".to_string();
         });
         if let Err(e) = crate::shell::run_elevated(&cmd) {
-            set_state(state, |s| {
-                s.running = false;
-                s.phase = "error".to_string();
-                s.error = Some(format!("{e:#}"));
-            });
+            fail(state, format!("{e:#}"));
             return Err(e);
         }
         let st = state.clone();
         tokio::spawn(async move { monitor(st).await });
         Ok(())
     }
+}
+
+#[cfg(windows)]
+fn strategy_globals(state: &AppState, args: &[String]) -> Vec<String> {
+    let mut globals = Vec::new();
+    if !args.iter().any(|arg| arg == "--wf-tcp-empty=1") {
+        globals.push("--wf-tcp-empty=1".to_string());
+    }
+    if let Ok(dir) = preset::engine_dir(&state.dir) {
+        for lua in ["zapret-lib.lua", "zapret-antidpi.lua"] {
+            if args.iter().any(|arg| arg.contains(lua)) {
+                continue;
+            }
+            let path = dir.join("lua").join(lua);
+            if path.is_file() {
+                globals.push(format!("--lua-init=@{}", path.display()));
+            }
+        }
+    }
+    globals
+}
+
+#[cfg(windows)]
+fn install_strategy(state: &AppState, args: &[String]) -> Result<()> {
+    let mut full = strategy_globals(state, args);
+    full.extend(args.iter().cloned());
+    service::install_args(&state.dir, full)
+}
+
+#[cfg(windows)]
+async fn wait_started(state: Arc<AppState>) {
+    let mut running = false;
+    for _ in 0..30 {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if service::query(&state.dir).running {
+            running = true;
+            break;
+        }
+    }
+    set_state(&state, |s| {
+        s.running = false;
+        s.phase = if running { "done" } else { "error" }.to_string();
+        if !running {
+            s.error = Some("служба не запустилась после установки стратегии".to_string());
+        }
+        s.finished_at = Some(chrono::Utc::now().to_rfc3339());
+    });
 }
 
 #[cfg(windows)]
@@ -190,71 +371,147 @@ async fn monitor(state: Arc<AppState>) {
             break;
         }
         if step >= 45 && !log.is_file() {
-            set_state(&state, |s| {
-                s.running = false;
-                s.phase = "error".to_string();
-                s.error = Some("blockcheck не запустился: UAC не подтверждён?".to_string());
-                s.finished_at = Some(chrono::Utc::now().to_rfc3339());
-            });
+            fail(&state, "blockcheck не запустился: UAC не подтверждён?");
             return;
         }
     }
     if !finished {
-        set_state(&state, |s| {
-            s.running = false;
-            s.phase = "error".to_string();
-            s.error = Some("blockcheck не завершился за 30 минут".to_string());
-            s.finished_at = Some(chrono::Utc::now().to_rfc3339());
-        });
+        fail(&state, "blockcheck не завершился за 30 минут");
         return;
     }
     let content = std::fs::read_to_string(&log).unwrap_or_default();
-    let Some(strategy) = parse_strategy(&content) else {
+    let candidates = parse_candidates(&content);
+    if candidates.is_empty() {
         set_state(&state, |s| {
             s.running = false;
             s.phase = "error".to_string();
-            s.error = Some("рабочая стратегия не найдена".to_string());
+            s.error = Some("рабочие стратегии не найдены".to_string());
             s.log = tail(&log);
+            s.candidates = Vec::new();
             s.finished_at = Some(chrono::Utc::now().to_rfc3339());
         });
+        restore_service(&state);
+        return;
+    }
+    let domain_mode = state
+        .zapret_auto
+        .lock()
+        .map(|s| s.domain.is_some())
+        .unwrap_or(false);
+    set_state(&state, |s| {
+        s.candidates = candidates.clone();
+        s.log = tail(&log);
+    });
+    if domain_mode {
+        set_state(&state, |s| {
+            s.running = false;
+            s.phase = "done".to_string();
+            s.error = None;
+            s.strategy = None;
+            s.finished_at = Some(chrono::Utc::now().to_rfc3339());
+        });
+        wlog!(
+            "zapret: сгенерировано {} стратегий для домена",
+            candidates.len()
+        );
+        restore_service(&state);
+        return;
+    }
+    let Some(best) = select_best(&candidates) else {
+        fail(&state, "рабочая стратегия не найдена");
         return;
     };
-    let args = preset::split_args(&strategy);
+    let strategy = best.strategy.clone();
+    let args = match strategy_args(&strategy) {
+        Ok(args) => args,
+        Err(e) => {
+            fail(&state, format!("{e:#}"));
+            return;
+        }
+    };
     set_state(&state, |s| {
         s.phase = "installing".to_string();
         s.strategy = Some(strategy.clone());
-        s.log = tail(&log);
     });
     wlog!(
         "zapret: автоподбор нашёл стратегию ({} аргументов)",
         args.len()
     );
-    if let Err(e) = service::install_args(&state.dir, args) {
-        set_state(&state, |s| {
-            s.running = false;
-            s.phase = "error".to_string();
-            s.error = Some(format!("{e:#}"));
-            s.finished_at = Some(chrono::Utc::now().to_rfc3339());
-        });
+    if let Err(e) = install_strategy(&state, &args) {
+        fail(&state, format!("{e:#}"));
         return;
     }
-    let mut running = false;
-    for _ in 0..30 {
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        if service::query(&state.dir).running {
-            running = true;
-            break;
-        }
+    wait_started(state).await;
+}
+
+/// Применяет найденный кандидат к службе. Аргументы берутся из состояния
+/// (а не из запроса), поэтому подменить их через API нельзя.
+pub fn apply_candidate(state: &Arc<AppState>, index: usize) -> Result<()> {
+    #[cfg(not(windows))]
+    {
+        let _ = (state, index);
+        bail!("Zapret поддерживается только на Windows");
     }
-    set_state(&state, |s| {
-        s.running = false;
-        s.phase = if running { "done" } else { "error" }.to_string();
-        if !running {
-            s.error = Some("служба не запустилась после установки стратегии".to_string());
+    #[cfg(windows)]
+    {
+        let (candidate, running) = {
+            let guard = state
+                .zapret_auto
+                .lock()
+                .map_err(|_| anyhow::anyhow!("состояние автоподбора повреждено"))?;
+            let candidate = guard
+                .candidates
+                .get(index)
+                .cloned()
+                .context("стратегия не найдена")?;
+            (candidate, guard.running)
+        };
+        if running {
+            bail!("дождитесь завершения генерации");
         }
-        s.log = tail(&log);
-        s.finished_at = Some(chrono::Utc::now().to_rfc3339());
-    });
+        let args = strategy_args(&candidate.strategy)?;
+        set_state(state, |s| {
+            s.running = true;
+            s.phase = "installing".to_string();
+            s.error = None;
+            s.strategy = Some(candidate.strategy.clone());
+            s.preset = None;
+            s.started_at = Some(chrono::Utc::now().to_rfc3339());
+            s.finished_at = None;
+        });
+        if let Err(e) = install_strategy(state, &args) {
+            fail(state, format!("{e:#}"));
+            return Err(e);
+        }
+        let st = state.clone();
+        tokio::spawn(async move { wait_started(st).await });
+        Ok(())
+    }
+}
+
+/// Сохраняет найденный кандидат как пресет zapret2, чтобы его можно было
+/// выбрать вручную или объединить с другими стратегиями.
+pub fn save_candidate(state: &Arc<AppState>, index: usize) -> Result<String> {
+    let (candidate, domain, running) = {
+        let guard = state
+            .zapret_auto
+            .lock()
+            .map_err(|_| anyhow::anyhow!("состояние автоподбора повреждено"))?;
+        let candidate = guard
+            .candidates
+            .get(index)
+            .cloned()
+            .context("стратегия не найдена")?;
+        (candidate, guard.domain.clone(), guard.running)
+    };
+    if running {
+        bail!("дождитесь завершения генерации");
+    }
+    let domain = domain.context("стратегия не привязана к домену")?;
+    let args = strategy_args(&candidate.strategy)?;
+    let name = preset::write_generated_preset(&state.dir, &domain, &args)?;
+    set_state(state, |s| s.preset = Some(name.clone()));
+    Ok(name)
 }
 
 #[cfg(not(windows))]
@@ -262,23 +519,42 @@ async fn monitor(_state: Arc<AppState>) {}
 
 #[cfg(test)]
 mod tests {
-    use super::parse_strategy;
+    use super::{parse_candidates, parse_strategy};
 
     #[test]
     fn picks_working_https_strategy() {
         let log = r#"
-- http ipv4 www.youtube.com : winws2 --wf-tcp-out=80 --lua-desync=fake
-- https ipv4 www.youtube.com : winws2 --wf-tcp-out=443 --lua-desync=fake --new
-- https ipv4 discord.com : winws2 not working
+!!!!! curl_test_https_tls13: working strategy found for ipv4 www.youtube.com : winws2 --wf-tcp-out=443 --filter-tcp=443 --lua-desync=fake !!!!!
+* SUMMARY
+curl_test_http ipv4 www.youtube.com : winws2 --wf-tcp-out=80 --filter-tcp=80 --lua-desync=fake
+curl_test_https_tls13 ipv4 www.youtube.com : winws2 --wf-tcp-out=443 --filter-tcp=443 --lua-desync=fake
+curl_test_https_tls12 ipv4 discord.com : winws2 --wf-tcp-out=443 --filter-tcp=443 --lua-desync=fake
 "#;
+        let candidates = parse_candidates(log);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].label, "curl_test_http ipv4 www.youtube.com");
         let strategy = parse_strategy(log).unwrap();
         assert!(strategy.contains("--wf-tcp-out=443"));
-        assert!(!strategy.contains("not working"));
+        assert!(strategy.contains("--filter-tcp=443"));
+        assert!(!strategy.contains('!'));
     }
 
     #[test]
-    fn no_strategy_returns_none() {
-        let log = "- https ipv4 www.youtube.com : winws2 not working\n";
+    fn ignores_broken_and_unsafe_summary_lines() {
+        let log = r#"
+* SUMMARY
+curl_test_https_tls13 ipv4 example.com : winws2 not working
+curl_test_https_tls13 ipv4 example.com : winws2 calc.exe --filter-tcp=443
+curl_test_https_tls13 ipv4 example.com : winws2 --lua-init=timer_set('x') --filter-tcp=443
+"#;
+        assert!(parse_candidates(log).is_empty());
+        assert!(parse_strategy(log).is_none());
+    }
+
+    #[test]
+    fn no_summary_returns_none() {
+        let log = "- https ipv4 www.youtube.com : winws2 --filter-tcp=443\n";
+        assert!(parse_candidates(log).is_empty());
         assert!(parse_strategy(log).is_none());
     }
 }

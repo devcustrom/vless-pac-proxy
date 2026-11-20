@@ -14,12 +14,27 @@ use crate::state::AppState;
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
+pub struct StrategyCandidate {
+    pub index: usize,
+    pub label: String,
+    pub strategy: String,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct AutoTuneState {
     pub running: bool,
     pub phase: String,
     pub log: String,
     pub error: Option<String>,
     pub strategy: Option<String>,
+    /// Домен, для которого генерируются стратегии (None — общий автоподбор).
+    pub domain: Option<String>,
+    pub candidates: Vec<StrategyCandidate>,
+    /// Пресет, в который сохранена выбранная стратегия.
+    pub preset: Option<String>,
+    /// Служба была остановлена на время blockcheck и должна быть возвращена.
+    pub service_paused: bool,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
 }

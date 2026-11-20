@@ -1,11 +1,12 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
-import { Check, ChevronLeft, ChevronRight, Eye, Plus } from 'lucide-vue-next'
+import { Check, ChevronLeft, ChevronRight, Eye, Plus, Wand2 } from 'lucide-vue-next'
 import { api, notify, post, refresh } from '@/lib/store'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
 import Input from '@/components/ui/Input.vue'
+import StrategyDialog from '@/components/StrategyDialog.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
 
@@ -16,6 +17,15 @@ const checks = reactive({})
 const bulk = reactive({ running: false, done: 0, total: 0 })
 const filter = ref('all')
 const query = ref('')
+const strategyFor = ref('')
+const z = computed(() => props.s.zapret || {})
+const canGenerate = computed(
+  () =>
+    !!props.s.plugins?.zapret &&
+    !!z.value.supported &&
+    !!z.value.bundleInstalled &&
+    !!z.value.blockcheck,
+)
 
 const FILTERS = [
   { value: 'all', label: 'Все' },
@@ -227,6 +237,17 @@ async function addToVpn(domain) {
               Проверить
             </Button>
             <Button
+              v-if="canGenerate"
+              size="sm"
+              variant="ghost"
+              :disabled="anyChecking || !!adding || bulk.running"
+              title="Подобрать стратегии Zapret для этого домена"
+              @click="strategyFor = item.domain"
+            >
+              <Wand2 class="h-3.5 w-3.5" />
+              стратегии
+            </Button>
+            <Button
               size="sm"
               variant="outline"
               :loading="adding === item.domain"
@@ -292,5 +313,12 @@ async function addToVpn(domain) {
         </div>
       </div>
     </div>
+
+    <StrategyDialog
+      :open="!!strategyFor"
+      :domain="strategyFor"
+      :s="s"
+      @close="strategyFor = ''"
+    />
   </Card>
 </template>
