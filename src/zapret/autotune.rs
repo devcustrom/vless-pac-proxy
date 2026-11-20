@@ -78,10 +78,17 @@ fn normalize_scan(value: &str) -> &'static str {
     }
 }
 
+/// Убирает Windows verbatim-префикс `\\?\`: cygwin и cmd не понимают его
+/// в путях и в PATH.
+fn plain_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    text.strip_prefix("\\\\?\\").unwrap_or(&text).to_string()
+}
+
 /// Cygwin понимает пути Windows с прямыми слэшами; отдельный cygpath.exe
 /// не нужен, поэтому внешняя команда с путём из данных не запускается.
 fn posix_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    plain_path(path).replace('\\', "/")
 }
 
 #[cfg(windows)]
@@ -128,16 +135,16 @@ fn build_cmd(
          \"{}\" -l -c \"'{}' 2>&1 | tee '{}'\"\r\n\
          if \"%WPC_RESTART%\"==\"1\" sc start wireproxy-zapret >nul 2>&1\r\n\
          echo %errorlevel%>\"{}\"\r\n",
-        cygwin_bin.display(),
-        scan_path.display(),
-        domains_path.display(),
+        plain_path(cygwin_bin),
+        plain_path(&scan_path),
+        plain_path(&domains_path),
         if restart_service { 1 } else { 0 },
-        log_win.display(),
-        done.display(),
-        paths.bash.display(),
+        plain_path(&log_win),
+        plain_path(&done),
+        plain_path(&paths.bash),
         script,
         log,
-        done.display(),
+        plain_path(&done),
     );
     let path = data_dir.join(CMD_FILE);
     std::fs::write(&path, cmd_text)?;
@@ -380,6 +387,13 @@ async fn monitor(state: Arc<AppState>) {
         return;
     }
     let content = std::fs::read_to_string(&log).unwrap_or_default();
+    if content.trim().is_empty() {
+        fail(
+            &state,
+            "blockcheck не создал лог: проверьте UAC, cygwin и путь к бандлу",
+        );
+        return;
+    }
     let candidates = parse_candidates(&content);
     if candidates.is_empty() {
         set_state(&state, |s| {
@@ -519,7 +533,15 @@ async fn monitor(_state: Arc<AppState>) {}
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_candidates, parse_strategy};
+    use super::{parse_candidates, parse_strategy, plain_path, posix_path};
+    use std::path::Path;
+
+    #[test]
+    fn strips_windows_verbatim_prefix() {
+        let path = Path::new(r"\\?\C:\Users\dev\zapret\cygwin\bin\bash.exe");
+        assert_eq!(plain_path(path), r"C:\Users\dev\zapret\cygwin\bin\bash.exe");
+        assert_eq!(posix_path(path), "C:/Users/dev/zapret/cygwin/bin/bash.exe");
+    }
 
     #[test]
     fn picks_working_https_strategy() {

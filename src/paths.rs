@@ -7,7 +7,7 @@ use anyhow::{bail, Context, Result};
 /// wireproxy.conf), используем эту папку. Иначе — системный каталог приложения.
 pub fn resolve_data_dir(explicit: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(p) = explicit {
-        return Ok(p);
+        return Ok(normalize_path(p));
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
@@ -15,14 +15,28 @@ pub fn resolve_data_dir(explicit: Option<PathBuf>) -> Result<PathBuf> {
                 || dir.join("settings.json").exists()
                 || dir.join("wireproxy.conf").exists()
             {
-                return Ok(dir.to_path_buf());
+                return Ok(normalize_path(dir.to_path_buf()));
             }
         }
     }
     let base = dirs::data_local_dir()
         .or_else(dirs::home_dir)
         .context("не удалось определить каталог данных")?;
-    Ok(base.join("wireproxy-control"))
+    Ok(normalize_path(base.join("wireproxy-control")))
+}
+
+/// Обновлятор передаёт каталог через `canonicalize()`, а на Windows это
+/// добавляет префикс `\\?\`. Его не понимают cygwin, cmd и часть утилит,
+/// поэтому храним путь в обычном виде.
+pub fn normalize_path(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    let Some(rest) = text.strip_prefix("\\\\?\\") else {
+        return path;
+    };
+    if let Some(unc) = rest.strip_prefix("UNC\\") {
+        return PathBuf::from(format!("\\\\{unc}"));
+    }
+    PathBuf::from(rest)
 }
 
 pub fn ensure_layout(dir: &Path) -> Result<()> {
@@ -95,5 +109,21 @@ mod tests {
         std::fs::write(dir.join(PANEL_PORT_FILE), "not-a-port\n").unwrap();
         assert_eq!(read_panel_port(&dir), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn strips_windows_verbatim_prefix() {
+        assert_eq!(
+            normalize_path(PathBuf::from(r"\\?\C:\Users\dev\AppData")),
+            PathBuf::from(r"C:\Users\dev\AppData")
+        );
+        assert_eq!(
+            normalize_path(PathBuf::from(r"\\?\UNC\server\share")),
+            PathBuf::from(r"\\server\share")
+        );
+        assert_eq!(
+            normalize_path(PathBuf::from(r"C:\Users\dev")),
+            PathBuf::from(r"C:\Users\dev")
+        );
     }
 }
