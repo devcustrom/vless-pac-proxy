@@ -1910,23 +1910,62 @@ async fn extra(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
         )
             .into_response();
     };
-    let mut list = read_domains(&st.dir, "extra-domains.txt");
-    match action {
-        "add" => {
-            if !list.contains(&domain) {
-                list.push(domain.clone());
+    let mut extra = read_domains(&st.dir, "extra-domains.txt");
+    let mut direct = read_domains(&st.dir, "direct-domains.txt");
+    let enabled = match action {
+        "add" => true,
+        "remove" => false,
+        "route" => match body.get("enabled").and_then(Value::as_bool) {
+            Some(value) => value,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "для route нужен enabled" })),
+                )
+                    .into_response();
             }
-        }
-        "remove" => list.retain(|d| *d != domain),
+        },
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "action должен быть add|remove" })),
+                Json(json!({ "error": "action должен быть add|remove|route" })),
             )
                 .into_response();
         }
+    };
+    if enabled {
+        if !extra.contains(&domain) {
+            extra.push(domain.clone());
+        }
+        direct.retain(|item| *item != domain);
+    } else {
+        extra.retain(|item| *item != domain);
+        if !direct.contains(&domain) {
+            direct.push(domain.clone());
+        }
+        for name in ["vless-domains.txt", "wg-domains.txt"] {
+            let mut items = read_domains(&st.dir, name);
+            let before = items.len();
+            items.retain(|item| *item != domain);
+            if items.len() != before {
+                if let Err(e) = write_domains(&st.dir, name, &items) {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": e.to_string() })),
+                    )
+                        .into_response();
+                }
+            }
+        }
     }
-    if let Err(e) = write_domains(&st.dir, "extra-domains.txt", &list) {
+    if let Err(e) = write_domains(&st.dir, "extra-domains.txt", &extra) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response();
+    }
+    if let Err(e) = write_domains(&st.dir, "direct-domains.txt", &direct) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
@@ -1934,7 +1973,13 @@ async fn extra(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
             .into_response();
     }
     spawn_refresh(&st);
-    Json(json!({ "ok": true, "extra": read_domains(&st.dir, "extra-domains.txt") })).into_response()
+    Json(json!({
+        "ok": true,
+        "enabled": enabled,
+        "extra": read_domains(&st.dir, "extra-domains.txt"),
+        "direct": read_domains(&st.dir, "direct-domains.txt"),
+    }))
+    .into_response()
 }
 
 async fn vless(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {

@@ -314,6 +314,44 @@ test('из проверки сайта можно сгенерировать и 
   await page.request.post(`${PANEL}/api/plugins`, { headers, data: { zapret: false } })
 })
 
+test('чекбокс VPN в недавних сайтах переключает маршрут', async ({ page }) => {
+  const now = Math.floor(Date.now() / 1000)
+  let route = 'wireguard'
+  await page.route('**/api/status', async (request) => {
+    const response = await request.fetch()
+    const data = await response.json()
+    data.visited = [
+      {
+        domain: 'example.com',
+        count: 2,
+        last: now,
+        route,
+        checked: true,
+      },
+    ]
+    data.checks = []
+    await request.fulfill({ response, json: data })
+  })
+
+  let payload = null
+  await page.route('**/api/extra', async (request) => {
+    payload = request.request().postDataJSON()
+    route = payload.enabled ? 'wireguard' : null
+    await request.fulfill({ json: { ok: true, enabled: payload.enabled } })
+  })
+
+  await page.reload()
+  await page.getByRole('button', { name: 'Сайты' }).click()
+  const vpn = page.getByRole('checkbox', { name: 'VPN' })
+  await expect(vpn).toBeChecked()
+  await vpn.uncheck()
+  await expect.poll(() => payload).not.toBeNull()
+  expect(payload).toEqual({ action: 'route', domain: 'example.com', enabled: false })
+  await expect(vpn).not.toBeChecked()
+
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
+})
+
 test('каталог Zaprett показывает источник и умеет скачать/применить', async ({ page }) => {
   test.skip(process.platform !== 'win32', 'Zapret доступен только на Windows')
 

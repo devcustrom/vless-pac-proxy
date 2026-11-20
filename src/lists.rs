@@ -227,6 +227,10 @@ pub async fn refresh(state: &Arc<AppState>) -> Result<()> {
     for d in &extra {
         proxied.insert(d.clone());
     }
+    let direct_extra = read_domain_file(&state.dir, "direct-domains.txt");
+    for d in &direct_extra {
+        direct.insert(d.clone());
+    }
     let vless_only: HashSet<String> = read_domain_file(&state.dir, "vless-domains.txt")
         .into_iter()
         .collect();
@@ -234,7 +238,7 @@ pub async fn refresh(state: &Arc<AppState>) -> Result<()> {
         .into_iter()
         .collect();
 
-    if ok_sources == 0 && extra.is_empty() {
+    if ok_sources == 0 && extra.is_empty() && direct_extra.is_empty() {
         let mut lists = state.lists.lock().unwrap();
         lists.refreshing = false;
         lists.error = Some("ни один источник не ответил, списки не изменены".into());

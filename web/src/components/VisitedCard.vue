@@ -1,6 +1,6 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
-import { Check, ChevronLeft, ChevronRight, Eye, Plus, Wand2 } from 'lucide-vue-next'
+import { Check, ChevronLeft, ChevronRight, Eye, Wand2 } from 'lucide-vue-next'
 import { api, notify, post, refresh } from '@/lib/store'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
@@ -12,7 +12,8 @@ const props = defineProps({ s: { type: Object, required: true } })
 
 const PAGE_SIZE = 20
 const page = ref(1)
-const adding = ref('')
+const vpnBusy = ref('')
+const routeOverrides = reactive({})
 const checks = reactive({})
 const bulk = reactive({ running: false, done: 0, total: 0 })
 const filter = ref('all')
@@ -150,15 +151,29 @@ async function checkAll() {
   }
 }
 
-async function addToVpn(domain) {
-  adding.value = domain
+function vpnEnabled(item) {
+  return item.domain in routeOverrides ? routeOverrides[item.domain] : !!item.route
+}
+
+async function toggleVpn(item, event) {
+  const enabled = event.target.checked
+  routeOverrides[item.domain] = enabled
+  vpnBusy.value = item.domain
   try {
-    await post('/api/extra', { action: 'add', domain })
-    notify(domain + ' добавлен в VPN-список')
+    await post('/api/extra', {
+      action: 'route',
+      domain: item.domain,
+      enabled,
+    })
+    notify(`${item.domain}: ${enabled ? 'через VPN' : 'напрямую'}`)
+    await refresh()
+    setTimeout(() => {
+      delete routeOverrides[item.domain]
+    }, 6000)
   } catch {
-    /* тост уже показан */
+    delete routeOverrides[item.domain]
   } finally {
-    adding.value = ''
+    vpnBusy.value = ''
   }
 }
 </script>
@@ -231,7 +246,7 @@ async function addToVpn(domain) {
                 size="sm"
                 variant="outline"
                 :loading="!!checks[item.domain]?.busy"
-                :disabled="anyChecking || !!adding"
+                :disabled="anyChecking || !!vpnBusy"
                 @click="runCheck(item.domain)"
               >
                 <Check class="h-3.5 w-3.5" />
@@ -241,23 +256,28 @@ async function addToVpn(domain) {
                 v-if="canGenerate"
                 size="sm"
                 variant="ghost"
-                :disabled="anyChecking || !!adding || bulk.running"
+                :disabled="anyChecking || !!vpnBusy || bulk.running"
                 title="Подобрать стратегии Zapret для этого домена"
                 @click="strategyFor = item.domain"
               >
                 <Wand2 class="h-3.5 w-3.5" />
                 стратегии
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                :loading="adding === item.domain"
-                :disabled="!!adding || bulk.running"
-                @click="addToVpn(item.domain)"
+              <label
+                class="flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-xs"
+                :class="vpnEnabled(item) ? 'border-primary/40 bg-primary/5' : 'bg-background'"
+                title="Маршрутизировать этот домен через VPN"
               >
-                <Plus class="h-3.5 w-3.5" />
-                через VPN
-              </Button>
+                <input
+                  type="checkbox"
+                  class="h-4 w-4 accent-primary"
+                  :checked="vpnEnabled(item)"
+                  :disabled="!!vpnBusy || bulk.running"
+                  @change="toggleVpn(item, $event)"
+                />
+                VPN
+                <span v-if="vpnBusy === item.domain" class="text-muted-foreground">…</span>
+              </label>
             </div>
             <div v-if="checkFor(item.domain)?.busy" class="text-xs text-muted-foreground">
               проверяю…

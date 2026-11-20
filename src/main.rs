@@ -193,7 +193,10 @@ fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool, hidden: bool) -> an
         let _guard = rt.enter();
         state::AppState::new(dir, panel_port, !hidden)
     };
-    if autostart::installed() {
+    if autostart::installed()
+        && !cfg!(debug_assertions)
+        && std::env::var_os("WPC_TEST_MODE").is_none()
+    {
         if let Err(e) = autostart::ensure_current(&st.dir) {
             wlog!("автозапуск: не удалось обновить путь — {e:#}");
         }
