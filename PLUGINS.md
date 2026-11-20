@@ -51,12 +51,14 @@ Lua, blockcheck2) или Flowseal v1 (`bin/winws.exe`, `general*.bat`). Банд
 запуск/остановка доступны из панели без UAC. Можно выбрать сразу несколько
 пресетов: они объединяются в одну службу с профилями через `--new`, а общие
 `--wf-*`/`--lua-init` дедуплицируются. Для zapret2 доступен автоподбор стратегии
-через blockcheck2 с автоматической установкой результата. Для конкретного
-сайта можно сгенерировать список стратегий, применить выбранную или сохранить
-её в пресеты. API:
+через blockcheck2 с автоматической установкой результата. Внешний каталог
+Zaprett (`index.json`, стратегии, списки, ipsets, bin) загружается по запросу с
+проверкой sha256; элементы не входят в поставку. API:
 `GET /api/zapret`, `POST /api/zapret` (`download`, `install` с массивом
 `presets`, `remove`, `start`, `stop`, `probe`, `auto-tune`,
-`generate-strategies`, `apply-strategy`, `save-strategy`, `open-folder`).
+`generate-strategies`, `apply-strategy`, `save-strategy`, `catalog-status`,
+`catalog-refresh`, `catalog-download`, `catalog-preview`, `catalog-apply`,
+`catalog-select`, `catalog-test`, `catalog-test-reset`, `open-folder`).
 Подробнее — [ZAPRET.md](ZAPRET.md).
 
 ## Telegram-прокси

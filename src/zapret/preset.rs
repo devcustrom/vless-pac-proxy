@@ -60,6 +60,23 @@ pub fn engine_label(data_dir: &Path) -> &'static str {
     }
 }
 
+/// Движок zapret v1 из любого бандла. В zapret2 `winws.exe` лежит рядом с
+/// `winws2.exe`; он нужен для стратегий каталога Zaprett (nfqws).
+pub fn engine_path_v1(data_dir: &Path) -> Result<PathBuf> {
+    let root = bundle_dir(data_dir);
+    let candidates = [
+        root.join("bin").join("winws.exe"),
+        root.join("zapret-winws").join("winws.exe"),
+        root.join("winws.exe"),
+    ];
+    for path in candidates {
+        if path.is_file() {
+            return Ok(path);
+        }
+    }
+    bail!("не найден winws.exe (zapret v1) в папке zapret")
+}
+
 pub fn engine_dir(data_dir: &Path) -> Result<PathBuf> {
     engine_path(data_dir)?
         .parent()

@@ -313,3 +313,121 @@ test('из проверки сайта можно сгенерировать и 
   await page.unrouteAll({ behavior: 'ignoreErrors' })
   await page.request.post(`${PANEL}/api/plugins`, { headers, data: { zapret: false } })
 })
+
+test('каталог Zaprett показывает источник и умеет скачать/применить', async ({ page }) => {
+  test.skip(process.platform !== 'win32', 'Zapret доступен только на Windows')
+
+  const headers = { 'X-WPC': '1' }
+  await page.request.post(`${PANEL}/api/plugins`, { headers, data: { zapret: true } })
+
+  const source = 'https://github.com/CherretGit/zaprett-repo'
+  const catalog = {
+    cached: true,
+    source: `${source.replace('github.com', 'raw.githubusercontent.com')}/refs/heads/main/index.json`,
+    sourcePage: source,
+    updatedAt: new Date().toISOString(),
+    engineV1: true,
+    engineV2: true,
+    selectedLists: [],
+    selectedIpsets: [],
+    active: '',
+    licenseNote: 'Данные загружаются из внешнего репозитория.',
+    strategies: [
+      {
+        id: 'strategy-default',
+        kind: 'nfqws',
+        name: 'strategy-default',
+        description: 'Стандартная стратегия',
+        author: 'zaprett-devs',
+        version: '1.0.0',
+        source: `${source}/blob/main/manifests/strategies/nfqws/strategy-default.json`,
+        artifact: `${source}/blob/main/files/strategies/nfqws/strategy-default.txt`,
+        downloaded: false,
+        ready: false,
+        active: false,
+        supported: true,
+        dependencies: 2,
+      },
+    ],
+    lists: [
+      {
+        id: 'list-youtube',
+        kind: 'list',
+        name: 'list-youtube',
+        description: 'Домены YouTube',
+        author: 'zaprett-devs',
+        version: '1.0.0',
+        source: `${source}/blob/main/manifests/lists/include/list-youtube.json`,
+        downloaded: true,
+        ready: true,
+        active: false,
+        supported: false,
+        dependencies: 0,
+      },
+    ],
+    ipsets: [],
+    bins: [],
+  }
+  await page.route('**/api/status', async (route) => {
+    const response = await route.fetch()
+    const data = await response.json()
+    data.zapret.catalog = catalog
+    await route.fulfill({ response, json: data })
+  })
+  await page.reload()
+  await page.getByRole('button', { name: 'Обход DPI', exact: true }).click()
+  await expect(page.getByText('Каталог Zaprett')).toBeVisible()
+  await expect(page.getByRole('link', { name: source })).toBeVisible()
+  await expect(page.getByText('Стандартная стратегия')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Проверить скачанные' })).toBeVisible()
+
+  let downloaded = null
+  let applied = null
+  let selected = null
+  await page.route('**/api/zapret', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue()
+      return
+    }
+    const body = route.request().postDataJSON()
+    if (body.action === 'catalog-download') {
+      downloaded = body
+      catalog.strategies[0].downloaded = true
+      catalog.strategies[0].ready = true
+      await route.fulfill({ json: { ok: true, downloaded: 3 } })
+      return
+    }
+    if (body.action === 'catalog-select') {
+      selected = body
+      catalog.selectedLists = body.lists
+      await route.fulfill({ json: { ok: true } })
+      return
+    }
+    if (body.action === 'catalog-apply') {
+      applied = body
+      catalog.active = body.id
+      await route.fulfill({ json: { ok: true } })
+      return
+    }
+    await route.continue()
+  })
+
+  await page.getByRole('button', { name: 'Скачать' }).first().click()
+  await expect.poll(() => downloaded).not.toBeNull()
+  expect(downloaded.id).toBe('strategy-default')
+
+  await page.getByRole('button', { name: /^Списки/ }).click()
+  await page.getByRole('checkbox', { name: /использовать в hostlists/ }).check()
+  await page.getByRole('button', { name: 'Сохранить выбор' }).click()
+  await expect.poll(() => selected).not.toBeNull()
+  expect(selected.lists).toEqual(['list-youtube'])
+
+  await page.getByRole('button', { name: /^Стратегии/ }).click()
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: 'Применить', exact: true }).click()
+  await expect.poll(() => applied).not.toBeNull()
+  expect(applied.id).toBe('strategy-default')
+
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
+  await page.request.post(`${PANEL}/api/plugins`, { headers, data: { zapret: false } })
+})

@@ -779,6 +779,7 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
                 let mut settings = st.settings.lock().unwrap();
                 settings.zapret_preset = names[0].clone();
                 settings.zapret_presets = names.clone();
+                settings.zapret_catalog_strategy.clear();
                 if let Err(e) = settings.save(&st.dir) {
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1033,11 +1034,167 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
                 }
             }
         }
+        "catalog-status" => Json(crate::zapret::status_json(&st)).into_response(),
+        "catalog-refresh" => {
+            match crate::zapret::catalog::refresh(&st).await {
+                Ok(report) => Json(json!({
+                    "ok": true,
+                    "report": report,
+                    "status": crate::zapret::status_json(&st),
+                }))
+                .into_response(),
+                Err(e) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response(),
+            }
+        }
+        "catalog-download" => {
+            let id = body.get("id").and_then(Value::as_str).unwrap_or("");
+            if id.is_empty() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "нужен id элемента каталога" })),
+                )
+                    .into_response();
+            }
+            match crate::zapret::catalog::download(&st, id).await {
+                Ok(count) => Json(json!({
+                    "ok": true,
+                    "downloaded": count,
+                    "status": crate::zapret::status_json(&st),
+                }))
+                .into_response(),
+                Err(e) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response(),
+            }
+        }
+        "catalog-apply" => {
+            let id = body.get("id").and_then(Value::as_str).unwrap_or("");
+            if id.is_empty() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "нужен id стратегии" })),
+                )
+                    .into_response();
+            }
+            match crate::zapret::catalog::apply(&st, id).await {
+                Ok(()) => Json(json!({
+                    "ok": true,
+                    "message": "установщик стратегии каталога запущен (подтвердите UAC)",
+                    "status": crate::zapret::status_json(&st),
+                }))
+                .into_response(),
+                Err(e) => {
+                    crate::zapret::record_error(&st, &e);
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": format!("{e:#}") })),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        "catalog-preview" => {
+            let id = body.get("id").and_then(Value::as_str).unwrap_or("");
+            match crate::zapret::catalog::preview_json(&st, id) {
+                Ok(preview) => Json(json!({ "ok": true, "preview": preview })).into_response(),
+                Err(e) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response(),
+            }
+        }
+        "catalog-test" => {
+            let domains: Vec<String> = body
+                .get("domains")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToString::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            match crate::zapret::catalog::start_test(&st, &domains).await {
+                Ok(()) => Json(json!({
+                    "ok": true,
+                    "message": "проверка стратегий запущена (подтвердите UAC)",
+                    "status": crate::zapret::status_json(&st),
+                }))
+                .into_response(),
+                Err(e) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response(),
+            }
+        }
+        "catalog-test-reset" => {
+            let force = body
+                .get("force")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            match crate::zapret::catalog::reset_test(&st, force) {
+                Ok(()) => Json(json!({
+                    "ok": true,
+                    "status": crate::zapret::status_json(&st),
+                }))
+                .into_response(),
+                Err(e) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response(),
+            }
+        }
+        "catalog-select" => {
+            let lists: Vec<String> = body
+                .get("lists")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToString::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let ipsets: Vec<String> = body
+                .get("ipsets")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToString::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            match crate::zapret::catalog::select(&st, &lists, &ipsets) {
+                Ok(()) => Json(json!({
+                    "ok": true,
+                    "status": crate::zapret::status_json(&st),
+                }))
+                .into_response(),
+                Err(e) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response(),
+            }
+        }
         "refresh" => Json(crate::zapret::status_json(&st)).into_response(),
         _ => (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "action должен быть install|remove|start|stop|set-preset|open-folder|auto-tune|generate-strategies|apply-strategy|save-strategy|probe|refresh"
+                "error": "action должен быть install|remove|start|stop|set-preset|open-folder|auto-tune|generate-strategies|apply-strategy|save-strategy|catalog-status|catalog-refresh|catalog-download|catalog-preview|catalog-test|catalog-test-reset|catalog-apply|catalog-select|probe|refresh"
             })),
         )
             .into_response(),

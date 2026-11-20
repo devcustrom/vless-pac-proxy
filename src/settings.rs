@@ -57,6 +57,18 @@ pub struct Settings {
     pub zapret_preset: String,
     #[serde(rename = "zapretPresets", default)]
     pub zapret_presets: Vec<String>,
+    /// URL index.json внешнего каталога стратегий Zaprett.
+    #[serde(rename = "zapretCatalogUrl", default = "default_catalog_url")]
+    pub zapret_catalog_url: String,
+    /// Выбранные hostlist'ы из каталога для подстановки `${hostlists}`.
+    #[serde(rename = "zapretCatalogLists", default)]
+    pub zapret_catalog_lists: Vec<String>,
+    /// Выбранные ipset'ы из каталога для подстановки `${ipsets}`.
+    #[serde(rename = "zapretCatalogIpsets", default)]
+    pub zapret_catalog_ipsets: Vec<String>,
+    /// Активная стратегия каталога (id), если служба запущена с неё.
+    #[serde(rename = "zapretCatalogStrategy", default)]
+    pub zapret_catalog_strategy: String,
     #[serde(rename = "directFirst", default = "default_true")]
     pub direct_first: bool,
     /// Фоновая проверка новых доменов из «Недавних сайтов».
@@ -98,6 +110,10 @@ fn default_telegram_order() -> String {
 fn default_zapret_preset() -> String {
     "general.bat".to_string()
 }
+pub fn default_catalog_url() -> String {
+    "https://raw.githubusercontent.com/CherretGit/zaprett-repo/refs/heads/main/index.json"
+        .to_string()
+}
 
 impl Default for Settings {
     fn default() -> Self {
@@ -126,6 +142,10 @@ impl Default for Settings {
             zapret_enabled: false,
             zapret_preset: default_zapret_preset(),
             zapret_presets: Vec::new(),
+            zapret_catalog_url: default_catalog_url(),
+            zapret_catalog_lists: Vec::new(),
+            zapret_catalog_ipsets: Vec::new(),
+            zapret_catalog_strategy: String::new(),
             direct_first: true,
             auto_check_sites: true,
             auto_add_unavailable: true,
@@ -226,6 +246,10 @@ mod tests {
             zapret_enabled: false,
             zapret_preset: default_zapret_preset(),
             zapret_presets: Vec::new(),
+            zapret_catalog_url: default_catalog_url(),
+            zapret_catalog_lists: Vec::new(),
+            zapret_catalog_ipsets: Vec::new(),
+            zapret_catalog_strategy: String::new(),
             direct_first: true,
             auto_check_sites: true,
             auto_add_unavailable: true,

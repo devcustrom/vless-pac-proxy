@@ -1,5 +1,6 @@
 pub mod autotune;
 pub mod bundle;
+pub mod catalog;
 pub mod preset;
 pub mod service;
 
@@ -104,6 +105,7 @@ pub fn status_json(state: &AppState) -> Value {
         "presets": presets,
         "preset": selected,
         "selectedPresets": selected_presets,
+        "catalog": catalog::status_json(state),
         "service": service,
         "autoTune": auto,
         "error": error,

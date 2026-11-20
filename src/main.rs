@@ -105,6 +105,9 @@ enum Command {
         #[arg(long)]
         zip: PathBuf,
     },
+    /// Служебный шаг проверки стратегий каталога (запускается с UAC)
+    #[command(hide = true)]
+    CatalogTest,
     /// Показать версию
     Version,
 }
@@ -141,6 +144,7 @@ fn main() -> anyhow::Result<()> {
             update::apply_pending_update(pid, &target, &dir, cli.panel_port)
         }
         Command::Restore { pid, zip } => backup::apply_restore(pid, &zip, &dir, cli.panel_port),
+        Command::CatalogTest => zapret::catalog::run_test_helper(&dir),
         Command::Version => {
             println!("wireproxy-control {}", env!("CARGO_PKG_VERSION"));
             Ok(())

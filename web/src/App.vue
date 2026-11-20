@@ -13,6 +13,7 @@ import VlessCard from '@/components/VlessCard.vue'
 import PoolCard from '@/components/PoolCard.vue'
 import TelegramCard from '@/components/TelegramCard.vue'
 import ZapretCard from '@/components/ZapretCard.vue'
+import ZaprettCatalogCard from '@/components/ZaprettCatalogCard.vue'
 import LocalDomainsCard from '@/components/LocalDomainsCard.vue'
 import RoutingDialog from '@/components/RoutingDialog.vue'
 import PluginSetupDialog from '@/components/PluginSetupDialog.vue'
@@ -259,6 +260,9 @@ watch(s, () => syncTabFromHash())
           <div class="grid items-start gap-4 lg:grid-cols-2">
             <div class="space-y-4">
               <ZapretCard :s="s" />
+            </div>
+            <div class="space-y-4">
+              <ZaprettCatalogCard :s="s" />
             </div>
           </div>
         </template>

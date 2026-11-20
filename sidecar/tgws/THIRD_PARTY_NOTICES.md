@@ -26,3 +26,18 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+## Zaprett catalog (external, not bundled)
+
+The Zapret page can load strategies, lists, ipsets and binary payloads from an
+external catalog, by default:
+
+https://github.com/CherretGit/zaprett-repo
+
+Those files are **not** part of wireproxy-control and are not redistributed in
+its releases. They are downloaded at runtime only after an explicit user
+action; every artifact is verified by sha256. The catalog repository does not
+contain an explicit license file, so check the author's terms before
+redistributing its contents. Authors and source URLs are shown in the UI for
+every item.
+

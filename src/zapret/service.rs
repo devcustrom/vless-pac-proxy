@@ -211,13 +211,23 @@ pub fn install(data_dir: &Path, preset_name: &str) -> Result<()> {
 
 #[cfg(windows)]
 pub fn install_args(data_dir: &Path, args: Vec<String>) -> Result<()> {
+    let bin = super::preset::engine_path(data_dir)?;
+    install_args_for(data_dir, &bin, args)
+}
+
+/// Установка аргументов с явно выбранным движком: каталог Zaprett использует
+/// `winws.exe` (v1) даже в бандле zapret2, где рядом лежит `winws2.exe`.
+#[cfg(windows)]
+pub fn install_args_for(data_dir: &Path, bin: &Path, args: Vec<String>) -> Result<()> {
     if !super::preset::is_bundle_installed(data_dir) {
         bail!("бандл Zapret не найден: распакуйте Flowseal/zapret2 в папку zapret");
     }
     if args.is_empty() {
         bail!("пустая стратегия Zapret");
     }
-    let bin = super::preset::engine_path(data_dir)?;
+    if !bin.is_file() {
+        bail!("движок Zapret не найден: {}", bin.display());
+    }
     let payload = serde_json::json!({
         "bin": bin.display().to_string(),
         "args": args,
@@ -246,6 +256,11 @@ pub fn install(_data_dir: &Path, _preset_name: &str) -> Result<()> {
 
 #[cfg(not(windows))]
 pub fn install_args(_data_dir: &Path, _args: Vec<String>) -> Result<()> {
+    bail!("Zapret поддерживается только на Windows")
+}
+
+#[cfg(not(windows))]
+pub fn install_args_for(_data_dir: &Path, _bin: &Path, _args: Vec<String>) -> Result<()> {
     bail!("Zapret поддерживается только на Windows")
 }
 
