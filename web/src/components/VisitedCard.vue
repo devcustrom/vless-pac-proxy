@@ -1,12 +1,16 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { Check, ChevronLeft, ChevronRight, Eye, Wand2 } from 'lucide-vue-next'
+import { RouterLink } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { api, notify, post, refresh } from '@/lib/store'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
 import Input from '@/components/ui/Input.vue'
+import Select from '@/components/ui/Select.vue'
 import Switch from '@/components/ui/Switch.vue'
+import OverflowMenu from '@/components/ui/OverflowMenu.vue'
 import StrategyDialog from '@/components/StrategyDialog.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
@@ -36,6 +40,20 @@ const FILTERS = [
   { value: 'needs', label: 'Нужен VPN' },
   { value: 'unchecked', label: 'Без проверки' },
 ]
+
+const router = useRouter()
+const route = useRoute()
+if (FILTERS.some((item) => item.value === route.query.filter)) {
+  filter.value = String(route.query.filter)
+}
+if (typeof route.query.q === 'string') query.value = route.query.q
+
+watch([filter, query], ([nextFilter, nextQuery]) => {
+  const params = {}
+  if (nextFilter !== 'all') params.filter = nextFilter
+  if (nextQuery.trim()) params.q = nextQuery.trim()
+  router.replace({ path: '/sites', query: params })
+})
 
 const VERDICTS = {
   'vpn-helps': 'нужен VPN',
@@ -189,41 +207,41 @@ async function toggleVpn(item, enabled) {
 
     <div class="space-y-3">
       <div class="flex flex-wrap items-center justify-between gap-2">
-        <Button
-          size="sm"
-          variant="outline"
-          :loading="bulk.running"
-          :disabled="!items.length || bulk.running"
-          @click="checkAll"
-        >
-          <Check class="h-3.5 w-3.5" />
-          Проверить все
-        </Button>
+        <div class="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            :loading="bulk.running"
+            :disabled="!items.length || bulk.running"
+            @click="checkAll"
+          >
+            <Check class="h-3.5 w-3.5" />
+            Проверить все
+          </Button>
+          <RouterLink
+            to="/domains/routing"
+            class="inline-flex h-8 items-center rounded-md border border-input bg-background px-3 text-xs font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
+            Маршрутизация
+          </RouterLink>
+        </div>
         <span v-if="bulk.running" class="text-xs text-muted-foreground">
           проверено {{ bulk.done }} из {{ bulk.total }}…
         </span>
-        <span v-else class="text-xs text-muted-foreground">
+        <RouterLink v-else to="/settings" class="text-xs text-muted-foreground hover:text-foreground">
           автопроверка {{ s.autoCheckSites ? 'включена' : 'выключена' }}
-        </span>
+        </RouterLink>
       </div>
 
       <div class="flex flex-wrap items-center gap-2">
         <Input
           v-model="query"
-          placeholder="Фильтр по домену…"
-          class="h-8 w-full sm:w-56"
+          placeholder="Поиск по домену…"
+          class="h-8 min-w-48 flex-1"
           autocomplete="off"
         />
-        <div class="flex flex-wrap gap-1">
-          <Button
-            v-for="item in FILTERS"
-            :key="item.value"
-            size="sm"
-            :variant="filter === item.value ? 'secondary' : 'ghost'"
-            @click="filter = item.value"
-          >
-            {{ item.label }}
-          </Button>
+        <div class="w-48">
+          <Select v-model="filter" :options="FILTERS" />
         </div>
       </div>
 
@@ -242,27 +260,27 @@ async function toggleVpn(item, enabled) {
               </Badge>
             </div>
             <div class="flex flex-wrap items-center gap-1.5">
-              <Button
-                size="sm"
-                variant="outline"
-                :loading="!!checks[item.domain]?.busy"
-                :disabled="anyChecking || !!vpnBusy"
-                @click="runCheck(item.domain)"
-              >
-                <Check class="h-3.5 w-3.5" />
-                Проверить
-              </Button>
-              <Button
-                v-if="canGenerate"
-                size="sm"
-                variant="ghost"
-                :disabled="anyChecking || !!vpnBusy || bulk.running"
-                title="Подобрать стратегии Zapret для этого домена"
-                @click="strategyFor = item.domain"
-              >
-                <Wand2 class="h-3.5 w-3.5" />
-                стратегии
-              </Button>
+              <OverflowMenu label="Действия с доменом">
+                <button
+                  type="button"
+                  class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50"
+                  :disabled="anyChecking || !!vpnBusy"
+                  @click="runCheck(item.domain)"
+                >
+                  <Check class="h-3.5 w-3.5" />
+                  {{ checks[item.domain]?.busy ? 'Проверяю…' : 'Проверить' }}
+                </button>
+                <button
+                  v-if="canGenerate"
+                  type="button"
+                  class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50"
+                  :disabled="anyChecking || !!vpnBusy || bulk.running"
+                  @click="strategyFor = item.domain"
+                >
+                  <Wand2 class="h-3.5 w-3.5" />
+                  Подобрать стратегии
+                </button>
+              </OverflowMenu>
               <div
                 class="flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs"
                 :class="vpnEnabled(item) ? 'border-primary/40 bg-primary/5' : 'bg-background'"

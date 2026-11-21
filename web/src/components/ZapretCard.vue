@@ -4,8 +4,10 @@ import { Download, FolderOpen, Play, ShieldAlert, Square, Trash2 } from 'lucide-
 import { api, notify } from '@/lib/store'
 import { useActionMutation } from '@/lib/queries'
 import Card from '@/components/ui/Card.vue'
-import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
+import Badge from '@/components/ui/Badge.vue'
+import Dialog from '@/components/ui/Dialog.vue'
+import OverflowMenu from '@/components/ui/OverflowMenu.vue'
 import Checkbox from '@/components/ui/Checkbox.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
@@ -21,6 +23,7 @@ const form = reactive({ preset: 'general.bat' })
 const saved = ref('')
 const savedPresets = ref([])
 const dirty = ref(false)
+const presetsOpen = ref(false)
 const selectedPresets = ref([])
 
 const presetOptions = computed(() =>
@@ -273,14 +276,9 @@ async function togglePlugin(value) {
 
     <div class="space-y-4">
       <div class="flex flex-wrap items-center gap-2 text-xs">
-        <Badge :variant="supported ? 'outline' : 'destructive'">
-          {{ supported ? 'Windows' : 'только Windows' }}
-        </Badge>
-        <Badge :variant="enabled ? 'success' : 'secondary'">
-          {{ enabled ? 'плагин включён' : 'плагин выключен' }}
-        </Badge>
         <Badge :variant="bundle ? 'success' : 'warning'">
-          {{ bundle ? 'бандл найден' : 'бандл не найден' }}
+          {{ bundle ? bundleLabel : 'бандл не найден' }}
+          <template v-if="bundleInfo.version"> · {{ bundleInfo.version }}</template>
         </Badge>
         <Badge :variant="running ? 'success' : installed ? 'secondary' : 'outline'">
           {{ running ? 'служба работает' : installed ? 'служба остановлена' : 'служба не установлена' }}
@@ -288,18 +286,6 @@ async function togglePlugin(value) {
         <Badge v-if="z.engine && z.engine !== 'none'" variant="outline">
           {{ z.engine }}
         </Badge>
-        <Badge v-if="bundleInfo.variant" variant="outline">
-          {{ bundleLabel }}<template v-if="bundleInfo.version"> · {{ bundleInfo.version }}</template>
-        </Badge>
-      </div>
-
-      <div class="flex flex-wrap items-center gap-2 text-xs">
-        <span class="text-muted-foreground">Движок:</span>
-        <Badge :variant="z.engine === 'winws2' ? 'success' : 'outline'">zapret2 (winws2)</Badge>
-        <Badge v-if="z.engine === 'winws2' || z.engine === 'winws'" variant="outline">
-          winws v1 для nfqws-стратегий каталога
-        </Badge>
-        <span class="text-muted-foreground">стратегии и списки — в каталоге Zaprett</span>
       </div>
 
       <div
@@ -461,39 +447,22 @@ async function togglePlugin(value) {
         </div>
 
         <div class="space-y-2">
-          <div class="text-sm font-medium">Стратегии Zapret</div>
-          <p class="text-xs text-muted-foreground">
-            Можно выбрать несколько пресетов сразу: они объединяются в одну
-            службу Zapret с отдельными профилями под разные сайты и протоколы.
-            Если профили пересекаются, применяется первый подходящий.
-          </p>
-          <div
-            v-if="presetOptions.length"
-            class="max-h-56 space-y-1 overflow-auto rounded-lg border bg-background/60 p-2"
-          >
-            <div
-              v-for="item in presetOptions"
-              :key="item.value"
-              class="flex items-start gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/60"
-              :class="{ 'bg-primary/5': selectedPresets.includes(item.value) }"
-            >
-              <Checkbox
-                :aria-label="item.label"
-                class="mt-0.5"
-                :model-value="selectedPresets.includes(item.value)"
-                :disabled="busy"
-                @update:model-value="togglePreset(item.value)"
-              />
-              <span class="min-w-0 break-all">{{ item.label }}</span>
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div class="text-sm font-medium">Стратегии Zapret</div>
+              <p class="text-xs text-muted-foreground">
+                Выбрано: {{ selectedPresets.length || 0 }}
+                <template v-if="selectedPresets.length">
+                  · {{ selectedPresets.join(', ') }}
+                </template>
+              </p>
             </div>
+            <Button size="sm" variant="outline" :disabled="busy || !presetOptions.length" @click="presetsOpen = true">
+              Изменить
+            </Button>
           </div>
-          <p v-else class="text-xs text-muted-foreground">
+          <p v-if="!presetOptions.length" class="text-xs text-muted-foreground">
             В бандле не найдено ни одного пресета — переустановите бандл.
-          </p>
-          <p class="text-xs text-muted-foreground">
-            Выбрано: {{ selectedPresets.length || 0 }}. После изменения нажмите
-            «{{ installed ? 'Применить пресет' : 'Установить службу' }}».
-            Telegram-плагин работает через собственный sidecar и Zapret не использует.
           </p>
         </div>
 
@@ -523,21 +492,28 @@ async function togglePlugin(value) {
             <Square class="h-3.5 w-3.5" />
             Остановить
           </Button>
-          <Button
-            v-if="installed"
-            size="sm"
-            variant="ghost"
-            :loading="removeAction.isLoading.value"
-            :disabled="busy"
-            @click="remove"
-          >
-            <Trash2 class="h-3.5 w-3.5" />
-            Удалить службу
-          </Button>
-          <Button size="sm" variant="ghost" :loading="openBusy" @click="openFolder">
-            <FolderOpen class="h-3.5 w-3.5" />
-            Папка
-          </Button>
+          <OverflowMenu label="Действия службы">
+            <button
+              v-if="installed"
+              type="button"
+              class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50"
+              :disabled="busy"
+              @click="openFolder"
+            >
+              <FolderOpen class="h-3.5 w-3.5" />
+              Папка Zapret
+            </button>
+            <button
+              v-if="installed"
+              type="button"
+              class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+              :disabled="busy"
+              @click="remove"
+            >
+              <Trash2 class="h-3.5 w-3.5" />
+              Удалить службу
+            </button>
+          </OverflowMenu>
         </div>
 
         <p v-if="dirty && selectedKey !== savedKey" class="text-xs text-amber-600 dark:text-amber-400">
@@ -546,21 +522,13 @@ async function togglePlugin(value) {
         </p>
       </div>
 
-      <div v-if="supported && !enabled" class="flex items-center justify-between gap-3 rounded-lg border px-3 py-2">
-        <span class="text-xs text-muted-foreground">
-          Плагин выключен. Служба Zapret при этом может продолжать работать.
-        </span>
-        <Button size="sm" variant="outline" :loading="pluginAction.isLoading.value" @click="togglePlugin(true)">
-          Включить плагин
-        </Button>
-      </div>
-
       <div v-if="z.error" class="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
         {{ z.error }}
       </div>
 
-      <div v-if="supported" class="rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-        <p>
+      <details v-if="supported" class="rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+        <summary class="cursor-pointer">UAC, WinDivert и логи</summary>
+        <p class="mt-2">
           Для установки и удаления службы нужен UAC. Запуск и остановка после
           установки идут без повторного запроса. WinDivert может вызывать
           срабатывания антивируса — добавьте папку Zapret в исключения.
@@ -569,7 +537,7 @@ async function togglePlugin(value) {
           Режим «Сначала напрямую» в карточке каналов сначала проверяет прямой
           путь через Zapret и только потом отправляет домен в VPN.
         </p>
-      </div>
+      </details>
 
       <details v-if="service.log" class="rounded-lg border bg-muted/30 px-3 py-2 text-xs">
         <summary class="cursor-pointer text-muted-foreground">Лог службы</summary>
@@ -577,4 +545,36 @@ async function togglePlugin(value) {
       </details>
     </div>
   </Card>
+
+  <Dialog
+    :open="presetsOpen"
+    title="Стратегии Zapret"
+    description="Можно выбрать несколько пресетов — они объединятся в одну службу Zapret с профилями через --new. Если профили пересекаются, сработает первый подходящий."
+    @close="presetsOpen = false"
+  >
+    <div class="max-h-72 space-y-1 overflow-auto rounded-lg border bg-background/60 p-2">
+      <div
+        v-for="item in presetOptions"
+        :key="item.value"
+        class="flex items-start gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/60"
+        :class="{ 'bg-primary/5': selectedPresets.includes(item.value) }"
+      >
+        <Checkbox
+          :aria-label="item.label"
+          class="mt-0.5"
+          :model-value="selectedPresets.includes(item.value)"
+          :disabled="busy"
+          @update:model-value="togglePreset(item.value)"
+        />
+        <span class="min-w-0 break-all">{{ item.label }}</span>
+      </div>
+    </div>
+    <p class="mt-2 text-xs text-muted-foreground">
+      После изменения нажмите «{{ installed ? 'Применить пресет' : 'Установить службу' }}»
+      в карточке.
+    </p>
+    <template #footer>
+      <Button variant="outline" @click="presetsOpen = false">Готово</Button>
+    </template>
+  </Dialog>
 </template>

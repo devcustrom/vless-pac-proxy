@@ -9,6 +9,7 @@ import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
 import Input from '@/components/ui/Input.vue'
 import Label from '@/components/ui/Label.vue'
+import OverflowMenu from '@/components/ui/OverflowMenu.vue'
 import Select from '@/components/ui/Select.vue'
 import Switch from '@/components/ui/Switch.vue'
 
@@ -325,39 +326,10 @@ async function openLink() {
         </Button>
       </div>
 
-      <div class="flex flex-wrap gap-2">
-        <Button v-if="!enabled" size="sm" :loading="enabling" :disabled="anyBusy" @click="enable">
-          Включить Telegram-прокси
-        </Button>
-        <Button v-else size="sm" variant="outline" :loading="disabling" :disabled="anyBusy" @click="disable">
-          Выключить
-        </Button>
-        <Button
-          v-if="enabled"
-          size="sm"
-          variant="outline"
-          :loading="restarting"
-          :disabled="anyBusy"
-          @click="restart"
-        >
-          <RefreshCw class="h-3.5 w-3.5" />
-          Перезапустить
-        </Button>
+      <div class="flex flex-wrap items-center gap-2">
         <Button
           v-if="running"
           size="sm"
-          variant="outline"
-          :loading="busyLink"
-          :disabled="anyBusy"
-          @click="copyLink"
-        >
-          <Copy class="h-3.5 w-3.5" />
-          Копировать ссылку
-        </Button>
-        <Button
-          v-if="running"
-          size="sm"
-          variant="outline"
           :loading="busyLink"
           :disabled="anyBusy"
           @click="openLink"
@@ -365,18 +337,70 @@ async function openLink() {
           <ExternalLink class="h-3.5 w-3.5" />
           Открыть в Telegram
         </Button>
-        <Button size="sm" variant="ghost" :loading="probing" :disabled="anyBusy" @click="probe">
-          <MessageCircle class="h-3.5 w-3.5" />
-          Проверить прокси
+        <Button
+          v-else-if="enabled"
+          size="sm"
+          :loading="restarting"
+          :disabled="anyBusy"
+          @click="restart"
+        >
+          Запустить прокси
         </Button>
+        <OverflowMenu label="Действия Telegram">
+          <button
+            v-if="running"
+            type="button"
+            class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50"
+            :disabled="anyBusy"
+            @click="copyLink"
+          >
+            <Copy class="h-3.5 w-3.5" />
+            Копировать ссылку
+          </button>
+          <button
+            v-if="enabled"
+            type="button"
+            class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50"
+            :disabled="anyBusy"
+            @click="restart"
+          >
+            <RefreshCw class="h-3.5 w-3.5" />
+            Перезапустить
+          </button>
+          <button
+            type="button"
+            class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50"
+            :disabled="anyBusy"
+            @click="probe"
+          >
+            <MessageCircle class="h-3.5 w-3.5" />
+            Проверить прокси
+          </button>
+          <button
+            v-if="t.secretMasked"
+            type="button"
+            class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            :disabled="anyBusy"
+            @click="rotateSecret"
+          >
+            <RefreshCw class="h-3.5 w-3.5" />
+            Сменить секрет
+          </button>
+          <button
+            v-if="enabled"
+            type="button"
+            class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+            :disabled="anyBusy"
+            @click="disable"
+          >
+            Выключить плагин
+          </button>
+        </OverflowMenu>
       </div>
 
       <div v-if="t.secretMasked" class="flex flex-wrap items-center gap-2 text-xs">
         <span class="text-muted-foreground">Secret:</span>
         <code class="rounded bg-muted px-1.5 py-0.5">{{ t.secretMasked }}</code>
-        <Button size="sm" variant="ghost" :loading="rotating" :disabled="anyBusy" @click="rotateSecret">
-          Сгенерировать новый
-        </Button>
       </div>
 
       <div class="space-y-3 rounded-lg border bg-muted/30 p-3">

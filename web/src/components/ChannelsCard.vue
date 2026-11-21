@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { Activity, RotateCcw, Shield } from 'lucide-vue-next'
+import { Activity, Shield } from 'lucide-vue-next'
+import { RouterLink } from 'vue-router'
 import { notify, post } from '@/lib/store'
 import { useStatusQuery } from '@/lib/queries'
 import Card from '@/components/ui/Card.vue'
@@ -15,7 +16,6 @@ const sysProxy = ref(!!props.s.systemProxy?.enabled)
 const sysProxyBusy = ref(false)
 const defaultBusy = ref('')
 const channelBusy = ref('')
-const restartBusy = ref('')
 const directBusy = ref(false)
 // Оптимистичное состояние: переключатель меняется сразу, а не после
 // пятисекундного polling/refetch. При ошибке откатываемся.
@@ -108,19 +108,6 @@ async function setChannel(channel, enabled) {
   }
 }
 
-async function restartChannel(channel) {
-  restartBusy.value = channel
-  try {
-    await post('/api/channels', { channel, restart: true })
-    notify(channel === 'wireguard' ? 'WireGuard перезапускается' : 'Xray перезапускается')
-  } catch {
-    /* тост показан */
-  } finally {
-    await refreshStatus()
-    restartBusy.value = ''
-  }
-}
-
 async function setDirectFirst(value) {
   const previous = directFirst.value
   directFirst.value = value
@@ -139,7 +126,7 @@ async function setDirectFirst(value) {
 </script>
 
 <template>
-  <Card>
+  <Card title="Подключение" description="Состояние каналов и системного прокси.">
     <div class="space-y-4">
       <div class="flex items-start gap-3">
         <div class="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-secondary">
@@ -158,20 +145,10 @@ async function setDirectFirst(value) {
           </div>
         </div>
         <div class="flex shrink-0 items-center gap-2">
-          <Button
-            size="icon"
-            variant="ghost"
-            :disabled="!wgEnabled || !!channelBusy || !!restartBusy"
-            :loading="restartBusy === 'wireguard'"
-            title="Перезапустить WireGuard"
-            @click="restartChannel('wireguard')"
-          >
-            <RotateCcw class="h-4 w-4" />
-          </Button>
           <Switch
             data-testid="wireguard-channel"
             :model-value="wgEnabled"
-            :disabled="!!channelBusy || restartBusy === 'wireguard'"
+            :disabled="!!channelBusy"
             @update:model-value="(value) => setChannel('wireguard', value)"
           />
         </div>
@@ -190,24 +167,14 @@ async function setDirectFirst(value) {
             </span>
           </div>
           <div class="mt-1 text-xs text-muted-foreground">
-            основной канал: {{ vpnDefault === 'vless' ? 'VLESS' : 'WireGuard' }}
+            {{ s.vlessEndpoint || 'конфиг не задан' }}
           </div>
         </div>
         <div class="flex shrink-0 items-center gap-2">
-          <Button
-            size="icon"
-            variant="ghost"
-            :disabled="!xrayEnabled || !!channelBusy || !!restartBusy"
-            :loading="restartBusy === 'xray'"
-            title="Перезапустить Xray"
-            @click="restartChannel('xray')"
-          >
-            <RotateCcw class="h-4 w-4" />
-          </Button>
           <Switch
             data-testid="xray-channel"
             :model-value="xrayEnabled"
-            :disabled="!!channelBusy || restartBusy === 'xray'"
+            :disabled="!!channelBusy"
             @update:model-value="(value) => setChannel('xray', value)"
           />
         </div>
@@ -237,21 +204,23 @@ async function setDirectFirst(value) {
         </div>
       </div>
 
-      <div class="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2">
-        <div>
-          <div class="text-sm font-medium">Сначала напрямую</div>
-          <div class="text-xs text-muted-foreground">
-            Для VPN-доменов: сначала прямой запрос через Zapret, VPN — только если
-            напрямую не открылось.
+      <details class="rounded-lg border bg-muted/30 px-3 py-2">
+        <summary class="cursor-pointer text-sm font-medium">Дополнительно</summary>
+        <div class="mt-3 flex items-center justify-between gap-3">
+          <div>
+            <div class="text-sm font-medium">Сначала напрямую</div>
+            <div class="text-xs text-muted-foreground">
+              Для VPN-доменов сначала пробовать прямой запрос через Zapret.
+            </div>
           </div>
+          <Switch
+            data-testid="direct-first"
+            :model-value="directFirst"
+            :disabled="directBusy"
+            @update:model-value="setDirectFirst"
+          />
         </div>
-        <Switch
-          data-testid="direct-first"
-          :model-value="directFirst"
-          :disabled="directBusy"
-          @update:model-value="setDirectFirst"
-        />
-      </div>
+      </details>
 
       <div class="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2">
         <div>
@@ -269,6 +238,13 @@ async function setDirectFirst(value) {
           @update:model-value="setSystemProxy"
         />
       </div>
+
+      <RouterLink
+        to="/channels"
+        class="inline-flex text-xs text-primary hover:underline"
+      >
+        Настроить каналы и конфиги →
+      </RouterLink>
     </div>
   </Card>
 </template>

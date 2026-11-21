@@ -8,8 +8,10 @@ import { wgConfigSchema } from '@/lib/validators'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
+import Dialog from '@/components/ui/Dialog.vue'
 import Input from '@/components/ui/Input.vue'
 import Label from '@/components/ui/Label.vue'
+import OverflowMenu from '@/components/ui/OverflowMenu.vue'
 import Textarea from '@/components/ui/Textarea.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
@@ -43,12 +45,14 @@ const useLoading = computed(() => useAction.isLoading.value)
 const removeLoading = computed(() => removeAction.isLoading.value)
 const usingSlug = ref('')
 const removingSlug = ref('')
+const addOpen = ref(false)
 const adding = computed(() => addAction.isLoading.value)
 
 async function addConfig(output) {
   try {
     await addAction.mutateAsync(output)
     reset(form)
+    addOpen.value = false
     notify('WireGuard-конфиг добавлен')
   } catch {
     /* тост показан */
@@ -123,6 +127,10 @@ async function testConfig(item) {
         <span class="text-muted-foreground">
           активный: {{ active?.name || '—' }} · {{ s.wgEndpoint || '—' }}
         </span>
+        <Button size="sm" variant="outline" class="ml-auto" @click="addOpen = true">
+          <Plus class="h-3.5 w-3.5" />
+          Добавить конфиг
+        </Button>
       </div>
 
       <div v-if="loading" class="rounded-lg border px-3 py-4 text-sm text-muted-foreground">
@@ -167,34 +175,41 @@ async function testConfig(item) {
               <Zap class="h-3.5 w-3.5" />
               Использовать
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              :disabled="useLoading || removeLoading"
-              :loading="tests[item.slug]?.busy"
-              @click="testConfig(item)"
-            >
-              <FlaskConical class="h-3.5 w-3.5" />
-              Тест
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              :disabled="useLoading || removeLoading"
-              :loading="removingSlug === item.slug"
-              @click="removeConfig(item)"
-            >
-              <Trash2 class="h-3.5 w-3.5" />
-              Удалить
-            </Button>
+            <OverflowMenu label="Действия с конфигом">
+              <button
+                type="button"
+                class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50"
+                :disabled="useLoading || removeLoading"
+                @click="testConfig(item)"
+              >
+                <FlaskConical class="h-3.5 w-3.5" />
+                {{ tests[item.slug]?.busy ? 'Проверяю…' : 'Проверить' }}
+              </button>
+              <button
+                type="button"
+                class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                :disabled="useLoading || removeLoading"
+                @click="removeConfig(item)"
+              >
+                <Trash2 class="h-3.5 w-3.5" />
+                Удалить
+              </button>
+            </OverflowMenu>
           </div>
         </li>
       </ul>
       <p v-else class="text-xs text-muted-foreground">
         Конфигов нет. Добавьте первый — он станет активным.
       </p>
+    </div>
 
-      <Form :of="form" class="space-y-2 rounded-lg border bg-muted/30 p-3" @submit="addConfig">
+    <Dialog
+      :open="addOpen"
+      title="Добавить WireGuard-конфиг"
+      description="Вставьте wg.conf текстом или выберите файл."
+      @close="addOpen = false"
+    >
+      <Form :of="form" class="space-y-2" @submit="addConfig">
         <div class="flex items-center gap-2 text-sm font-medium">
           <Plus class="h-4 w-4" />
           Добавить конфиг
@@ -239,6 +254,6 @@ async function testConfig(item) {
           </Button>
         </div>
       </Form>
-    </div>
+    </Dialog>
   </Card>
 </template>

@@ -1,51 +1,29 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue'
-import { BookOpen, ListFilter, RefreshCw, ShieldCheck } from 'lucide-vue-next'
+import { BookOpen, RefreshCw, ShieldCheck } from 'lucide-vue-next'
+import { RouterView, useRoute, useRouter } from 'vue-router'
 import { api, store } from '@/lib/store'
 import { useStatusQuery } from '@/lib/queries'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
 import Tabs from '@/components/ui/Tabs.vue'
-import OnboardingCard from '@/components/OnboardingCard.vue'
-import ChannelsCard from '@/components/ChannelsCard.vue'
-import WireGuardCard from '@/components/WireGuardCard.vue'
-import VlessCard from '@/components/VlessCard.vue'
-import PoolCard from '@/components/PoolCard.vue'
-import TelegramCard from '@/components/TelegramCard.vue'
-import ZapretCard from '@/components/ZapretCard.vue'
-import ZaprettCatalogCard from '@/components/ZaprettCatalogCard.vue'
-import LocalDomainsCard from '@/components/LocalDomainsCard.vue'
-import RoutingDialog from '@/components/RoutingDialog.vue'
-import PluginSetupDialog from '@/components/PluginSetupDialog.vue'
-import ListsCard from '@/components/ListsCard.vue'
-import CheckCard from '@/components/CheckCard.vue'
-import VisitedCard from '@/components/VisitedCard.vue'
-import UpdateCard from '@/components/UpdateCard.vue'
-import SettingsCard from '@/components/SettingsCard.vue'
-import BackupCard from '@/components/BackupCard.vue'
 import DocsDialog from '@/components/DocsDialog.vue'
+import PluginSetupDialog from '@/components/PluginSetupDialog.vue'
+import StatusDialog from '@/components/StatusDialog.vue'
+import PluginDisabledView from '@/views/PluginDisabledView.vue'
 import Toast from '@/components/Toast.vue'
 
-const ALL_TABS = {
-  overview: { value: 'overview', label: 'Обзор' },
-  configs: { value: 'configs', label: 'Конфиги' },
-  sites: { value: 'sites', label: 'Сайты' },
-  telegram: { value: 'telegram', label: 'Telegram' },
-  dpi: { value: 'dpi', label: 'Обход DPI' },
-  domains: { value: 'domains', label: 'Домены' },
-  settings: { value: 'settings', label: 'Настройки' },
-}
-
+const router = useRouter()
+const route = useRoute()
 const statusQuery = useStatusQuery()
 const s = computed(() => statusQuery.data.value)
 const offline = computed(() => !!statusQuery.error.value)
 const online = computed(() => !offline.value && !!s.value && (s.value.wgUp || s.value.vlessUp))
 const docsOpen = ref(false)
-const routingOpen = ref(false)
+const statusOpen = ref(false)
 const firstRunOpen = ref(false)
 const firstRunDismissed = ref(false)
 const refreshing = ref(false)
-const tab = ref('overview')
 let pollTimer = null
 let reloading = false
 
@@ -65,19 +43,19 @@ watch(
 const tabs = computed(() => {
   const data = s.value
   const plugins = data?.plugins || {}
-  const items = [ALL_TABS.overview, ALL_TABS.configs, ALL_TABS.sites]
-  if (plugins.telegram) items.push(ALL_TABS.telegram)
-  if (plugins.zapret && data?.zapret?.supported) items.push(ALL_TABS.dpi)
-  if (plugins.localDomains) items.push(ALL_TABS.domains)
-  items.push(ALL_TABS.settings)
-  return items
-})
-
-watch(tabs, (items) => {
-  if (!items.some((item) => item.value === tab.value)) {
-    tab.value = 'overview'
-    history.replaceState(null, '', '#overview')
-  }
+  const items = [
+    { label: 'Обзор', to: '/overview' },
+    { label: 'Каналы', to: '/channels' },
+    { label: 'Сайты', to: '/sites' },
+  ]
+  if (plugins.telegram) items.push({ label: 'Telegram', to: '/telegram' })
+  if (plugins.zapret && data?.zapret?.supported) items.push({ label: 'Обход DPI', to: '/dpi' })
+  if (plugins.localDomains) items.push({ label: 'Локальные домены', to: '/domains/local' })
+  items.push({ label: 'Настройки', to: '/settings' })
+  return items.map((item) => ({
+    ...item,
+    active: route.path === item.to || route.path.startsWith(`${item.to}/`),
+  }))
 })
 
 watchEffect(() => {
@@ -99,6 +77,14 @@ watchEffect(() => {
   }
 })
 
+watch(
+  () => route.query.docs,
+  (value) => {
+    if (value === '1') docsOpen.value = true
+  },
+  { immediate: true },
+)
+
 async function refreshStatus() {
   refreshing.value = true
   try {
@@ -119,21 +105,12 @@ function onPluginEnabled() {
   firstRunDismissed.value = true
 }
 
-function syncTabFromHash() {
-  const hash = window.location.hash.replace('#', '')
-  if (tabs.value.some((item) => item.value === hash)) tab.value = hash
-  if (hash === 'docs') docsOpen.value = true
-}
-
-function setTab(value) {
-  tab.value = value
-  history.replaceState(null, '', `#${value}`)
-}
-
 function closeDocs() {
   docsOpen.value = false
-  if (window.location.hash === '#docs') {
-    history.replaceState(null, '', window.location.pathname + window.location.search)
+  if (route.query.docs) {
+    const query = { ...route.query }
+    delete query.docs
+    router.replace({ path: route.path, query })
   }
 }
 
@@ -151,9 +128,16 @@ function onVisibilityChange() {
   if (!document.hidden) refetchStatus()
 }
 
+function routeAllowed(value) {
+  const plugin = value.meta?.plugin
+  if (!plugin) return true
+  if (plugin === 'zapret') {
+    return !!s.value?.plugins?.zapret && s.value?.zapret?.supported !== false
+  }
+  return !!s.value?.plugins?.[plugin]
+}
+
 onMounted(() => {
-  syncTabFromHash()
-  window.addEventListener('hashchange', syncTabFromHash)
   window.addEventListener('wpc:status-refresh', refetchStatus)
   document.addEventListener('visibilitychange', onVisibilityChange)
   // У @pinia/colada нет refetchInterval — держим polling сами, иначе
@@ -162,13 +146,10 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  window.removeEventListener('hashchange', syncTabFromHash)
   window.removeEventListener('wpc:status-refresh', refetchStatus)
   document.removeEventListener('visibilitychange', onVisibilityChange)
   if (pollTimer !== null) window.clearInterval(pollTimer)
 })
-
-watch(s, () => syncTabFromHash())
 </script>
 
 <template>
@@ -183,12 +164,20 @@ watch(s, () => syncTabFromHash())
           <p class="text-xs text-muted-foreground">WireGuard + Xray · умная маршрутизация по доменам</p>
         </div>
         <div class="ml-auto flex flex-wrap items-center gap-2">
-          <Badge :variant="online ? 'success' : 'destructive'">
-            {{ online ? 'VPN активен' : 'VPN не активен' }}
-          </Badge>
-          <Button variant="outline" size="sm" :loading="refreshing" @click="refreshStatus">
+          <Button variant="ghost" size="sm" class="h-8 px-2" @click="statusOpen = true">
+            <Badge :variant="online ? 'success' : 'destructive'">
+              {{ online ? 'VPN активен' : 'VPN не активен' }}
+            </Badge>
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            aria-label="Обновить состояние"
+            title="Обновить состояние"
+            :loading="refreshing"
+            @click="refreshStatus"
+          >
             <RefreshCw class="h-3.5 w-3.5" />
-            Обновить
           </Button>
           <Button variant="outline" size="sm" @click="docsOpen = true">
             <BookOpen class="h-3.5 w-3.5" />
@@ -196,96 +185,33 @@ watch(s, () => syncTabFromHash())
           </Button>
         </div>
       </div>
-      <Tabs :model-value="tab" :tabs="tabs" @update:model-value="setTab" />
+      <Tabs :tabs="tabs" />
     </header>
 
     <main class="container space-y-4 py-5">
       <div
         v-if="store.offline"
-        class="rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+        class="flex flex-wrap items-center gap-3 rounded-xl border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive"
       >
-        Панель недоступна. Проверьте, что менеджер запущен, и обновите страницу.
+        <span>Панель недоступна. Проверьте, что менеджер запущен.</span>
+        <Button size="sm" variant="outline" :loading="refreshing" @click="refreshStatus">
+          Повторить
+        </Button>
       </div>
 
       <template v-if="s">
-        <template v-if="tab === 'overview'">
-          <div class="flex justify-end">
-            <Button variant="outline" size="sm" @click="routingOpen = true">
-              <ListFilter class="h-3.5 w-3.5" />
-              Маршрутизация доменов
-            </Button>
-          </div>
-          <OnboardingCard :s="s" />
-          <div class="grid items-start gap-4 lg:grid-cols-2">
-            <div class="space-y-4">
-              <ChannelsCard :s="s" />
-              <ListsCard :s="s" />
-              <CheckCard :s="s" />
-            </div>
-            <div class="space-y-4">
-              <UpdateCard />
-            </div>
-          </div>
-        </template>
-
-        <template v-else-if="tab === 'sites'">
-          <div class="grid items-start gap-4 lg:grid-cols-2">
-            <div class="space-y-4">
-              <VisitedCard :s="s" />
-            </div>
-          </div>
-        </template>
-
-        <template v-else-if="tab === 'configs'">
-          <div class="grid items-start gap-4 lg:grid-cols-2">
-            <div class="space-y-4">
-              <WireGuardCard :s="s" />
-              <VlessCard :s="s" />
-            </div>
-            <div class="space-y-4">
-              <PoolCard :s="s" />
-            </div>
-          </div>
-        </template>
-
-        <template v-else-if="tab === 'telegram'">
-          <div class="grid items-start gap-4 lg:grid-cols-2">
-            <div class="space-y-4">
-              <TelegramCard :s="s" />
-            </div>
-          </div>
-        </template>
-
-        <template v-else-if="tab === 'dpi'">
-          <div class="grid items-start gap-4 lg:grid-cols-2">
-            <div class="space-y-4">
-              <ZapretCard :s="s" />
-            </div>
-            <div class="space-y-4">
-              <ZaprettCatalogCard :s="s" />
-            </div>
-          </div>
-        </template>
-
-        <template v-else-if="tab === 'domains'">
-          <div class="grid items-start gap-4 lg:grid-cols-2">
-            <div class="space-y-4">
-              <LocalDomainsCard :s="s" />
-            </div>
-          </div>
-        </template>
-
-        <template v-else>
-          <div class="grid items-start gap-4 lg:grid-cols-2">
-            <div class="space-y-4">
-              <SettingsCard :s="s" />
-            </div>
-            <div class="space-y-4">
-              <UpdateCard />
-              <BackupCard />
-            </div>
-          </div>
-        </template>
+        <RouterView v-slot="{ Component, route: currentRoute }">
+          <component
+            :is="Component"
+            v-if="routeAllowed(currentRoute)"
+            :s="s"
+          />
+          <PluginDisabledView
+            v-else
+            :s="s"
+            :plugin="currentRoute.meta?.plugin || ''"
+          />
+        </RouterView>
       </template>
 
       <div v-else class="py-20 text-center text-sm text-muted-foreground">
@@ -294,7 +220,7 @@ watch(s, () => syncTabFromHash())
     </main>
 
     <DocsDialog :open="docsOpen" @close="closeDocs" />
-    <RoutingDialog v-if="s" :open="routingOpen" :s="s" @close="routingOpen = false" />
+    <StatusDialog v-if="s" :open="statusOpen" :s="s" @close="statusOpen = false" />
     <PluginSetupDialog
       v-if="s"
       :open="firstRunOpen"

@@ -1,15 +1,12 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { Download, LockKeyhole, Wifi } from 'lucide-vue-next'
-import { ensureEngines, installCerts, post } from '@/lib/store'
-import { useStatusQuery } from '@/lib/queries'
+import { ensureEngines, installCerts } from '@/lib/store'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import Badge from '@/components/ui/Badge.vue'
-import Switch from '@/components/ui/Switch.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
-const statusQuery = useStatusQuery()
 
 const downloads = computed(() => Object.entries(props.s.engineDownloads || {}))
 const downloading = computed(() =>
@@ -19,7 +16,6 @@ const configured = computed(() => props.s.wgConfigured || props.s.vlessConfigure
 const visible = computed(() => !props.s.enginesReady || !configured.value || downloading.value)
 const enginesBusy = ref(false)
 const certBusy = ref(false)
-const proxyBusy = ref(false)
 
 const progress = computed(() =>
   downloads.value
@@ -51,22 +47,6 @@ async function trustCerts() {
     certBusy.value = false
   }
 }
-
-async function toggleProxy(enabled) {
-  proxyBusy.value = true
-  try {
-    await post('/api/system-proxy', { enabled })
-  } catch {
-    /* тост уже показан */
-  } finally {
-    try {
-      await statusQuery.refetch()
-    } catch {
-      /* следующий опрос обновит статус */
-    }
-    proxyBusy.value = false
-  }
-}
 </script>
 
 <template>
@@ -96,11 +76,10 @@ async function toggleProxy(enabled) {
           Скачайте движки wireproxy и xray — без них каналы не запустятся.
         </template>
         <template v-else-if="!configured">
-          Откройте вкладку «Конфиги» и добавьте канал: импортируйте wg.conf в блоке
-          WireGuard или вставьте vless://-ссылку в блоке VLESS.
+          Откройте вкладку «Каналы» и добавьте WireGuard или VLESS-конфиг.
         </template>
         <template v-else>
-          Каналы настроены. Включите системный прокси, чтобы браузер пошёл через менеджер.
+          Каналы настроены. Включите системный прокси в блоке каналов.
         </template>
       </p>
 
@@ -137,15 +116,6 @@ async function toggleProxy(enabled) {
           <LockKeyhole class="h-3.5 w-3.5" />
           Установить сертификаты
         </Button>
-        <label class="flex items-center gap-2 text-sm text-muted-foreground">
-          <Switch
-            aria-label="Системный прокси"
-            :model-value="!!s.systemProxy?.enabled"
-            :disabled="proxyBusy || (s.smartProxyReady === false && !s.systemProxy?.enabled)"
-            @update:model-value="toggleProxy"
-          />
-          Системный прокси
-        </label>
       </div>
     </div>
   </Card>

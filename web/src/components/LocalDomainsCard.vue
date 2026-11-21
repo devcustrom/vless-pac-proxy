@@ -1,12 +1,14 @@
 <script setup>
 import { computed, reactive, ref } from 'vue'
-import { ExternalLink, Globe, LockKeyhole, Pencil, ShieldCheck, Trash2 } from 'lucide-vue-next'
+import { ExternalLink, Globe, LockKeyhole, Pencil, Plus, ShieldCheck, Trash2 } from 'lucide-vue-next'
 import { api, installCerts, notify, post } from '@/lib/store'
 import { useActionMutation } from '@/lib/queries'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
+import Dialog from '@/components/ui/Dialog.vue'
 import DomainAddForm from '@/components/DomainAddForm.vue'
+import OverflowMenu from '@/components/ui/OverflowMenu.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
 
@@ -16,6 +18,7 @@ const applyBusy = ref(false)
 const editBusy = ref(false)
 const removing = ref('')
 const probing = ref('')
+const addOpen = ref(false)
 const addAction = useActionMutation(
   async (input) => api('/api/local-domains', { action: 'add', ...input }),
   [['status']],
@@ -63,6 +66,7 @@ const isMac = () => String(lp().hostsScript || '').endsWith('.command')
 async function addDomain(output) {
   try {
     await addAction.mutateAsync({ domain: output.domain, port: output.port })
+    addOpen.value = false
     notify(`Домен добавлен: http://${output.domain}${httpPort()}`)
     return true
   } catch {
@@ -132,6 +136,15 @@ async function probe(name) {
           <LockKeyhole class="h-3.5 w-3.5" />
           Установить сертификаты
         </Button>
+        <Button
+          size="sm"
+          class="ml-auto"
+          :disabled="!s.plugins?.localDomains"
+          @click="addOpen = true"
+        >
+          <Plus class="h-3.5 w-3.5" />
+          Добавить домен
+        </Button>
       </div>
 
       <div v-if="lp().error || lp().httpsError" class="space-y-1 text-xs text-destructive">
@@ -170,36 +183,31 @@ async function probe(name) {
                 </Badge>
               </div>
             </div>
-            <Button
-              size="sm"
-              variant="outline"
-              :loading="probing === item.domain"
-              :disabled="!!probing || !!removing"
-              @click="probe(item.domain)"
-            >
-              проверить
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              :loading="removing === item.domain"
-              :disabled="!!probing || !!removing"
-              @click="removeDomain(item.domain)"
-            >
-              <Trash2 class="h-3.5 w-3.5" />
-            </Button>
+            <div class="flex items-center gap-1">
+              <OverflowMenu label="Действия с доменом">
+                <button
+                  type="button"
+                  class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50"
+                  :disabled="!!probing || !!removing"
+                  @click="probe(item.domain)"
+                >
+                  {{ probing === item.domain ? 'Проверяю…' : 'Проверить' }}
+                </button>
+                <button
+                  type="button"
+                  class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                  :disabled="!!probing || !!removing"
+                  @click="removeDomain(item.domain)"
+                >
+                  <Trash2 class="h-3.5 w-3.5" />
+                  Удалить
+                </button>
+              </OverflowMenu>
+            </div>
           </div>
         </li>
       </ul>
       <p v-else class="text-xs text-muted-foreground">Локальные домены не настроены.</p>
-
-      <DomainAddForm
-        show-port
-        placeholder="app.example.com"
-        :submit="addDomain"
-        :loading="addLoading"
-        :disabled="!!removing || applyBusy"
-      />
 
       <div class="space-y-1 rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
         <p>
@@ -227,4 +235,19 @@ async function probe(name) {
       </div>
     </div>
   </Card>
+
+  <Dialog
+    :open="addOpen"
+    title="Добавить локальный домен"
+    description="Домен будет проксироваться на локальный порт."
+    @close="addOpen = false"
+  >
+    <DomainAddForm
+      show-port
+      placeholder="app.example.com"
+      :submit="addDomain"
+      :loading="addLoading"
+      :disabled="!!removing || applyBusy"
+    />
+  </Dialog>
 </template>

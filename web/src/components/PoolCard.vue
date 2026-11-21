@@ -173,6 +173,12 @@ async function toggleRotate(value) {
     </template>
 
     <div class="space-y-4">
+      <details class="rounded-lg border bg-muted/30 px-3 py-2">
+        <summary class="cursor-pointer text-sm font-medium">
+          Подписки и импорт
+          <span class="ml-1 text-xs text-muted-foreground">({{ s.subscriptions?.length || 0 }})</span>
+        </summary>
+        <div class="mt-3 space-y-3">
       <div class="space-y-2">
         <Label>Подписки</Label>
         <ul v-if="s.subscriptions?.length" class="divide-y rounded-lg border">
@@ -230,6 +236,8 @@ async function toggleRotate(value) {
           WHITE (CIDR/SNI)
         </Button>
       </div>
+        </div>
+      </details>
 
       <div class="flex flex-wrap items-center gap-2">
         <Button
@@ -260,7 +268,9 @@ async function toggleRotate(value) {
         </span>
       </div>
 
-      <div class="flex flex-wrap items-center gap-4 rounded-lg border bg-muted/30 px-3 py-2">
+      <details class="rounded-lg border bg-muted/30 px-3 py-2">
+        <summary class="cursor-pointer text-sm font-medium">Дополнительно</summary>
+        <div class="mt-3 flex flex-wrap items-center gap-4">
         <label class="flex items-center gap-2 text-sm">
           <Switch
             :model-value="autoPool"
@@ -285,13 +295,15 @@ async function toggleRotate(value) {
           />
           Автопереключение
         </label>
-      </div>
-
-      <div class="space-y-2">
-        <div class="flex items-center justify-between">
-          <Label>Рабочие конфиги</Label>
-          <Badge v-if="working.length" variant="success">{{ working.length }}</Badge>
         </div>
+      </details>
+
+      <details class="rounded-lg border bg-muted/30 px-3 py-2">
+        <summary class="cursor-pointer text-sm font-medium">
+          Рабочие конфиги
+          <span class="ml-1 text-xs text-muted-foreground">({{ working.length }})</span>
+        </summary>
+        <div class="mt-3 space-y-2">
         <div v-if="active" class="rounded-lg border bg-success/5 px-3 py-2 text-xs">
           <Badge variant="success">активен</Badge>
           <span class="ml-2">{{ active.name || active.address }}</span>
@@ -328,7 +340,8 @@ async function toggleRotate(value) {
         <p v-else class="text-xs text-muted-foreground">
           {{ (s.pool || []).length ? 'Рабочих конфигов нет — запустите проверку заново.' : 'Пул ещё не проверялся.' }}
         </p>
-      </div>
+        </div>
+      </details>
     </div>
   </Card>
 </template>

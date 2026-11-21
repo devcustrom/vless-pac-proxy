@@ -1,12 +1,14 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { ListFilter, Trash2 } from 'lucide-vue-next'
+import { ListFilter, Plus, Trash2 } from 'lucide-vue-next'
 import { notify, post } from '@/lib/store'
 import { useActionMutation } from '@/lib/queries'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
+import Dialog from '@/components/ui/Dialog.vue'
 import DomainAddForm from '@/components/DomainAddForm.vue'
+import Select from '@/components/ui/Select.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
 
@@ -55,6 +57,22 @@ const sections = [
   },
 ]
 
+const addOpen = ref(false)
+const target = ref('extra')
+const targetOptions = sections.map((section) => ({
+  value: section.key,
+  label: section.title,
+}))
+const selectedSection = computed(
+  () => sections.find((section) => section.key === target.value) || sections[0],
+)
+
+async function submitAdd(output) {
+  const ok = await add(selectedSection.value, output.domain)
+  if (ok) addOpen.value = false
+  return ok
+}
+
 async function add(section, domain) {
   addSection.value = section.key
   try {
@@ -93,40 +111,68 @@ async function remove(section, value) {
       <ListFilter class="h-4 w-4 text-primary" />
     </template>
 
-    <div class="space-y-5">
-      <section v-for="section in sections" :key="section.key" class="space-y-2">
-        <div class="flex flex-wrap items-center gap-2">
+    <div class="space-y-3">
+      <div class="flex justify-end">
+        <Button size="sm" @click="addOpen = true">
+          <Plus class="h-3.5 w-3.5" />
+          Добавить домен
+        </Button>
+      </div>
+
+      <details
+        v-for="section in sections"
+        :key="section.key"
+        class="rounded-lg border bg-muted/30 px-3 py-2"
+      >
+        <summary class="flex cursor-pointer flex-wrap items-center gap-2 text-sm">
           <Badge :variant="section.variant">{{ section.badge }}</Badge>
-          <h4 class="text-sm font-medium">{{ section.title }}</h4>
+          <span class="font-medium">{{ section.title }}</span>
           <span class="text-xs text-muted-foreground">{{ section.items().length }}</span>
-        </div>
-        <p class="text-xs text-muted-foreground">{{ section.hint }}</p>
-
-        <ul v-if="section.items().length" class="divide-y rounded-lg border">
-          <li
-            v-for="item in section.items()"
-            :key="item"
-            class="flex items-center justify-between px-3 py-1.5 text-sm"
-          >
-            <span class="font-mono text-xs">{{ item }}</span>
-            <Button
-              size="sm"
-              variant="ghost"
-              :loading="removing === `${section.key}:${item}`"
-              :disabled="!!removing || addLoading"
-              @click="remove(section, item)"
+        </summary>
+        <div class="mt-3 space-y-2">
+          <p class="text-xs text-muted-foreground">{{ section.hint }}</p>
+          <ul v-if="section.items().length" class="divide-y rounded-lg border">
+            <li
+              v-for="item in section.items()"
+              :key="item"
+              class="flex items-center justify-between px-3 py-1.5 text-sm"
             >
-              <Trash2 class="h-3.5 w-3.5" />
-            </Button>
-          </li>
-        </ul>
-
-        <DomainAddForm
-          :submit="(output) => add(section, output.domain)"
-          :loading="addSection === section.key"
-          :disabled="!!removing || (!!addSection && addSection !== section.key)"
-        />
-      </section>
+              <span class="font-mono text-xs">{{ item }}</span>
+              <Button
+                size="sm"
+                variant="ghost"
+                :loading="removing === `${section.key}:${item}`"
+                :disabled="!!removing || addLoading"
+                :aria-label="`Удалить ${item}`"
+                :title="`Удалить ${item}`"
+                @click="remove(section, item)"
+              >
+                <Trash2 class="h-3.5 w-3.5" />
+              </Button>
+            </li>
+          </ul>
+          <p v-else class="text-xs text-muted-foreground">Пока пусто.</p>
+        </div>
+      </details>
     </div>
+
+    <Dialog
+      :open="addOpen"
+      title="Добавить домен"
+      description="Выберите, как маршрутизировать домен."
+      @close="addOpen = false"
+    >
+      <div class="space-y-3">
+        <div class="space-y-1">
+          <div class="text-xs font-medium text-muted-foreground">Маршрут</div>
+          <Select v-model="target" :options="targetOptions" />
+        </div>
+        <DomainAddForm
+          :submit="submitAdd"
+          :loading="addLoading"
+          :disabled="!!removing"
+        />
+      </div>
+    </Dialog>
   </Card>
 </template>

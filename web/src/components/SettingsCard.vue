@@ -1,10 +1,10 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { Blocks, Copy, Info, Power, RefreshCw } from 'lucide-vue-next'
+import { Blocks, Copy, Power, RefreshCw } from 'lucide-vue-next'
 import { api, notify } from '@/lib/store'
 import { useActionMutation } from '@/lib/queries'
 import Card from '@/components/ui/Card.vue'
-import Badge from '@/components/ui/Badge.vue'
+import Button from '@/components/ui/Button.vue'
 import Switch from '@/components/ui/Switch.vue'
 import PluginSetupDialog from '@/components/PluginSetupDialog.vue'
 
@@ -157,10 +157,7 @@ async function toggleAutoAdd(value) {
 </script>
 
 <template>
-  <Card
-    title="Плагины"
-    description="По умолчанию плагины выключены. Включайте только нужные."
-  >
+  <Card title="Плагины" description="Включайте только нужные функции. Остальные не занимают вкладки.">
     <template #icon>
       <Blocks class="h-4 w-4 text-primary" />
     </template>
@@ -168,15 +165,9 @@ async function toggleAutoAdd(value) {
     <div class="space-y-3">
       <div class="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-3">
         <div class="min-w-0">
-          <div class="flex flex-wrap items-center gap-2">
-            <span class="text-sm font-medium">Локальные домены</span>
-            <Badge :variant="localDomains ? 'success' : 'secondary'">
-              {{ localDomains ? 'включён' : 'выключен' }}
-            </Badge>
-          </div>
+          <span class="text-sm font-medium">Локальные домены</span>
           <p class="mt-1 text-xs text-muted-foreground">
-            HTTP :{{ s.localProxy?.port }} / HTTPS :{{ s.localProxy?.httpsPort }}, свой CA,
-            WebSocket. Слушатели работают только когда плагин включён.
+            HTTPS-домены, локальный CA и hosts. Настройки — во вкладке «Локальные домены».
           </p>
         </div>
         <Switch
@@ -188,15 +179,9 @@ async function toggleAutoAdd(value) {
 
       <div class="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-3">
         <div class="min-w-0">
-          <div class="flex flex-wrap items-center gap-2">
-            <span class="text-sm font-medium">Telegram-прокси</span>
-            <Badge :variant="telegram ? 'success' : 'secondary'">
-              {{ telegram ? 'включён' : 'выключен' }}
-            </Badge>
-          </div>
+          <span class="text-sm font-medium">Telegram-прокси</span>
           <p class="mt-1 text-xs text-muted-foreground">
-            MTProto на 127.0.0.1:{{ s.telegram?.port || 1443 }}: WS-транспорт,
-            WireGuard/VLESS и явный direct-режим. Настройки — во вкладке «Telegram».
+            Локальный MTProto-прокси с WS/VPN/direct. Настройки — во вкладке «Telegram».
           </p>
         </div>
         <Switch
@@ -211,15 +196,9 @@ async function toggleAutoAdd(value) {
         class="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-3"
       >
         <div class="min-w-0">
-          <div class="flex flex-wrap items-center gap-2">
-            <span class="text-sm font-medium">Обход DPI (Zapret)</span>
-            <Badge :variant="zapret ? 'success' : 'secondary'">
-              {{ zapret ? 'включён' : 'выключен' }}
-            </Badge>
-          </div>
+          <span class="text-sm font-medium">Обход DPI (Zapret)</span>
           <p class="mt-1 text-xs text-muted-foreground">
-            WinDivert и Windows-служба Zapret: zapret2, каталог стратегий Zaprett,
-            автоподбор и запуск из вкладки «Обход DPI».
+            Zapret 2, каталог стратегий и WinDivert. Настройки — во вкладке «Обход DPI».
           </p>
         </div>
         <Switch
@@ -229,48 +208,36 @@ async function toggleAutoAdd(value) {
         />
       </div>
 
-      <div class="space-y-2">
-        <div class="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-          <Info class="h-3.5 w-3.5" />
-          Ядро (всегда включено)
-        </div>
-        <div
-          v-for="item in core"
-          :key="item.name"
-          class="rounded-lg border px-3 py-2"
-        >
-          <div class="flex items-center justify-between gap-2">
-            <span class="text-sm">{{ item.name }}</span>
-            <Badge variant="outline">ядро</Badge>
-          </div>
-          <p class="mt-0.5 text-xs text-muted-foreground">{{ item.description }}</p>
-        </div>
-      </div>
+      <details class="rounded-lg border px-3 py-2">
+        <summary class="cursor-pointer text-xs font-medium text-muted-foreground">
+          Что входит в ядро
+        </summary>
+        <ul class="mt-2 space-y-1 text-xs text-muted-foreground">
+          <li v-for="item in core" :key="item.name">
+            <b class="text-foreground">{{ item.name }}</b> — {{ item.description }}
+          </li>
+        </ul>
+      </details>
 
       <p class="text-xs text-muted-foreground">
-        Как добавить свой плагин или протокол — «Документация» → «Плагины и протоколы».
+        Свой плагин или протокол — «Документация» → «Плагины и протоколы».
       </p>
     </div>
   </Card>
 
   <Card
-    title="Приложение"
-    description="Запуск менеджера при входе в систему — чтобы прокси и трей были доступны сразу."
+    title="Основное"
+    description="Автозапуск, идентификатор устройства и проверка сайтов."
   >
     <template #icon>
       <Power class="h-4 w-4 text-primary" />
     </template>
+
     <div class="flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-3">
       <div class="min-w-0">
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="text-sm font-medium">Запускать при входе</span>
-          <Badge :variant="autostart ? 'success' : 'secondary'">
-            {{ autostart ? 'включено' : 'выключено' }}
-          </Badge>
-        </div>
+        <span class="text-sm font-medium">Запускать при входе</span>
         <p class="mt-1 text-xs text-muted-foreground">
-          Windows — HKCU Run, macOS — LaunchAgent. Панель и трей поднимутся
-          автоматически после входа.
+          Панель и трей поднимутся автоматически после входа в систему.
         </p>
       </div>
       <Switch
@@ -280,58 +247,59 @@ async function toggleAutoAdd(value) {
       />
     </div>
 
-    <div class="mt-3 rounded-lg border bg-muted/30 px-3 py-3">
-      <div class="flex flex-wrap items-center gap-2">
-        <span class="text-sm font-medium">HWID устройства</span>
-        <Badge variant="outline">x-hwid</Badge>
-      </div>
-      <code class="mt-1 block break-all rounded bg-background/60 px-2 py-1 text-xs">
-        {{ s.hwid || 'генерируется…' }}
-      </code>
-      <p class="mt-1 text-xs text-muted-foreground">
-        Передаётся в заголовках при загрузке подписок. Один и тот же ID
-        сохраняется между обновлениями и перезапусками.
-      </p>
-      <div class="mt-2 flex flex-wrap gap-2">
-        <Button size="sm" variant="outline" @click="copyHwid">
-          <Copy class="h-3.5 w-3.5" />
-          Копировать
-        </Button>
-        <Button size="sm" variant="ghost" :loading="hwidLoading" @click="regenerateHwid">
-          <RefreshCw class="h-3.5 w-3.5" />
-          Сменить HWID
-        </Button>
-      </div>
-      <div class="mt-3 flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-3">
-        <div class="min-w-0">
-          <div class="text-sm font-medium">Автопроверка новых сайтов</div>
-          <p class="mt-1 text-xs text-muted-foreground">
-            Фоновая задача раз в 90 секунд проверяет новые домены из «Недавних
-            сайтов» напрямую, через VPN и Zapret.
-          </p>
+    <details class="mt-3 rounded-lg border bg-muted/30 px-3 py-2">
+      <summary class="cursor-pointer text-sm font-medium">HWID устройства</summary>
+      <div class="mt-2 space-y-2">
+        <code class="block break-all rounded bg-background/60 px-2 py-1 text-xs">
+          {{ s.hwid || 'генерируется…' }}
+        </code>
+        <p class="text-xs text-muted-foreground">
+          Передаётся в заголовке x-hwid при загрузке подписок и сохраняется между обновлениями.
+        </p>
+        <div class="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" @click="copyHwid">
+            <Copy class="h-3.5 w-3.5" />
+            Копировать
+          </Button>
+          <Button size="sm" variant="ghost" :loading="hwidLoading" @click="regenerateHwid">
+            <RefreshCw class="h-3.5 w-3.5" />
+            Сменить HWID
+          </Button>
         </div>
-        <Switch
-          :model-value="autoCheck"
-          :disabled="autoCheckLoading"
-          @update:model-value="toggleAutoCheckSites"
-        />
       </div>
+    </details>
 
-      <div class="mt-3 flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-3">
-        <div class="min-w-0">
-          <div class="text-sm font-medium">Добавлять недоступные в VPN</div>
-          <p class="mt-1 text-xs text-muted-foreground">
-            Если сайт не открывается напрямую, но открывается через VPN, домен
-            автоматически попадёт в VPN-список.
-          </p>
+    <details class="mt-3 rounded-lg border bg-muted/30 px-3 py-2">
+      <summary class="cursor-pointer text-sm font-medium">Проверка сайтов</summary>
+      <div class="mt-3 space-y-3">
+        <div class="flex items-center justify-between gap-3">
+          <div class="min-w-0">
+            <span class="text-sm">Автопроверка новых сайтов</span>
+            <p class="mt-1 text-xs text-muted-foreground">
+              Раз в 90 секунд проверять новые домены из «Недавних сайтов».
+            </p>
+          </div>
+          <Switch
+            :model-value="autoCheck"
+            :disabled="autoCheckLoading"
+            @update:model-value="toggleAutoCheckSites"
+          />
         </div>
-        <Switch
-          :model-value="autoAdd"
-          :disabled="autoCheckLoading || !autoCheck"
-          @update:model-value="toggleAutoAdd"
-        />
+        <div class="flex items-center justify-between gap-3">
+          <div class="min-w-0">
+            <span class="text-sm">Добавлять недоступные в VPN</span>
+            <p class="mt-1 text-xs text-muted-foreground">
+              Если сайт открывается только через VPN — добавить домен в VPN-список.
+            </p>
+          </div>
+          <Switch
+            :model-value="autoAdd"
+            :disabled="autoCheckLoading || !autoCheck"
+            @update:model-value="toggleAutoAdd"
+          />
+        </div>
       </div>
-    </div>
+    </details>
   </Card>
 
   <PluginSetupDialog

@@ -30,9 +30,9 @@ test.beforeEach(async ({ page }) => {
 
 test('вкладки показываются только для включённых плагинов', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Обзор' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Конфиги' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Каналы' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Сайты' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Домены' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Локальные домены' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Telegram' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Обход DPI' })).toHaveCount(0)
 })
@@ -82,7 +82,8 @@ test('канал переключается оптимистично, не ож�
 })
 
 test('локальный домен отдаёт backend, ошибка не стирает форму', async ({ page }) => {
-  await page.getByRole('button', { name: 'Домены' }).click()
+  await page.getByRole('button', { name: 'Локальные домены' }).click()
+  await page.getByRole('button', { name: 'Добавить домен' }).click()
   const domain = page.getByPlaceholder('app.example.com')
   const port = page.getByPlaceholder('3000')
 
@@ -121,8 +122,10 @@ test('документация открывается и переключает 
 test('вкладка сайтов показывает фильтры и проверку списка', async ({ page }) => {
   await page.getByRole('button', { name: 'Сайты' }).click()
   await expect(page.getByText('Недавние сайты')).toBeVisible()
-  await expect(page.getByText('Через VPN')).toBeVisible()
-  await expect(page.getByText('Без проверки')).toBeVisible()
+  await page.getByRole('combobox').click()
+  await expect(page.getByRole('option', { name: 'Через VPN' })).toBeVisible()
+  await expect(page.getByRole('option', { name: 'Без проверки' })).toBeVisible()
+  await page.keyboard.press('Escape')
   await expect(page.getByRole('button', { name: 'Проверить все' })).toBeVisible()
 })
 
@@ -139,15 +142,18 @@ test('доступное обновление показывает кнопку 
       },
     }),
   )
+  await page.getByRole('button', { name: 'Настройки' }).click()
   await page.getByRole('button', { name: 'Проверить обновления' }).click()
   await expect(page.getByRole('button', { name: 'Установить v9.9.9' })).toBeVisible()
 })
 
 test('в настройках показан HWID и кнопка копирования', async ({ page }) => {
   await page.getByRole('button', { name: 'Настройки' }).click()
+  await page.getByText('HWID устройства').click()
   await expect(page.getByText('HWID устройства')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Копировать' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Сменить HWID' })).toBeVisible()
+  await page.getByText('Проверка сайтов', { exact: true }).click()
   await expect(page.getByText('Автопроверка новых сайтов')).toBeVisible()
   await expect(page.getByText('Добавлять недоступные в VPN')).toBeVisible()
   await expect(page.getByText('Резервная копия')).toBeVisible()
@@ -171,8 +177,8 @@ test('проверка сайта показывает результат Zapret
   )
   await page.getByPlaceholder('example.com').fill('example.com')
   await page.getByRole('button', { name: 'Проверить', exact: true }).click()
-  await expect(page.getByText('Через Zapret:')).toBeVisible()
-  await expect(page.getByText('Zapret работает прозрачно')).toBeVisible()
+  await expect(page.getByText('Zapret 200')).toBeVisible()
+  await expect(page.getByText('Открыть в истории сайтов')).toBeVisible()
 })
 
 test('несколько стратегий Zapret выбираются и уходят одним набором', async ({ page }) => {
@@ -183,12 +189,14 @@ test('несколько стратегий Zapret выбираются и ух�
   await page.reload()
   await page.getByRole('button', { name: 'Обход DPI', exact: true }).click()
   await expect(page.getByText('Стратегии Zapret')).toBeVisible()
+  await page.getByRole('button', { name: 'Изменить' }).click()
 
   const first = page.getByRole('checkbox', { name: 'general', exact: true })
   const second = page.getByRole('checkbox', { name: 'general-alt', exact: true })
   await expect(first).toBeChecked()
   await expect(second).not.toBeChecked()
   await second.check()
+  await page.getByRole('button', { name: 'Готово' }).click()
 
   let payload = null
   await page.route('**/api/zapret', async (route) => {
@@ -352,6 +360,27 @@ test('чекбокс VPN в недавних сайтах переключает
   await page.unrouteAll({ behavior: 'ignoreErrors' })
 })
 
+test('router: deep links, back/forward и выключенный плагин', async ({ page }) => {
+  await page.goto('/#/channels')
+  await expect(page.getByRole('heading', { name: 'WireGuard — конфиги' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Сайты' }).click()
+  await expect(page.getByText('Недавние сайты')).toBeVisible()
+  await page.goBack()
+  await expect(page.getByRole('heading', { name: 'WireGuard — конфиги' })).toBeVisible()
+  await page.goForward()
+  await expect(page.getByText('Недавние сайты')).toBeVisible()
+
+  await page.goto('/#/domains/routing')
+  await expect(page.getByRole('heading', { name: 'Маршрутизация доменов' })).toBeVisible()
+
+  await page.goto('/#/dpi')
+  await expect(page.getByRole('heading', { name: 'Обход DPI' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Включить в Настройках' })).toBeVisible()
+  await page.getByRole('button', { name: 'Включить в Настройках' }).click()
+  await expect(page.getByRole('heading', { name: 'Плагины' })).toBeVisible()
+})
+
 test('каталог Zaprett показывает источник и умеет скачать/применить', async ({ page }) => {
   test.skip(process.platform !== 'win32', 'Zapret доступен только на Windows')
 
@@ -434,6 +463,7 @@ test('каталог Zaprett показывает источник и умеет
   })
   await page.reload()
   await page.getByRole('button', { name: 'Обход DPI', exact: true }).click()
+  await page.getByRole('link', { name: 'Открыть каталог' }).click()
   await expect(page.getByRole('heading', { name: 'Каталог Zaprett' })).toBeVisible()
   await expect(page.getByRole('link', { name: source })).toBeVisible()
   await expect(page.getByText('Стандартная стратегия')).toBeVisible()

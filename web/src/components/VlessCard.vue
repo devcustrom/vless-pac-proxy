@@ -1,6 +1,7 @@
 <script setup>
 import { ref } from 'vue'
 import { Activity, Save, Trash2 } from 'lucide-vue-next'
+import { RouterLink } from 'vue-router'
 import { notify, post } from '@/lib/store'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
@@ -84,9 +85,11 @@ async function removeConfig() {
       </form>
 
       <p class="text-xs text-muted-foreground">
-        Домены «только VLESS» и «только WireGuard» — кнопка «Маршрутизация
-        доменов» на вкладке «Обзор». Подписки и пул конфигов — в карточке ниже.
+        Подписки и пул конфигов — в карточке пула на этой вкладке.
       </p>
+      <RouterLink to="/domains/routing" class="inline-flex text-xs text-primary hover:underline">
+        Настроить маршрутизацию доменов →
+      </RouterLink>
     </div>
   </Card>
 </template>
