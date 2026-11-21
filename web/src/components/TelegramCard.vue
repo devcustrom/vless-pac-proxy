@@ -466,6 +466,9 @@ async function openLink() {
         </div>
       </div>
 
+      <details class="rounded-lg border bg-muted/30 px-3 py-2">
+        <summary class="cursor-pointer text-sm font-medium">Дополнительно: сеть и sidecar</summary>
+        <div class="mt-3 space-y-3">
       <div class="grid gap-3 sm:grid-cols-2">
         <div class="space-y-1">
           <Label>Порт</Label>
@@ -550,7 +553,12 @@ async function openLink() {
           />
         </div>
       </div>
+        </div>
+      </details>
 
+      <details class="rounded-lg border bg-muted/30 px-3 py-2">
+        <summary class="cursor-pointer text-sm font-medium">Диагностика</summary>
+        <div class="mt-3 space-y-3">
       <div class="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
         <div class="rounded-lg border px-2 py-2">
           <div class="text-muted-foreground">Активных</div>
@@ -582,6 +590,8 @@ async function openLink() {
         MTProto, либо откройте ссылку кнопкой выше. Системный прокси Windows для
         Telegram не используется.
       </p>
+        </div>
+      </details>
     </div>
   </Card>
 </template>

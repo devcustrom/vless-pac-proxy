@@ -102,6 +102,7 @@ test('локальный домен отдаёт backend, ошибка не ст
 
 test('Telegram: невалидный порт блокирует сохранение', async ({ page }) => {
   await page.getByRole('button', { name: 'Telegram' }).click()
+  await page.getByText('Дополнительно: сеть и sidecar', { exact: true }).click()
   const port = page.getByTestId('telegram-port')
   await expect(port).toBeVisible()
   await port.fill('')
