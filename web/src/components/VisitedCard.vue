@@ -6,6 +6,7 @@ import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
 import Input from '@/components/ui/Input.vue'
+import Switch from '@/components/ui/Switch.vue'
 import StrategyDialog from '@/components/StrategyDialog.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
@@ -155,8 +156,7 @@ function vpnEnabled(item) {
   return item.domain in routeOverrides ? routeOverrides[item.domain] : !!item.route
 }
 
-async function toggleVpn(item, event) {
-  const enabled = event.target.checked
+async function toggleVpn(item, enabled) {
   routeOverrides[item.domain] = enabled
   vpnBusy.value = item.domain
   try {
@@ -263,21 +263,20 @@ async function toggleVpn(item, event) {
                 <Wand2 class="h-3.5 w-3.5" />
                 стратегии
               </Button>
-              <label
-                class="flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-xs"
+              <div
+                class="flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs"
                 :class="vpnEnabled(item) ? 'border-primary/40 bg-primary/5' : 'bg-background'"
                 title="Маршрутизировать этот домен через VPN"
               >
-                <input
-                  type="checkbox"
-                  class="h-4 w-4 accent-primary"
-                  :checked="vpnEnabled(item)"
+                <Switch
+                  aria-label="VPN"
+                  :model-value="vpnEnabled(item)"
                   :disabled="!!vpnBusy || bulk.running"
-                  @change="toggleVpn(item, $event)"
+                  @update:model-value="toggleVpn(item, $event)"
                 />
-                VPN
+                <span>VPN</span>
                 <span v-if="vpnBusy === item.domain" class="text-muted-foreground">…</span>
-              </label>
+              </div>
             </div>
             <div v-if="checkFor(item.domain)?.busy" class="text-xs text-muted-foreground">
               проверяю…

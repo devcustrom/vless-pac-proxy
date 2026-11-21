@@ -6,6 +6,7 @@ import { useStatusQuery } from '@/lib/queries'
 import Card from '@/components/ui/Card.vue'
 import Button from '@/components/ui/Button.vue'
 import Badge from '@/components/ui/Badge.vue'
+import Switch from '@/components/ui/Switch.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
 const statusQuery = useStatusQuery()
@@ -137,12 +138,11 @@ async function toggleProxy(enabled) {
           Установить сертификаты
         </Button>
         <label class="flex items-center gap-2 text-sm text-muted-foreground">
-          <input
-            type="checkbox"
-            :checked="s.systemProxy?.enabled"
+          <Switch
+            aria-label="Системный прокси"
+            :model-value="!!s.systemProxy?.enabled"
             :disabled="proxyBusy || (s.smartProxyReady === false && !s.systemProxy?.enabled)"
-            class="h-4 w-4 rounded border-input"
-            @change="toggleProxy($event.target.checked)"
+            @update:model-value="toggleProxy"
           />
           Системный прокси
         </label>

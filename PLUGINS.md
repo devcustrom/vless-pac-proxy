@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | Локальные домены | HTTP :80 / HTTPS :443, SNI, WebSocket, свой CA | `localDomainsEnabled` (по умолчанию `false`) |
 | Telegram-прокси | MTProto → WS/WireGuard/VLESS/direct, tg-ws-proxy sidecar | `telegramEnabled` (по умолчанию `false`) |
-| Zapret | zapret2/Flowseal, auto blockcheck2, служба Windows, WinDivert | `zapretEnabled` (по умолчанию `false`) |
+| Zapret | zapret2 + каталог Zaprett, auto blockcheck2, служба Windows, WinDivert | `zapretEnabled` (по умолчанию `false`) |
 | WireGuard-канал | wireproxy, несколько конфигов | `wireguardEnabled` (по умолчанию `true`) |
 | Xray-канал | VLESS/VMess/Trojan/SS | `xrayEnabled` (по умолчанию `true`) |
 | Умный прокси | маршрутизация по доменам на :8081 | всегда включён (ядро) |
@@ -43,22 +43,25 @@ curl -X POST -H "X-WPC: 1" -H "Content-Type: application/json" \
 
 ## Zapret (Windows)
 
-Плагин ищет бандл в `<data-dir>/zapret`: zapret2 (`zapret-winws/winws2.exe`,
-Lua, blockcheck2) или Flowseal v1 (`bin/winws.exe`, `general*.bat`). Бандл
-скачивается кнопкой в панели (URL и sha256 закреплены) либо кладётся вручную.
-Читает `preset2*.cmd`/`general*.bat` и извлекает аргументы движка (сами `.bat`
+Плагин ищет бандл в `<data-dir>/zapret`: основной вариант — zapret2
+(`zapret-winws/winws2.exe` + `winws.exe`, Lua, blockcheck2). Старый Flowseal v1
+(`bin/winws.exe`, `general*.bat`) ещё поддерживается, если уже установлен.
+Бандл скачивается кнопкой в панели (URL и sha256 закреплены) либо кладётся
+вручную. Читает `preset2*.cmd` и извлекает аргументы движка (сами `.bat`
 не исполняются). Служба `wireproxy-zapret` создаётся через UAC, после чего
 запуск/остановка доступны из панели без UAC. Можно выбрать сразу несколько
 пресетов: они объединяются в одну службу с профилями через `--new`, а общие
 `--wf-*`/`--lua-init` дедуплицируются. Для zapret2 доступен автоподбор стратегии
 через blockcheck2 с автоматической установкой результата. Внешний каталог
 Zaprett (`index.json`, стратегии, списки, ipsets, bin) загружается по запросу с
-проверкой sha256; элементы не входят в поставку. API:
+проверкой sha256; элементы не входят в поставку. `nfqws`-стратегии каталога
+запускаются через `winws.exe` из бандла zapret2. API:
 `GET /api/zapret`, `POST /api/zapret` (`download`, `install` с массивом
 `presets`, `remove`, `start`, `stop`, `probe`, `auto-tune`,
 `generate-strategies`, `apply-strategy`, `save-strategy`, `catalog-status`,
-`catalog-refresh`, `catalog-download`, `catalog-preview`, `catalog-apply`,
-`catalog-select`, `catalog-test`, `catalog-test-reset`, `open-folder`).
+`catalog-refresh`, `catalog-download`, `catalog-download-all`, `catalog-preview`,
+`catalog-apply`, `catalog-select`, `catalog-test`, `catalog-test-reset`,
+`open-folder`).
 Подробнее — [ZAPRET.md](ZAPRET.md).
 
 ## Telegram-прокси

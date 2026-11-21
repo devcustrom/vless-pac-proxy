@@ -4,18 +4,15 @@
 WinDivert. Это не прокси и не VPN: Zapret перехватывает пакеты на уровне
 системы, поэтому ему нужны права администратора.
 
-Поддерживаются два варианта бандла:
-
-- **zapret2** (`winws2.exe`, Lua-стратегии, `blockcheck2`) — рекомендуется;
-- **Flowseal v1** (`winws.exe`, `general*.bat`) — для совместимости.
+Поддерживается бандл **zapret2**: `winws2.exe` для Lua-стратегий, `winws.exe`
+для nfqws-стратегий каталога Zaprett, `blockcheck2` и cygwin. Старый
+Flowseal v1 (`bin\winws.exe`, `general*.bat`) ещё распознаётся, если уже
+установлен, но в панели больше не предлагается для скачивания.
 
 ## Установка бандла
 
-На вкладке «Zapret» нажмите одну из кнопок:
-
-- **Скачать zapret2** (~20 МБ) — рекомендуется: `winws2`, Lua,
-  `blockcheck2`, cygwin;
-- **Скачать Flowseal v1** (~1.5 МБ) — `winws.exe` и `general*.bat`.
+На вкладке «Обход DPI» нажмите **«Скачать zapret2»** (~20 МБ): в бандле есть
+`winws2`, `winws`, Lua, `blockcheck2` и cygwin.
 
 Приложение само скачает архив с GitHub, проверит закреплённый sha256,
 распакует его в каталог данных и покажет найденные пресеты. Терминал и ручная
@@ -26,9 +23,10 @@ WinDivert. Это не прокси и не VPN: Zapret перехватывае
 %LOCALAPPDATA%\wireproxy-control\zapret\
 ```
 
-Для zapret2 в папке появляются `zapret-winws\winws2.exe`, `zapret-winws\lua`,
-`blockcheck\zapret2\blockcheck2.sh` и `cygwin\bin\bash.exe`.
-Для Flowseal v1 — `bin\winws.exe`, `lists`, `general*.bat`.
+В папке появляются `zapret-winws\winws2.exe`, `zapret-winws\winws.exe`,
+`zapret-winws\lua`, `blockcheck\zapret2\blockcheck2.sh` и
+`cygwin\bin\bash.exe`. Старые Flowseal-бандлы с `bin\winws.exe` и
+`general*.bat` продолжают работать для совместимости.
 
 Кнопка **«Папка Zapret»** открывает каталог, если нужно положить файлы вручную
 (например, свою сборку).
@@ -205,9 +203,10 @@ Zapret не является прокси: он не умеет выбирать
   автоматический поиск.
 - Игровой фильтр Flowseal `%GameFilterTCP%`/`%GameFilterUDP%` подставляется
   пустым.
-- Встроенные кнопки скачивают закреплённые версии: zapret2 из коммита
-  `6b4375fa` и Flowseal `1.10.4`. Свою версию можно положить в папку Zapret
-  вручную.
+- Встроенная кнопка скачивает закреплённую версию zapret2 из коммита
+  `6b4375fa`; старая Flowseal v1 больше не предлагается для скачивания, но
+  уже установленный бандл продолжает работать. Свою версию можно положить в
+  папку Zapret вручную.
 
 ## Безопасность
 

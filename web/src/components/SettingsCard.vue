@@ -218,8 +218,8 @@ async function toggleAutoAdd(value) {
             </Badge>
           </div>
           <p class="mt-1 text-xs text-muted-foreground">
-            WinDivert и Windows-служба Zapret: методы zapret2/Flowseal,
-            автоподбор стратегии и запуск из вкладки «Обход DPI».
+            WinDivert и Windows-служба Zapret: zapret2, каталог стратегий Zaprett,
+            автоподбор и запуск из вкладки «Обход DPI».
           </p>
         </div>
         <Switch

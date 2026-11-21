@@ -6,6 +6,7 @@ import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
 import Input from '@/components/ui/Input.vue'
+import Checkbox from '@/components/ui/Checkbox.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
 
@@ -20,6 +21,12 @@ const selectedIpsets = ref([])
 const testDomains = ref('www.youtube.com, discord.com')
 const testBusy = ref(false)
 const test = computed(() => cat.value.test || null)
+const downloadedStrategies = computed(() =>
+  (cat.value.strategies || []).filter((item) => item.downloaded && item.supported),
+)
+const downloadableStrategies = computed(() =>
+  (cat.value.strategies || []).filter((item) => item.supported),
+)
 const testResults = computed(() =>
   [...(test.value?.results || [])].sort(
     (left, right) => right.reachable.length - left.reachable.length,
@@ -138,6 +145,24 @@ async function refreshCatalog() {
         ? `Каталог обновлён: ${report.updated}, ошибок: ${report.failed}`
         : `Каталог обновлён: ${report.updated} элементов`,
     )
+  } catch (error) {
+    notify(error.message, 'error')
+  } finally {
+    busy.value = ''
+  }
+}
+
+async function downloadAllStrategies() {
+  busy.value = 'download-all'
+  try {
+    const result = await api('/api/zapret', { action: 'catalog-download-all' })
+    const report = result.report || {}
+    notify(
+      report.failed
+        ? `Скачано стратегий: ${report.strategies}, ошибок: ${report.failed}`
+        : `Скачано стратегий: ${report.strategies}`,
+    )
+    await refresh()
   } catch (error) {
     notify(error.message, 'error')
   } finally {
@@ -287,12 +312,35 @@ function codeVariant(code) {
           <Button
             size="sm"
             :loading="testBusy"
-            :disabled="testBusy || !!test?.running || !cat.cached"
+            :disabled="
+              testBusy || !!test?.running || !cat.cached || !downloadedStrategies.length
+            "
+            :title="
+              downloadedStrategies.length
+                ? 'Проверить скачанные стратегии'
+                : 'Сначала скачайте хотя бы одну стратегию'
+            "
             @click="startTest"
           >
             Проверить скачанные
           </Button>
+          <Button
+            v-if="downloadableStrategies.length"
+            size="sm"
+            variant="outline"
+            :loading="busy === 'download-all'"
+            :disabled="busyAny || !!test?.running"
+            @click="downloadAllStrategies"
+          >
+            Скачать все стратегии
+          </Button>
         </div>
+        <p class="text-[11px] text-muted-foreground">
+          Скачано стратегий: {{ downloadedStrategies.length }} из
+          {{ downloadableStrategies.length }}. «Обновить каталог» загружает только описания;
+          файлы стратегий и их зависимости скачиваются кнопкой у стратегии или «Скачать все
+          стратегии».
+        </p>
         <p class="text-[11px] text-muted-foreground">
           Последовательно запускает скачанные winws/winws2-стратегии и проверяет домены через
           прямой HTTPS. Служба Zapret на время проверки останавливается и запускается снова.
@@ -516,20 +564,19 @@ function codeVariant(code) {
           </div>
 
           <div v-else class="flex flex-wrap items-center gap-2">
-            <label
+            <div
               v-if="item.kind === 'list' || item.kind === 'ipset'"
               class="flex items-center gap-2 text-xs"
-              :class="canSelectInclude(item) ? 'cursor-pointer' : 'text-muted-foreground'"
+              :class="canSelectInclude(item) ? '' : 'text-muted-foreground'"
             >
-              <input
-                type="checkbox"
-                class="h-4 w-4 accent-primary"
+              <Checkbox
+                :aria-label="`использовать в ${item.kind === 'list' ? 'hostlists' : 'ipsets'}`"
+                :model-value="isSelected(item)"
                 :disabled="!canSelectInclude(item) || busyAny"
-                :checked="isSelected(item)"
-                @change="toggleInclude(item)"
+                @update:model-value="toggleInclude(item)"
               />
               использовать в {{ item.kind === 'list' ? 'hostlists' : 'ipsets' }}
-            </label>
+            </div>
             <Button
               v-if="!item.downloaded"
               size="sm"

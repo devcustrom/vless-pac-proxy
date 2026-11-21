@@ -92,6 +92,13 @@ pub struct RefreshReport {
     pub errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct DownloadReport {
+    pub strategies: usize,
+    pub failed: usize,
+    pub errors: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogTestResults {
@@ -617,6 +624,34 @@ pub async fn download(state: &Arc<AppState>, id: &str) -> Result<usize> {
     Ok(downloaded)
 }
 
+/// Скачивает все стратегии nfqws/nfqws2 и их зависимости. Нужно для
+/// пакетной проверки: «Обновить каталог» загружает только манифесты.
+pub async fn download_all_strategies(state: &Arc<AppState>) -> Result<DownloadReport> {
+    let index = load_index(&state.dir).context("сначала обновите каталог")?;
+    let ids: Vec<String> = index
+        .items
+        .iter()
+        .filter(|item| matches!(item.kind.as_str(), "nfqws" | "nfqws2"))
+        .map(|item| item.id.clone())
+        .collect();
+    if ids.is_empty() {
+        bail!("в каталоге нет стратегий");
+    }
+    let mut strategies = 0usize;
+    let mut errors = Vec::new();
+    for id in ids {
+        match download(state, &id).await {
+            Ok(_) => strategies += 1,
+            Err(e) => errors.push(format!("{id}: {e:#}")),
+        }
+    }
+    Ok(DownloadReport {
+        strategies,
+        failed: errors.len(),
+        errors: errors.into_iter().take(5).collect(),
+    })
+}
+
 pub fn select(state: &Arc<AppState>, lists: &[String], ipsets: &[String]) -> Result<()> {
     let data_dir = &state.dir;
     let index = load_index(data_dir).context("сначала обновите каталог")?;
@@ -1026,7 +1061,7 @@ pub async fn start_test(state: &Arc<AppState>, domains: &[String]) -> Result<()>
             });
         }
         if strategies.is_empty() {
-            bail!("нет скачанных стратегий каталога для проверки");
+            bail!("нет скачанных стратегий: скачайте их в каталоге (или нажмите «Скачать все стратегии»)");
         }
         strategies.truncate(64);
         let payload = TestPayload {

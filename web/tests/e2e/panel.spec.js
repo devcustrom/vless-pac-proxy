@@ -342,12 +342,12 @@ test('чекбокс VPN в недавних сайтах переключает
 
   await page.reload()
   await page.getByRole('button', { name: 'Сайты' }).click()
-  const vpn = page.getByRole('checkbox', { name: 'VPN' })
-  await expect(vpn).toBeChecked()
-  await vpn.uncheck()
+  const vpn = page.getByRole('switch', { name: 'VPN' })
+  await expect(vpn).toHaveAttribute('aria-checked', 'true')
+  await vpn.click()
   await expect.poll(() => payload).not.toBeNull()
   expect(payload).toEqual({ action: 'route', domain: 'example.com', enabled: false })
-  await expect(vpn).not.toBeChecked()
+  await expect(vpn).toHaveAttribute('aria-checked', 'false')
 
   await page.unrouteAll({ behavior: 'ignoreErrors' })
 })
@@ -434,7 +434,7 @@ test('каталог Zaprett показывает источник и умеет
   })
   await page.reload()
   await page.getByRole('button', { name: 'Обход DPI', exact: true }).click()
-  await expect(page.getByText('Каталог Zaprett')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Каталог Zaprett' })).toBeVisible()
   await expect(page.getByRole('link', { name: source })).toBeVisible()
   await expect(page.getByText('Стандартная стратегия')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Проверить скачанные' })).toBeVisible()
@@ -471,7 +471,7 @@ test('каталог Zaprett показывает источник и умеет
     await route.continue()
   })
 
-  await page.getByRole('button', { name: 'Скачать' }).first().click()
+  await page.getByRole('button', { name: 'Скачать', exact: true }).first().click()
   await expect.poll(() => downloaded).not.toBeNull()
   expect(downloaded.id).toBe('strategy-default')
 

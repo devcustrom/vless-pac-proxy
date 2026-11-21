@@ -1073,6 +1073,21 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
                     .into_response(),
             }
         }
+        "catalog-download-all" => {
+            match crate::zapret::catalog::download_all_strategies(&st).await {
+                Ok(report) => Json(json!({
+                    "ok": true,
+                    "report": report,
+                    "status": crate::zapret::status_json(&st),
+                }))
+                .into_response(),
+                Err(e) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response(),
+            }
+        }
         "catalog-apply" => {
             let id = body.get("id").and_then(Value::as_str).unwrap_or("");
             if id.is_empty() {
@@ -1194,7 +1209,7 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
         _ => (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "action должен быть install|remove|start|stop|set-preset|open-folder|auto-tune|generate-strategies|apply-strategy|save-strategy|catalog-status|catalog-refresh|catalog-download|catalog-preview|catalog-test|catalog-test-reset|catalog-apply|catalog-select|probe|refresh"
+                "error": "action должен быть install|remove|start|stop|set-preset|open-folder|auto-tune|generate-strategies|apply-strategy|save-strategy|catalog-status|catalog-refresh|catalog-download|catalog-download-all|catalog-preview|catalog-test|catalog-test-reset|catalog-apply|catalog-select|probe|refresh"
             })),
         )
             .into_response(),

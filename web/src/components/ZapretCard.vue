@@ -6,6 +6,7 @@ import { useActionMutation } from '@/lib/queries'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
+import Checkbox from '@/components/ui/Checkbox.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
 
@@ -264,7 +265,7 @@ async function togglePlugin(value) {
 <template>
   <Card
     title="Обход DPI"
-    description="Zapret (zapret2 и Flowseal v1) как методы обхода DPI. Сюда же можно добавлять другие проекты."
+    description="Zapret 2 и внешний каталог Zaprett: стратегии, списки и payload'ы. Сюда же можно добавлять другие проекты."
   >
     <template #icon>
       <ShieldAlert class="h-4 w-4 text-primary" />
@@ -293,10 +294,12 @@ async function togglePlugin(value) {
       </div>
 
       <div class="flex flex-wrap items-center gap-2 text-xs">
-        <span class="text-muted-foreground">Методы обхода DPI:</span>
-        <Badge :variant="z.engine === 'winws2' ? 'success' : 'outline'">Zapret 2 (winws2)</Badge>
-        <Badge :variant="z.engine === 'winws' ? 'success' : 'outline'">Flowseal v1 (winws)</Badge>
-        <span class="text-muted-foreground">другие проекты можно добавить сюда же</span>
+        <span class="text-muted-foreground">Движок:</span>
+        <Badge :variant="z.engine === 'winws2' ? 'success' : 'outline'">zapret2 (winws2)</Badge>
+        <Badge v-if="z.engine === 'winws2' || z.engine === 'winws'" variant="outline">
+          winws v1 для nfqws-стратегий каталога
+        </Badge>
+        <span class="text-muted-foreground">стратегии и списки — в каталоге Zaprett</span>
       </div>
 
       <div
@@ -385,24 +388,13 @@ async function togglePlugin(value) {
           <code class="break-all">{{ z.bundlePath }}</code>.
         </p>
         <p>
-          <b>zapret2</b> (~20 МБ) — рекомендуется: <code>winws2</code>, Lua,
-          blockcheck2 и cygwin. <b>Flowseal v1</b> (~1.5 МБ) — простые
-          <code>general*.bat</code>.
+          <b>zapret2</b> (~20 МБ): <code>winws2</code>, <code>winws</code> для
+          nfqws-стратегий каталога, Lua, blockcheck2 и cygwin.
         </p>
         <div class="flex flex-wrap gap-2">
           <Button size="sm" :loading="downloading" :disabled="busy" @click="downloadBundle('zapret2')">
             <Download class="h-3.5 w-3.5" />
             Скачать zapret2
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            :loading="downloading"
-            :disabled="busy"
-            @click="downloadBundle('flowseal')"
-          >
-            <Download class="h-3.5 w-3.5" />
-            Скачать Flowseal v1
           </Button>
           <Button size="sm" variant="outline" :loading="openBusy" @click="openFolder">
             <FolderOpen class="h-3.5 w-3.5" />
@@ -421,15 +413,6 @@ async function togglePlugin(value) {
             <Button size="sm" variant="outline" :loading="downloading" :disabled="busy" @click="downloadBundle('zapret2')">
               <Download class="h-3.5 w-3.5" />
               Переустановить zapret2
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              :loading="downloading"
-              :disabled="busy"
-              @click="downloadBundle('flowseal')"
-            >
-              Flowseal v1
             </Button>
           </div>
         </div>
@@ -488,22 +471,21 @@ async function togglePlugin(value) {
             v-if="presetOptions.length"
             class="max-h-56 space-y-1 overflow-auto rounded-lg border bg-background/60 p-2"
           >
-            <label
+            <div
               v-for="item in presetOptions"
               :key="item.value"
-              class="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/60"
+              class="flex items-start gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted/60"
               :class="{ 'bg-primary/5': selectedPresets.includes(item.value) }"
             >
-              <input
-                type="checkbox"
-                class="mt-0.5 h-4 w-4 shrink-0 accent-primary"
-                :value="item.value"
-                :checked="selectedPresets.includes(item.value)"
+              <Checkbox
+                :aria-label="item.label"
+                class="mt-0.5"
+                :model-value="selectedPresets.includes(item.value)"
                 :disabled="busy"
-                @change="togglePreset(item.value)"
+                @update:model-value="togglePreset(item.value)"
               />
               <span class="min-w-0 break-all">{{ item.label }}</span>
-            </label>
+            </div>
           </div>
           <p v-else class="text-xs text-muted-foreground">
             В бандле не найдено ни одного пресета — переустановите бандл.
