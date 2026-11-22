@@ -879,6 +879,18 @@ fn derive_wf_args(args: &[String]) -> Vec<String> {
     out
 }
 
+/// Собирает аргументы winws. `--wf-tcp-empty` есть только в winws2: если
+/// передать его winws.exe (стратегии каталога с kind=nfqws), движок молча
+/// завершается и проверка показывает 000 для всех стратегий.
+fn full_strategy_args(kind: &str, args: &[String]) -> Vec<String> {
+    let mut full = derive_wf_args(args);
+    if kind == "nfqws2" && !args.iter().any(|arg| arg == "--wf-tcp-empty=1") {
+        full.insert(0, "--wf-tcp-empty=1".to_string());
+    }
+    full.extend(args.iter().cloned());
+    full
+}
+
 fn strategy_text(data_dir: &Path, id: &str) -> Result<String> {
     let path = cached_file(data_dir, id).with_context(|| format!("файл {id} не скачан"))?;
     std::fs::read_to_string(&path)
@@ -917,7 +929,7 @@ pub fn prepare(state: &AppState, id: &str) -> Result<PreparedStrategy> {
         &manifests,
         &settings,
     )?;
-    let mut args = crate::zapret::preset::split_args(&expanded);
+    let args = crate::zapret::preset::split_args(&expanded);
     if args.is_empty() {
         bail!("пустая стратегия каталога");
     }
@@ -927,11 +939,7 @@ pub fn prepare(state: &AppState, id: &str) -> Result<PreparedStrategy> {
     if !args.iter().any(|arg| arg.starts_with("--filter-")) {
         bail!("в стратегии каталога нет фильтров");
     }
-    let mut full = derive_wf_args(&args);
-    if !args.iter().any(|arg| arg == "--wf-tcp-empty=1") {
-        full.insert(0, "--wf-tcp-empty=1".to_string());
-    }
-    full.append(&mut args);
+    let full = full_strategy_args(&item.kind, &args);
     let bin = match item.kind.as_str() {
         "nfqws" => crate::zapret::preset::engine_path_v1(data_dir)?,
         "nfqws2" => crate::zapret::preset::engine_path_v2(data_dir)?,
@@ -1440,6 +1448,21 @@ mod tests {
         assert!(expanded.contains("list-youtube.txt"));
         assert!(!expanded.contains("${"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn v1_catalog_strategies_do_not_get_v2_only_flag() {
+        let args = vec![
+            "--filter-tcp=443".to_string(),
+            "--dpi-desync=fake".to_string(),
+        ];
+        let v1 = full_strategy_args("nfqws", &args);
+        assert!(!v1.iter().any(|arg| arg == "--wf-tcp-empty=1"));
+        assert!(v1.iter().any(|arg| arg == "--wf-tcp=443"));
+
+        let v2 = full_strategy_args("nfqws2", &args);
+        assert!(v2.iter().any(|arg| arg == "--wf-tcp-empty=1"));
+        assert!(v2.iter().any(|arg| arg == "--wf-tcp=443"));
     }
 
     #[test]

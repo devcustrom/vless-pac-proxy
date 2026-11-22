@@ -374,6 +374,16 @@ pub async fn safe_fetch_text(state: &Arc<AppState>, raw: &str) -> Result<String>
     bail!("слишком много редиректов")
 }
 
+/// Загружает динамический ключ Outline (ssconf://) и превращает ответ в
+/// обычный Shadowsocks-конфиг для xray.
+pub async fn resolve_outline_dynamic(state: &Arc<AppState>, raw: &str) -> Result<link::ParsedLink> {
+    let (url, name) = link::outline_dynamic_url(raw)?;
+    let body = safe_fetch_text(state, &url)
+        .await
+        .context("Outline: не удалось загрузить ssconf-конфиг")?;
+    link::parse_outline_payload(&body, &name)
+}
+
 // ---------------- разбор подписки ----------------
 
 pub fn parse_subscription_links(text: &str) -> Vec<String> {
@@ -867,13 +877,19 @@ pub fn apply_entry(state: &Arc<AppState>, index: usize) -> Result<link::LinkInfo
         };
         (entry.clone(), entry.link.clone())
     };
+    let _ = crate::vless::configs::clear_active(&state.dir);
     let info = link::save_link(&state.dir, &entry.link)?;
+    if let Ok(parsed) = link::parse_any(&entry.link) {
+        let _ = crate::vless::configs::sync_pool_active(&state.dir, &parsed);
+    }
     {
         let mut pool = state.pool.lock().unwrap();
         pool.active_link = Some(entry.link.clone());
         pool.last_rotate_at = Some(chrono::Utc::now());
     }
-    state.xr.restart();
+    if state.settings_snapshot().xray_enabled {
+        state.xr.restart();
+    }
     save_pool_state(state);
     wlog!(
         "применён конфиг из пула: {} ({} {}:{})",
@@ -930,6 +946,11 @@ pub async fn apply_entry_checked(state: &Arc<AppState>, index: usize) -> Result<
 pub async fn maybe_auto_recover(state: &Arc<AppState>, reason: &str) -> bool {
     let settings = state.settings_snapshot();
     if !settings.auto_rotate {
+        return false;
+    }
+    // Пользователь явно выбрал сохранённый Xray-конфиг — пул не должен
+    // незаметно заменять его своим кандидатом.
+    if crate::vless::configs::user_selected_active(&state.dir).is_some() {
         return false;
     }
     let now = chrono::Utc::now();
@@ -990,13 +1011,19 @@ pub async fn maybe_auto_recover(state: &Arc<AppState>, reason: &str) -> bool {
         }
         return false;
     };
+    let _ = crate::vless::configs::clear_active(&state.dir);
     match link::save_link(&state.dir, &entry.link) {
         Ok(info) => {
+            if let Ok(parsed) = link::parse_any(&entry.link) {
+                let _ = crate::vless::configs::sync_pool_active(&state.dir, &parsed);
+            }
             let mut pool = state.pool.lock().unwrap();
             pool.active_link = Some(entry.link.clone());
             pool.last_rotate_at = Some(now);
             drop(pool);
-            state.xr.restart();
+            if state.settings_snapshot().xray_enabled {
+                state.xr.restart();
+            }
             save_pool_state(state);
             wlog!(
                 "автовосстановление ({reason}): VLESS → {} ({} {}:{}, {} мс)",

@@ -32,6 +32,14 @@ struct App {
 }
 
 pub fn run(state: Arc<AppState>, handle: tokio::runtime::Handle) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let event_loop = {
+        use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+        let mut builder = EventLoop::builder();
+        builder.with_activation_policy(ActivationPolicy::Accessory);
+        builder.build()?
+    };
+    #[cfg(not(target_os = "macos"))]
     let event_loop = EventLoop::new()?;
     let mut app = App {
         ctx: Ctx { state, handle },
@@ -44,7 +52,7 @@ pub fn run(state: Arc<AppState>, handle: tokio::runtime::Handle) -> Result<()> {
 }
 
 impl ApplicationHandler for App {
-    fn resumed(&mut self, _event_loop: &ActiveEventLoop) {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.tray.is_none() {
             match build_tray() {
                 Ok((tray, menu)) => {
@@ -53,7 +61,20 @@ impl ApplicationHandler for App {
                     self.refresh_menu();
                     wlog!("трей: меню готово");
                 }
-                Err(e) => wlog!("трей: не создан — {e:#}"),
+                Err(e) => {
+                    wlog!("трей: не создан — {e:#}");
+                    // На macOS без menu bar приложение становится невидимым.
+                    // Показываем причину и выходим, чтобы не оставлять зомби.
+                    #[cfg(target_os = "macos")]
+                    {
+                        crate::macos::show_alert(&format!(
+                            "Не удалось создать иконку в menu bar: {e:#}"
+                        ));
+                        event_loop.exit();
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    let _ = event_loop;
+                }
             }
         }
     }

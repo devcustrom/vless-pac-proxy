@@ -362,7 +362,8 @@ test('чекбокс VPN в недавних сайтах переключает
 })
 
 test('router: deep links, back/forward и выключенный плагин', async ({ page }) => {
-  await page.goto('/#/channels')
+  await page.goto('/channels')
+  await expect(page).toHaveURL(/\/channels$/)
   await expect(page.getByRole('heading', { name: 'WireGuard — конфиги' })).toBeVisible()
 
   await page.getByRole('button', { name: 'Сайты' }).click()
@@ -372,14 +373,80 @@ test('router: deep links, back/forward и выключенный плагин', 
   await page.goForward()
   await expect(page.getByText('Недавние сайты')).toBeVisible()
 
-  await page.goto('/#/domains/routing')
+  await page.goto('/domains/routing')
   await expect(page.getByRole('heading', { name: 'Маршрутизация доменов' })).toBeVisible()
 
-  await page.goto('/#/dpi')
+  // Старые hash-ссылки редиректятся на чистый путь.
+  await page.goto('/#/channels')
+  await expect(page).toHaveURL(/\/channels$/)
+
+  await page.goto('/dpi')
   await expect(page.getByRole('heading', { name: 'Обход DPI' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Включить в Настройках' })).toBeVisible()
   await page.getByRole('button', { name: 'Включить в Настройках' }).click()
   await expect(page.getByRole('heading', { name: 'Плагины' })).toBeVisible()
+})
+
+test('Xray-конфиги добавляются, выбираются и удаляются', async ({ page }) => {
+  const headers = { 'X-WPC': '1' }
+  const cleanup = async () => {
+    const response = await page.request.get(`${PANEL}/api/xray/configs`)
+    const data = await response.json().catch(() => ({}))
+    for (const item of data.configs || []) {
+      await page.request.post(`${PANEL}/api/xray/configs`, {
+        headers,
+        data: { action: 'remove', slug: item.slug },
+      })
+    }
+  }
+
+  try {
+    await page.goto('/channels')
+    const card = page.getByTestId('xray-configs')
+    await expect(card.getByRole('heading', { name: 'Xray: VLESS / Outline' })).toBeVisible()
+
+    await card.getByRole('button', { name: 'Добавить конфиг' }).click()
+    const form = page
+      .locator('form')
+      .filter({ has: page.getByPlaceholder('Например, основной VLESS') })
+    await form.getByPlaceholder('Например, основной VLESS').fill('E2E Outline')
+    await form
+      .getByPlaceholder(/vless:/)
+      .fill('ss://YWVzLTI1Ni1nY206cGFzcw==@1.2.3.4:8388#E2E')
+    await form.getByRole('button', { name: 'Добавить конфиг' }).click()
+
+    await expect(card.getByText('E2E Outline', { exact: true })).toBeVisible()
+    await expect(card.getByText('Outline / SS', { exact: true }).first()).toBeVisible()
+    await expect(card.getByText('активен', { exact: true })).toBeVisible()
+
+    await page.request.post(`${PANEL}/api/xray/configs`, {
+      headers,
+      data: {
+        action: 'add',
+        name: 'E2E Second',
+        link: 'ss://YWVzLTI1Ni1nY206cGFzcw==@5.6.7.8:8389#E2E2',
+      },
+    })
+    await page.reload()
+    const second = card.locator('li').filter({ hasText: 'E2E Second' })
+    await expect(second).toBeVisible()
+    await second.getByRole('button', { name: 'Использовать' }).click()
+    await expect(second.getByText('активен', { exact: true })).toBeVisible()
+
+    page.once('dialog', (dialog) => dialog.accept())
+    await second.getByLabel('Действия с конфигом').click()
+    await second.getByRole('button', { name: 'Удалить' }).click()
+    await expect(second).toHaveCount(0)
+    const first = card.locator('li').filter({ hasText: 'E2E Outline' })
+    await expect(first.getByText('активен', { exact: true })).toBeVisible()
+
+    page.once('dialog', (dialog) => dialog.accept())
+    await first.getByLabel('Действия с конфигом').click()
+    await first.getByRole('button', { name: 'Удалить' }).click()
+    await expect(card.getByText('E2E Outline', { exact: true })).toHaveCount(0)
+  } finally {
+    await cleanup()
+  }
 })
 
 test('каталог Zaprett показывает источник и умеет скачать/применить', async ({ page }) => {

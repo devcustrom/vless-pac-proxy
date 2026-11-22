@@ -39,8 +39,10 @@ const active = computed(() => route.path)
         </button>
       </RouterLink>
     </div>
-    <RouterView v-slot="{ Component }">
-      <component :is="Component" :s="s" />
+    <RouterView v-slot="{ Component, route: current }">
+      <Transition name="page" mode="out-in">
+        <component :is="Component" :key="current.path" :s="s" />
+      </Transition>
     </RouterView>
   </div>
 </template>

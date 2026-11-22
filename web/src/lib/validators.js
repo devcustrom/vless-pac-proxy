@@ -51,6 +51,11 @@ export const wgConfigSchema = v.object({
   ),
 })
 
+export const xrayConfigSchema = v.object({
+  name: v.pipe(v.string(), v.trim(), v.minLength(1, 'Укажите имя')),
+  link: v.pipe(v.string(), v.trim(), v.minLength(1, 'Вставьте ссылку или JSON Outline')),
+})
+
 export const plainDomainSchema = v.object({ domain: domainSchema })
 
 /** Оставляет только цифры (для input порта). */

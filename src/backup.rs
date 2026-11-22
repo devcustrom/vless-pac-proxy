@@ -19,6 +19,8 @@ const ALLOWED_FILES: &[&str] = &[
     "wg-domains.txt",
     "subscriptions.txt",
     "pool-state.json",
+    "xray-config.json",
+    "xray-configs.json",
     "proxy.pac",
     "tgws-config.json",
     "wireproxy.db",
@@ -29,8 +31,20 @@ fn allowed(name: &str) -> bool {
     if ALLOWED_FILES.contains(&name) {
         return true;
     }
-    name.strip_prefix("certs/")
+    if name
+        .strip_prefix("certs/")
         .map(|rest| !rest.is_empty() && !rest.contains('/') && !rest.contains('\\'))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    name.strip_prefix("xray-configs/")
+        .map(|rest| {
+            !rest.is_empty()
+                && !rest.contains('/')
+                && !rest.contains('\\')
+                && rest.ends_with(".json")
+        })
         .unwrap_or(false)
 }
 
@@ -63,6 +77,22 @@ pub fn create(state: &Arc<AppState>) -> Result<Vec<u8>> {
             if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 if let Some(name) = entry.file_name().to_str() {
                     add_file(&mut zip, &state.dir, &format!("certs/{name}"))?;
+                }
+            }
+        }
+    }
+    let xray_configs = state.dir.join("xray-configs");
+    if let Ok(entries) = std::fs::read_dir(&xray_configs) {
+        for entry in entries.flatten() {
+            if entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+                && entry
+                    .path()
+                    .extension()
+                    .map(|ext| ext == "json")
+                    .unwrap_or(false)
+            {
+                if let Some(name) = entry.file_name().to_str() {
+                    add_file(&mut zip, &state.dir, &format!("xray-configs/{name}"))?;
                 }
             }
         }
@@ -167,6 +197,9 @@ mod tests {
     fn only_expected_files_are_restored() {
         assert!(allowed("settings.json"));
         assert!(allowed("certs/ca.crt"));
+        assert!(allowed("xray-configs/server.json"));
+        assert!(!allowed("xray-configs/../evil.json"));
+        assert!(!allowed("xray-configs/evil.txt"));
         assert!(!allowed("../settings.json"));
         assert!(!allowed("manager.log"));
         assert!(!allowed("certs/../evil"));

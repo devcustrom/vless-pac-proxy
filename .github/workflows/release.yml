@@ -77,13 +77,26 @@ jobs:
           # Apple Silicon не запускает неподписанные Mach-O: ad-hoc подпись
           # нужна и для .app, и для отдельного бинарника из Releases.
           codesign --force --sign - wireproxy-control-macos-universal
+      - name: Иконка приложения
+        run: |
+          set -euo pipefail
+          mkdir -p AppIcon.iconset
+          for size in 16 32 128 256 512; do
+            sips -z "$size" "$size" assets/AppIcon.png \
+              --out "AppIcon.iconset/icon_${size}x${size}.png" >/dev/null
+            double=$((size * 2))
+            sips -z "$double" "$double" assets/AppIcon.png \
+              --out "AppIcon.iconset/icon_${size}x${size}@2x.png" >/dev/null
+          done
+          iconutil -c icns AppIcon.iconset -o AppIcon.icns
       - name: .app, zip и dmg
         run: |
           set -euo pipefail
           VERSION=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
           APP="WireproxyControl.app"
-          mkdir -p "$APP/Contents/MacOS"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           cp wireproxy-control-macos-universal "$APP/Contents/MacOS/wireproxy-control"
+          cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
           chmod +x "$APP/Contents/MacOS/wireproxy-control"
           cat > "$APP/Contents/Info.plist" <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
@@ -92,20 +105,48 @@ jobs:
           <dict>
             <key>CFBundleIdentifier</key><string>com.devcustrom.wireproxy-control</string>
             <key>CFBundleName</key><string>wireproxy-control</string>
-            <key>CFBundleDisplayName</key><string>wireproxy-control</string>
+            <key>CFBundleDisplayName</key><string>WireproxyControl</string>
             <key>CFBundleExecutable</key><string>wireproxy-control</string>
+            <key>CFBundleIconFile</key><string>AppIcon</string>
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>CFBundleShortVersionString</key><string>$VERSION</string>
             <key>CFBundleVersion</key><string>$VERSION</string>
+            <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
             <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>LSUIElement</key><true/>
             <key>NSHighResolutionCapable</key><true/>
           </dict>
           </plist>
           EOF
+          xattr -cr "$APP" || true
           codesign --force --deep --sign - "$APP"
           ditto -c -k --keepParent "$APP" wireproxy-control-macos-universal.zip
-          hdiutil create -volname "wireproxy-control" -srcfolder "$APP" \
-            -ov -format UDZO wireproxy-control-macos-universal.dmg
+
+          # DMG с иконкой, фоном и ссылкой на Applications: обычный
+          # drag-to-install вместо окна с одиноким бинарником.
+          brew list create-dmg >/dev/null 2>&1 || brew install create-dmg || true
+          STAGE="dmg-stage"
+          DMG="wireproxy-control-macos-universal.dmg"
+          rm -rf "$STAGE" "$DMG"
+          mkdir -p "$STAGE"
+          cp -R "$APP" "$STAGE/"
+          if ! create-dmg \
+            --volname "wireproxy-control" \
+            --volicon AppIcon.icns \
+            --background assets/dmg-background.png \
+            --window-pos 200 120 \
+            --window-size 640 420 \
+            --icon-size 128 \
+            --icon "WireproxyControl.app" 170 210 \
+            --hide-extension "WireproxyControl.app" \
+            --app-drop-link 470 210 \
+            "$DMG" "$STAGE"; then
+            echo "create-dmg не сработал — собираю простой DMG со ссылкой на Applications"
+            rm -f "$DMG"
+            ln -sfn /Applications "$STAGE/Applications"
+            hdiutil create -volname "wireproxy-control" -srcfolder "$STAGE" \
+              -ov -format UDZO "$DMG"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: macos

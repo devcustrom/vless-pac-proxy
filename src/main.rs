@@ -26,6 +26,8 @@ mod lists;
 mod local_hosts;
 mod local_tls;
 mod logging;
+#[cfg(target_os = "macos")]
+mod macos;
 mod mcp;
 mod net;
 mod paths;
@@ -120,9 +122,28 @@ fn clean_cli_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Vec<std
         .collect()
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() {
+    #[cfg(target_os = "macos")]
+    macos::init_panic_hook();
+    if let Err(error) = run() {
+        eprintln!("{error:#}");
+        #[cfg(target_os = "macos")]
+        macos::show_error(&error);
+        std::process::exit(1);
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     #[cfg(all(windows, not(debug_assertions)))]
     attach_console();
+
+    // Finder может запустить .app прямо из DMG. Устанавливаем в Applications
+    // и перезапускаемся оттуда до создания каталога данных и tray.
+    #[cfg(target_os = "macos")]
+    {
+        macos::self_install_from_dmg();
+        macos::eject_leftover_install_volumes();
+    }
 
     let cli = Cli::parse_from(clean_cli_args(std::env::args_os()));
     let dir = paths::resolve_data_dir(cli.data_dir.clone())?;
@@ -170,8 +191,22 @@ fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool, hidden: bool) -> an
                 "уже запущен другой экземпляр (данные: {}); панель: http://127.0.0.1:{existing_port}/",
                 dir.display()
             );
+            #[cfg(target_os = "macos")]
+            let reachable = std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], existing_port)),
+                std::time::Duration::from_millis(500),
+            )
+            .is_ok();
             if !hidden {
                 let _ = shell::open_url(&format!("http://127.0.0.1:{existing_port}/"));
+            }
+            #[cfg(target_os = "macos")]
+            if !reachable {
+                crate::macos::show_alert(&format!(
+                    "wireproxy-control уже запущен, но панель не отвечает.\n\
+                     Завершите старый процесс wireproxy-control в «Мониторинге системы» \
+                     или перезагрузите Mac и запустите приложение снова."
+                ));
             }
             return Ok(());
         }
@@ -189,9 +224,18 @@ fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool, hidden: bool) -> an
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
+    // На macOS после установки приложение живёт только в menu bar. Панель
+    // автоматически открываем лишь при первом запуске (нет settings.json),
+    // дальше — по клику в трее. Windows-поведение не меняем.
+    let first_run = !dir.join("settings.json").exists();
+    let interactive = if cfg!(target_os = "macos") {
+        !hidden && first_run
+    } else {
+        !hidden
+    };
     let st = {
         let _guard = rt.enter();
-        state::AppState::new(dir, panel_port, !hidden)
+        state::AppState::new(dir, panel_port, interactive)
     };
     if autostart::installed()
         && !cfg!(debug_assertions)
@@ -216,6 +260,10 @@ fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool, hidden: bool) -> an
                 Ok(()) => Ok(()),
                 Err(e) => {
                     wlog!("трей недоступен: {e:#}; продолжаем без трея");
+                    #[cfg(target_os = "macos")]
+                    crate::macos::show_alert(&format!(
+                        "Не удалось создать иконку в menu bar: {e:#}"
+                    ));
                     loop {
                         std::thread::park_timeout(std::time::Duration::from_secs(3600));
                     }

@@ -24,6 +24,13 @@ export function useWgConfigsQuery() {
   })
 }
 
+export function useXrayConfigsQuery() {
+  return useQuery({
+    key: ['xray-configs'],
+    query: () => getJson('/api/xray/configs'),
+  })
+}
+
 /**
  * Обёртка над useMutation: тост об ошибке и инвалидация запросов.
  * keys — например [['status'], ['wg-configs']].

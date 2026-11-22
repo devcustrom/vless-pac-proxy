@@ -228,7 +228,10 @@ fn strategy_args(raw: &str) -> Result<Vec<String>> {
 }
 
 pub fn start(state: &Arc<AppState>) -> Result<()> {
-    start_inner(state, None, "standard")
+    // standard перебирает все комбинации и может идти 30+ минут, а монитор
+    // сдаётся раньше. Для кнопки «Перебрать стратегии» достаточно quick:
+    // он проверяет основные сценарии и завершается за минуты.
+    start_inner(state, None, "quick")
 }
 
 /// Генерирует стратегии blockcheck2 для конкретного домена. В отличие от

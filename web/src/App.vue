@@ -201,16 +201,20 @@ onUnmounted(() => {
 
       <template v-if="s">
         <RouterView v-slot="{ Component, route: currentRoute }">
-          <component
-            :is="Component"
-            v-if="routeAllowed(currentRoute)"
-            :s="s"
-          />
-          <PluginDisabledView
-            v-else
-            :s="s"
-            :plugin="currentRoute.meta?.plugin || ''"
-          />
+          <Transition name="page" mode="out-in">
+            <component
+              :is="Component"
+              v-if="routeAllowed(currentRoute)"
+              :key="currentRoute.matched[0]?.path || currentRoute.path"
+              :s="s"
+            />
+            <PluginDisabledView
+              v-else
+              :key="currentRoute.matched[0]?.path || currentRoute.path"
+              :s="s"
+              :plugin="currentRoute.meta?.plugin || ''"
+            />
+          </Transition>
         </RouterView>
       </template>
 

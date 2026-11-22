@@ -1,5 +1,6 @@
 //! Парсер vless:// и ss:// ссылок и генерация конфига xray (паритет с
 //! legacy vless-to-xray.js: Reality/TLS/ws/grpc/flow, SS SIP002 + legacy).
+//! SIP002 покрывает статические ключи Outline, включая `/?outline=1`.
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -81,6 +82,33 @@ fn query_param(pairs: &[(String, String)], key: &str) -> Option<String> {
         .map(|(_, v)| v.clone())
 }
 
+fn make_ss(method: &str, password: &str, address: &str, port: u16, name: String) -> ParsedLink {
+    ParsedLink {
+        protocol: "ss".into(),
+        address: address.to_string(),
+        port,
+        name,
+        network: "tcp".into(),
+        security: "none".into(),
+        id: String::new(),
+        flow: None,
+        alter_id: 0,
+        vmess_security: String::new(),
+        sni: None,
+        fingerprint: None,
+        public_key: None,
+        short_id: None,
+        path: None,
+        service_name: None,
+        host_header: None,
+        mode: None,
+        extra: None,
+        alpn: None,
+        method: method.trim().to_lowercase(),
+        password: password.to_string(),
+    }
+}
+
 pub fn parse_vless(raw: &str) -> Result<ParsedLink> {
     let u = Url::parse(raw.trim()).context("некорректная vless-ссылка")?;
     if u.scheme() != "vless" {
@@ -153,10 +181,13 @@ pub fn parse_ss(raw: &str) -> Result<ParsedLink> {
         if let Some((userinfo, hostport)) = body.rsplit_once('@') {
             // SIP002: ss://base64(method:password)@host:port или
             // plaintext method:password (может быть percent-encoded).
+            // Outline добавляет path и query: ...@host:port/?outline=1.
+            let hostport = hostport.split('/').next().unwrap_or(hostport);
+            let userinfo = percent_decode(userinfo);
             let decoded = if userinfo.contains(':') {
-                percent_decode(userinfo)
+                userinfo
             } else {
-                decode_b64(userinfo).unwrap_or_else(|_| percent_decode(userinfo))
+                decode_b64(&userinfo).unwrap_or(userinfo)
             };
             let (m, p) = decoded
                 .split_once(':')
@@ -165,7 +196,8 @@ pub fn parse_ss(raw: &str) -> Result<ParsedLink> {
             (m.to_string(), p.to_string(), host, port)
         } else {
             // legacy: ss://base64(method:password@host:port)
-            let decoded = decode_b64(body).context("не удалось разобрать legacy ss-ссылку")?;
+            let decoded = decode_b64(&percent_decode(body))
+                .context("не удалось разобрать legacy ss-ссылку")?;
             let (m, rest2) = decoded
                 .split_once(':')
                 .context("не удалось разобрать legacy ss-ссылку")?;
@@ -176,30 +208,122 @@ pub fn parse_ss(raw: &str) -> Result<ParsedLink> {
             (m.to_string(), p.to_string(), host, port)
         };
 
-    Ok(ParsedLink {
-        protocol: "ss".into(),
-        address: address.clone(),
-        port,
-        name: name_raw.unwrap_or(address),
-        network: "tcp".into(),
-        security: "none".into(),
-        id: String::new(),
-        flow: None,
-        alter_id: 0,
-        vmess_security: String::new(),
-        sni: None,
-        fingerprint: None,
-        public_key: None,
-        short_id: None,
-        path: None,
-        service_name: None,
-        host_header: None,
-        mode: None,
-        extra: None,
-        alpn: None,
-        method: method.to_lowercase(),
-        password,
-    })
+    let name = name_raw.unwrap_or_else(|| address.clone());
+    Ok(make_ss(&method, &password, &address, port, name))
+}
+
+pub fn is_outline_dynamic(raw: &str) -> bool {
+    raw.trim().to_ascii_lowercase().starts_with("ssconf://")
+}
+
+/// Outline-конфиг можно получить по ssconf:// или обычной https:// ссылке.
+pub fn is_outline_config_url(raw: &str) -> bool {
+    let lower = raw.trim().to_ascii_lowercase();
+    lower.starts_with("ssconf://") || lower.starts_with("https://")
+}
+
+/// ssconf://host[:port]/path#name или https://host/path#name — ссылка на JSON
+/// с параметрами доступа Outline. Возвращает URL для загрузки и имя из fragment.
+pub fn outline_dynamic_url(raw: &str) -> Result<(String, String)> {
+    let trimmed = raw.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let mut url = if lower.starts_with("ssconf://") {
+        let rest = &trimmed["ssconf://".len()..];
+        if rest.is_empty() {
+            bail!("в ssconf:// нет адреса");
+        }
+        Url::parse(&format!("https://{rest}")).context("некорректная ssconf:// ссылка Outline")?
+    } else if lower.starts_with("https://") {
+        Url::parse(trimmed).context("некорректная https-ссылка Outline")?
+    } else {
+        bail!("ссылка Outline должна начинаться с ssconf:// или https://");
+    };
+    if url.scheme() != "https" {
+        bail!("конфиг Outline должен загружаться по https");
+    }
+    if url.host_str().is_none() {
+        bail!("в ссылке Outline нет хоста");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        bail!("ssconf:// не должен содержать логин или пароль");
+    }
+    let name = url
+        .fragment()
+        .map(|fragment| {
+            let part = fragment
+                .split('&')
+                .find(|part| !part.is_empty() && !part.contains('='))
+                .unwrap_or("");
+            percent_decode(part)
+        })
+        .unwrap_or_default();
+    url.set_fragment(None);
+    Ok((url.to_string(), name))
+}
+
+/// Разбирает ответ ssconf://. Outline отдаёт ss://-ссылку, JSON access key
+/// (`accessUrl`) или legacy JSON Shadowsocks (server/server_port/method/password).
+pub fn parse_outline_payload(text: &str, fallback_name: &str) -> Result<ParsedLink> {
+    let trimmed = text.trim_start_matches('\u{feff}').trim();
+    if trimmed.to_ascii_lowercase().starts_with("ss://") {
+        return parse_ss(trimmed);
+    }
+    if trimmed.starts_with("transport:") || trimmed.starts_with("error:") {
+        bail!("Outline вернул расширенный YAML-конфиг; используйте статический ss:// ключ доступа");
+    }
+    let value: Value =
+        serde_json::from_str(trimmed).context("Outline вернул не JSON и не ss://-ссылку")?;
+    if let Some(access_url) = value.get("accessUrl").and_then(Value::as_str) {
+        return parse_ss(access_url);
+    }
+    if let Some(client) = value.get("client").and_then(Value::as_str) {
+        if client.trim().to_ascii_lowercase().starts_with("ss://") {
+            return parse_ss(client);
+        }
+        bail!("Outline вернул расширенный конфиг; используйте статический ss:// ключ доступа");
+    }
+    if value.get("transport").is_some() {
+        bail!("Outline вернул расширенный конфиг; используйте статический ss:// ключ доступа");
+    }
+    if let Some(message) = value
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+    {
+        bail!("Outline: {message}");
+    }
+
+    let field = |keys: &[&str]| -> Option<String> {
+        keys.iter()
+            .find_map(|key| value.get(*key).and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let server = field(&["server", "host", "address"]).context("в конфиге Outline нет server")?;
+    let method = field(&["method", "cipher"]).context("в конфиге Outline нет method")?;
+    let password = field(&["password", "secret"]).context("в конфиге Outline нет password")?;
+    let port = value
+        .get("server_port")
+        .or_else(|| value.get("port"))
+        .and_then(|port| {
+            port.as_u64()
+                .or_else(|| port.as_str().and_then(|value| value.trim().parse().ok()))
+        })
+        .context("в конфиге Outline нет server_port")?;
+    if !(1..=65535).contains(&port) {
+        bail!("порт Outline должен быть 1..65535");
+    }
+    let name = field(&["name", "remarks", "description"])
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            if fallback_name.is_empty() {
+                server.clone()
+            } else {
+                fallback_name.to_string()
+            }
+        });
+    Ok(make_ss(&method, &password, &server, port as u16, name))
 }
 
 /// vmess://base64(json) — формат v2rayN.
@@ -425,8 +549,12 @@ pub fn parse_any(raw: &str) -> Result<ParsedLink> {
         parse_vmess(s)
     } else if s.to_ascii_lowercase().starts_with("trojan://") {
         parse_trojan(s)
+    } else if s.to_ascii_lowercase().starts_with("ssconf://") {
+        bail!(
+            "динамические ключи Outline (ssconf://) не поддерживаются: скопируйте статический ss:// ключ"
+        )
     } else {
-        bail!("поддерживаются vless://, vmess://, trojan:// и ss:// ссылки");
+        bail!("поддерживаются vless://, vmess://, trojan:// и ss:// (Outline/Shadowsocks) ссылки");
     }
 }
 
@@ -567,10 +695,9 @@ pub fn build_outbound(p: &ParsedLink, tag: &str) -> Value {
 }
 
 /// Полный конфиг xray: HTTP-инбаунд 25346 + один outbound.
-pub fn generate_config(raw: &str) -> Result<(Value, ParsedLink)> {
-    let parsed = parse_any(raw)?;
+pub fn config_for_parsed(parsed: &ParsedLink) -> Value {
     let outbound = build_outbound(
-        &parsed,
+        parsed,
         match parsed.protocol.as_str() {
             "vless" => "vless-out",
             "vmess" => "vmess-out",
@@ -578,7 +705,7 @@ pub fn generate_config(raw: &str) -> Result<(Value, ParsedLink)> {
             _ => "ss-out",
         },
     );
-    let config = json!({
+    json!({
         "log": { "loglevel": "warning" },
         "inbounds": [{
             "listen": "127.0.0.1",
@@ -587,21 +714,32 @@ pub fn generate_config(raw: &str) -> Result<(Value, ParsedLink)> {
             "settings": { "allowTransparent": false }
         }],
         "outbounds": [outbound]
-    });
-    Ok((config, parsed))
+    })
+}
+
+pub fn generate_config(raw: &str) -> Result<(Value, ParsedLink)> {
+    let parsed = parse_any(raw)?;
+    Ok((config_for_parsed(&parsed), parsed))
 }
 
 /// Записывает xray-config.json (с .bak), возвращает краткую информацию.
-pub fn save_link(dir: &Path, raw: &str) -> Result<LinkInfo> {
-    let (config, parsed) = generate_config(raw)?;
+pub fn save_parsed(dir: &Path, parsed: &ParsedLink) -> Result<LinkInfo> {
     let target = crate::paths::in_dir(dir, "xray-config.json")?;
     if target.exists() {
         let _ = std::fs::copy(&target, dir.join("xray-config.json.bak"));
     }
     let tmp = dir.join("xray-config.json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(&config)?)?;
+    std::fs::write(
+        &tmp,
+        serde_json::to_string_pretty(&config_for_parsed(parsed))?,
+    )?;
     std::fs::rename(&tmp, &target)?;
-    Ok(link_info(&parsed))
+    Ok(link_info(parsed))
+}
+
+pub fn save_link(dir: &Path, raw: &str) -> Result<LinkInfo> {
+    let parsed = parse_any(raw)?;
+    save_parsed(dir, &parsed)
 }
 
 pub fn has_config(dir: &Path) -> bool {
@@ -661,6 +799,107 @@ mod tests {
         assert_eq!(p.password, "pass");
         assert_eq!(p.address, "1.2.3.4");
         assert_eq!(p.port, 8388);
+    }
+
+    #[test]
+    fn parses_outline_static_key() {
+        use base64::Engine;
+        // Outline: base64url без padding, path и ?outline=1 в URL.
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode("chacha20-ietf-poly1305:p@ss:word");
+        let link = format!("ss://{b64}@outline.example.com:34443/?outline=1#Outline%20Server");
+        let p = parse_any(&link).unwrap();
+        assert_eq!(p.protocol, "ss");
+        assert_eq!(p.method, "chacha20-ietf-poly1305");
+        assert_eq!(p.password, "p@ss:word");
+        assert_eq!(p.address, "outline.example.com");
+        assert_eq!(p.port, 34443);
+        assert_eq!(p.name, "Outline Server");
+
+        let out = build_outbound(&p, "ss-out");
+        assert_eq!(out["protocol"], "shadowsocks");
+        assert_eq!(
+            out["settings"]["servers"][0]["method"],
+            "chacha20-ietf-poly1305"
+        );
+        assert_eq!(out["settings"]["servers"][0]["password"], "p@ss:word");
+    }
+
+    #[test]
+    fn parses_outline_key_with_encoded_padding() {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD
+            .encode("aes-256-gcm:secret")
+            .replace('=', "%3D");
+        let p = parse_ss(&format!("ss://{b64}@outline.example.com:8388/?outline=1#O")).unwrap();
+        assert_eq!(p.method, "aes-256-gcm");
+        assert_eq!(p.password, "secret");
+        assert_eq!(p.port, 8388);
+    }
+
+    #[test]
+    fn explains_dynamic_outline_keys() {
+        let err = parse_any("ssconf://outline.example.com/abc/access-keys/1#O").unwrap_err();
+        assert!(err.to_string().contains("ssconf://"));
+    }
+
+    #[test]
+    fn resolves_outline_dynamic_url() {
+        let (url, name) =
+            outline_dynamic_url("ssconf://outline.example.com:8443/api/access-keys/1#My%20Outline")
+                .unwrap();
+        assert_eq!(url, "https://outline.example.com:8443/api/access-keys/1");
+        assert_eq!(name, "My Outline");
+
+        let (url, name) =
+            outline_dynamic_url("https://outline.example.com/key.json#JSON%20key").unwrap();
+        assert_eq!(url, "https://outline.example.com/key.json");
+        assert_eq!(name, "JSON key");
+        assert!(is_outline_config_url(
+            "https://outline.example.com/key.json"
+        ));
+        assert!(is_outline_config_url("ssconf://outline.example.com/key"));
+        assert!(!is_outline_config_url("http://outline.example.com/key"));
+        assert!(outline_dynamic_url("http://outline.example.com/key").is_err());
+        assert!(outline_dynamic_url("ssconf://user:pass@example.com/key").is_err());
+    }
+
+    #[test]
+    fn parses_outline_legacy_json_payload() {
+        let p = parse_outline_payload(
+            r#"{"server":"1.2.3.4","server_port":8388,"method":"chacha20-ietf-poly1305","password":"secret","prefix":"\u0016\u0003\u0001","name":"Outline legacy"}"#,
+            "fallback",
+        )
+        .unwrap();
+        assert_eq!(p.protocol, "ss");
+        assert_eq!(p.method, "chacha20-ietf-poly1305");
+        assert_eq!(p.password, "secret");
+        assert_eq!(p.address, "1.2.3.4");
+        assert_eq!(p.port, 8388);
+        assert_eq!(p.name, "Outline legacy");
+    }
+
+    #[test]
+    fn parses_outline_access_key_json_payload() {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("aes-256-gcm:secret");
+        let payload =
+            format!(r#"{{"accessUrl":"ss://{b64}@5.6.7.8:1234/?outline=1#Access%20key"}}"#);
+        let p = parse_outline_payload(&payload, "").unwrap();
+        assert_eq!(p.method, "aes-256-gcm");
+        assert_eq!(p.address, "5.6.7.8");
+        assert_eq!(p.port, 1234);
+        assert_eq!(p.name, "Access key");
+    }
+
+    #[test]
+    fn reports_outline_provider_error() {
+        let err = parse_outline_payload(
+            r#"{"error":{"message":"Quota exceeded","details":"used 100GB"}}"#,
+            "",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("Quota exceeded"));
     }
 
     #[test]

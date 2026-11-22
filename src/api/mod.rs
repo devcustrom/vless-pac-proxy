@@ -114,6 +114,10 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/proxy.pac", get(pac))
         .route("/api/extra", post(extra))
         .route("/api/vless", post(vless))
+        .route(
+            "/api/xray/configs",
+            get(xray_configs_get).post(xray_configs_post),
+        )
         .route("/api/wg", post(wg_config))
         .route("/api/wg/configs", get(wg_configs_get).post(wg_configs_post))
         .route("/api/refresh", post(refresh_lists))
@@ -1997,15 +2001,171 @@ async fn extra(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
     .into_response()
 }
 
+async fn resolve_xray_link(
+    st: &Arc<AppState>,
+    raw: &str,
+) -> anyhow::Result<(crate::vless::link::ParsedLink, bool)> {
+    let trimmed = raw.trim_start_matches('\u{feff}').trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("вставьте ссылку или JSON Outline");
+    }
+    if crate::vless::link::is_outline_config_url(trimmed) {
+        Ok((
+            crate::vless::pool::resolve_outline_dynamic(st, trimmed).await?,
+            true,
+        ))
+    } else if trimmed.starts_with('{') {
+        Ok((
+            crate::vless::link::parse_outline_payload(trimmed, "")?,
+            false,
+        ))
+    } else {
+        Ok((crate::vless::link::parse_any(trimmed)?, false))
+    }
+}
+
+fn clear_pool_active(st: &Arc<AppState>) {
+    if let Ok(mut pool) = st.pool.lock() {
+        pool.active_link = None;
+    }
+    crate::vless::pool::save_pool_state(st);
+}
+
+/// Перезапуск Xray только при включённом канале: добавление конфига не должно
+/// запускать движок, если пользователь выключил Xray.
+fn restart_xray_if_enabled(st: &Arc<AppState>) {
+    if st.settings_snapshot().xray_enabled {
+        st.xr.restart();
+    }
+}
+
+async fn xray_configs_get(State(st): State<Arc<AppState>>) -> Response {
+    match crate::vless::configs::list(&st.dir) {
+        Ok(configs) => Json(json!({ "configs": configs })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("{e:#}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn xray_configs_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let action = body
+        .get("action")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let slug = body
+        .get("slug")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    match action {
+        "add" => {
+            let name = body
+                .get("name")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let link = body
+                .get("link")
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            let result = async {
+                let (parsed, dynamic) = resolve_xray_link(&st, link).await?;
+                let slug = crate::vless::configs::add_parsed(&st.dir, name, &parsed, dynamic)?;
+                let active =
+                    crate::vless::configs::active_slug(&st.dir).as_deref() == Some(slug.as_str());
+                Ok::<_, anyhow::Error>((slug, active))
+            }
+            .await;
+            match result {
+                Ok((slug, active)) => {
+                    if active {
+                        clear_pool_active(&st);
+                        restart_xray_if_enabled(&st);
+                        crate::vless::configs::log_active(&st.dir, &slug);
+                    }
+                    Json(json!({ "ok": true, "slug": slug, "active": active })).into_response()
+                }
+                Err(e) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response(),
+            }
+        }
+        "use" => match crate::vless::configs::activate(&st.dir, slug) {
+            Ok(()) => {
+                clear_pool_active(&st);
+                restart_xray_if_enabled(&st);
+                crate::vless::configs::log_active(&st.dir, slug);
+                Json(json!({ "ok": true })).into_response()
+            }
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("{e:#}") })),
+            )
+                .into_response(),
+        },
+        "remove" => match crate::vless::configs::remove(&st.dir, slug) {
+            Ok((was_active, next)) => {
+                if slug == crate::vless::configs::POOL_SLUG {
+                    clear_pool_active(&st);
+                }
+                if was_active {
+                    if next.is_some() {
+                        restart_xray_if_enabled(&st);
+                    } else {
+                        st.xr.stop();
+                    }
+                }
+                wlog!("Xray: конфиг «{slug}» удалён");
+                Json(json!({ "ok": true, "active": next })).into_response()
+            }
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("{e:#}") })),
+            )
+                .into_response(),
+        },
+        "test" => match crate::vless::configs::test(&st.dir, slug).await {
+            Ok((ms, ip)) => Json(json!({ "ok": true, "ms": ms, "ip": ip })).into_response(),
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("{e:#}") })),
+            )
+                .into_response(),
+        },
+        _ => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "action должен быть add|use|remove|test" })),
+        )
+            .into_response(),
+    }
+}
+
 async fn vless(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
     let action = body.get("action").and_then(|v| v.as_str()).unwrap_or("");
     match action {
         "set-link" => {
             let link = body.get("link").and_then(|v| v.as_str()).unwrap_or("");
-            match crate::vless::link::save_link(&st.dir, link) {
-                Ok(info) => {
-                    wlog!("VLESS-конфиг сохранён: {info:?}");
-                    st.xr.restart();
+            let result = async {
+                let (parsed, dynamic) = resolve_xray_link(&st, link).await?;
+                let name = if parsed.name.trim().is_empty() {
+                    parsed.address.clone()
+                } else {
+                    parsed.name.clone()
+                };
+                let slug = crate::vless::configs::add_parsed(&st.dir, &name, &parsed, dynamic)?;
+                crate::vless::configs::activate(&st.dir, &slug)?;
+                let info = crate::vless::link::link_info(&parsed);
+                Ok::<_, anyhow::Error>((info, slug))
+            }
+            .await;
+            match result {
+                Ok((info, slug)) => {
+                    clear_pool_active(&st);
+                    restart_xray_if_enabled(&st);
+                    crate::vless::configs::log_active(&st.dir, &slug);
                     Json(json!({ "ok": true, "info": info })).into_response()
                 }
                 Err(e) => (
@@ -2016,20 +2176,39 @@ async fn vless(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
             }
         }
         "remove-link" => {
-            for name in [
-                "xray-config.json",
-                "xray-config.json.bak",
-                "xray-config.json.tmp",
-            ] {
-                let _ = std::fs::remove_file(st.dir.join(name));
+            let result = if let Some(slug) = crate::vless::configs::active_slug(&st.dir) {
+                crate::vless::configs::remove(&st.dir, &slug).map(|_| ())
+            } else {
+                for name in [
+                    "xray-config.json",
+                    "xray-config.json.bak",
+                    "xray-config.json.tmp",
+                ] {
+                    let _ = std::fs::remove_file(st.dir.join(name));
+                }
+                Ok(())
+            };
+            match result {
+                Ok(()) => {
+                    clear_pool_active(&st);
+                    if crate::vless::configs::active_slug(&st.dir).is_some() {
+                        restart_xray_if_enabled(&st);
+                    } else {
+                        st.xr.stop();
+                    }
+                    wlog!("Xray-конфиг удалён пользователем");
+                    Json(json!({
+                        "ok": true,
+                        "configured": crate::vless::link::has_config(&st.dir)
+                    }))
+                    .into_response()
+                }
+                Err(e) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response(),
             }
-            st.xr.stop();
-            if let Ok(mut pool) = st.pool.lock() {
-                pool.active_link = None;
-            }
-            crate::vless::pool::save_pool_state(&st);
-            wlog!("VLESS-конфиг удалён пользователем");
-            Json(json!({ "ok": true, "configured": false })).into_response()
         }
         "set-default" => {
             let value = body.get("value").and_then(|v| v.as_str()).unwrap_or("");

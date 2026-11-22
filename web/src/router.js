@@ -1,4 +1,4 @@
-import { createRouter, createWebHashHistory } from 'vue-router'
+import { createRouter, createWebHistory } from 'vue-router'
 
 const routes = [
   { path: '/', redirect: '/overview' },
@@ -71,9 +71,18 @@ const routes = [
   { path: '/:pathMatch(.*)*', redirect: '/overview' },
 ]
 
+// Старые ссылки вида /#/settings продолжают работать: переносим hash-путь
+// в обычный path до инициализации роутера.
+function migrateLegacyHash() {
+  if (!window.location.hash.startsWith('#/')) return
+  const legacy = window.location.hash.slice(1)
+  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${legacy}`)
+}
+
 export function createAppRouter() {
+  migrateLegacyHash()
   const router = createRouter({
-    history: createWebHashHistory(import.meta.env.BASE_URL),
+    history: createWebHistory(import.meta.env.BASE_URL),
     routes,
     scrollBehavior() {
       return { top: 0 }
