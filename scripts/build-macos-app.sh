@@ -29,15 +29,24 @@ npm --prefix web ci
 npm --prefix web run build
 
 echo "==> Rust"
+# Явный deployment target обязателен: иначе Rust проставит минимальную macOS
+# сборочной машины (например 26.0), и приложение не запустится на более
+# старой системе с сообщением «Use Software Update in System Settings».
 if rustup target list --installed | grep -qx "aarch64-apple-darwin" &&
    rustup target list --installed | grep -qx "x86_64-apple-darwin"; then
-  cargo build --release --target aarch64-apple-darwin
-  cargo build --release --target x86_64-apple-darwin
+  MACOSX_DEPLOYMENT_TARGET=11.0 \
+    cargo build --release --target aarch64-apple-darwin
+  MACOSX_DEPLOYMENT_TARGET=10.13 \
+    cargo build --release --target x86_64-apple-darwin
   lipo -create -output "$BIN" \
     target/aarch64-apple-darwin/release/wireproxy-control \
     target/x86_64-apple-darwin/release/wireproxy-control
 else
-  cargo build --release
+  case "$(uname -m)" in
+    arm64) MIN_MACOS="11.0" ;;
+    *)     MIN_MACOS="10.13" ;;
+  esac
+  MACOSX_DEPLOYMENT_TARGET="$MIN_MACOS" cargo build --release
   cp target/release/wireproxy-control "$BIN"
 fi
 chmod +x "$BIN"
@@ -74,7 +83,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
-  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>LSMinimumSystemVersion</key><string>10.13</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
 </dict>

@@ -66,8 +66,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Сборка (arm64 + x86_64)
         run: |
-          cargo build --release --target aarch64-apple-darwin
-          cargo build --release --target x86_64-apple-darwin
+          # Явный deployment target: иначе Rust ставит минимальную macOS
+          # сборочного раннера, и у пользователей всплывает «Use Software
+          # Update in System Settings».
+          MACOSX_DEPLOYMENT_TARGET=11.0 cargo build --release --target aarch64-apple-darwin
+          MACOSX_DEPLOYMENT_TARGET=10.13 cargo build --release --target x86_64-apple-darwin
       - name: Universal
         run: |
           lipo -create -output wireproxy-control-macos-universal \
@@ -112,7 +115,7 @@ jobs:
             <key>CFBundleShortVersionString</key><string>$VERSION</string>
             <key>CFBundleVersion</key><string>$VERSION</string>
             <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
-            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>LSMinimumSystemVersion</key><string>10.13</string>
             <key>LSUIElement</key><true/>
             <key>NSHighResolutionCapable</key><true/>
           </dict>
