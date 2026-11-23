@@ -12,6 +12,7 @@ import Select from '@/components/ui/Select.vue'
 import Switch from '@/components/ui/Switch.vue'
 import OverflowMenu from '@/components/ui/OverflowMenu.vue'
 import StrategyDialog from '@/components/StrategyDialog.vue'
+import { normalizeDomainQuery } from '@/lib/validators'
 
 const props = defineProps({ s: { type: Object, required: true } })
 
@@ -78,7 +79,7 @@ const latestChecks = computed(() => {
 })
 
 const filtered = computed(() => {
-  const q = query.value.trim().toLowerCase()
+  const q = normalizeDomainQuery(query.value).trim().toLowerCase()
   return items.value.filter((item) => {
     if (q && !item.domain.toLowerCase().includes(q)) return false
     const check = latestChecks.value[item.domain]
@@ -107,6 +108,14 @@ watch([pageCount, filter, query], () => {
 watch(pageCount, (count) => {
   if (page.value > count) page.value = count
 })
+
+function onQueryPaste(event) {
+  const text = event.clipboardData?.getData('text') || ''
+  const cleaned = normalizeDomainQuery(text)
+  if (!cleaned) return
+  event.preventDefault()
+  query.value = cleaned
+}
 
 function routeLabel(item) {
   if (!item.route) return 'напрямую'
@@ -236,9 +245,11 @@ async function toggleVpn(item, enabled) {
       <div class="flex flex-wrap items-center gap-2">
         <Input
           v-model="query"
-          placeholder="Поиск по домену…"
+          placeholder="Поиск по домену или ссылка из браузера…"
           class="h-8 min-w-48 flex-1"
           autocomplete="off"
+          @paste="onQueryPaste"
+          @blur="query = normalizeDomainQuery(query) || query"
         />
         <div class="w-48">
           <Select v-model="filter" :options="FILTERS" />

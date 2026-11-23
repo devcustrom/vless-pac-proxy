@@ -78,6 +78,14 @@ fn app_running(target: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn app_binary_hash(app: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let data = std::fs::read(app.join("Contents/MacOS/wireproxy-control")).ok()?;
+    let mut hasher = Sha256::new();
+    hasher.update(&data);
+    Some(hex::encode(hasher.finalize()))
+}
+
 /// Finder запустил приложение прямо из DMG (или App Translocation). Копируем
 /// .app в Applications и перезапускаем уже оттуда. Это избавляет от ситуации
 /// «иконка прыгнула в Dock и исчезла» и от битого автозапуска из /Volumes.
@@ -104,7 +112,12 @@ pub fn self_install_from_dmg() {
     if target.is_dir() {
         let replace = match (app_version(&app), app_version(&target)) {
             (Some(source), Some(installed)) => source != installed,
-            _ => false,
+            // Одинаковая версия, но другая сборка (например, после пересборки
+            // на Mac) — заменяем по хэшу бинарника.
+            _ => match (app_binary_hash(&app), app_binary_hash(&target)) {
+                (Some(source), Some(installed)) => source != installed,
+                _ => false,
+            },
         };
         if replace {
             if app_running(&target) {

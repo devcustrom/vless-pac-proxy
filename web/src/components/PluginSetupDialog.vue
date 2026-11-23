@@ -4,7 +4,7 @@ import { Field, Form, setInput, submit, useForm } from '@formisch/vue'
 import { LockKeyhole } from 'lucide-vue-next'
 import { api, installCerts, notify } from '@/lib/store'
 import { useActionMutation } from '@/lib/queries'
-import { plainDomainSchema } from '@/lib/validators'
+import { normalizeDomainInput, plainDomainSchema } from '@/lib/validators'
 import Dialog from '@/components/ui/Dialog.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
@@ -44,6 +44,14 @@ const skipAction = useActionMutation(
 )
 const enabling = computed(() => enableAction.isLoading.value)
 const skipping = computed(() => skipAction.isLoading.value)
+
+function onDomainPaste(event, field) {
+  const text = event.clipboardData?.getData('text') || ''
+  const cleaned = normalizeDomainInput(text)
+  if (!cleaned) return
+  event.preventDefault()
+  field.input = cleaned
+}
 
 async function install() {
   certBusy.value = true
@@ -91,8 +99,10 @@ async function skip() {
           <Input
             v-model="field.input"
             v-bind="field.props"
-            placeholder="panel.localhost"
+            placeholder="panel.localhost или ссылка из браузера"
             autocomplete="off"
+            @paste="onDomainPaste($event, field)"
+            @blur="field.input = normalizeDomainInput(field.input)"
           />
           <p class="text-xs text-muted-foreground">
             Домен будет указывать на эту панель. Для настоящих имён понадобится

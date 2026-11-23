@@ -84,14 +84,14 @@ test('канал переключается оптимистично, не ож�
 test('локальный домен отдаёт backend, ошибка не стирает форму', async ({ page }) => {
   await page.getByRole('button', { name: 'Локальные домены' }).click()
   await page.getByRole('button', { name: 'Добавить домен' }).click()
-  const domain = page.getByPlaceholder('app.example.com')
+  const domain = page.getByPlaceholder(/app\.example\.com/)
   const port = page.getByPlaceholder('3000')
 
-  await domain.fill('loop.localhost')
-  await port.fill(String(LOCAL_HTTP))
+  await domain.fill(`http://loop.localhost:${LOCAL_HTTP}/some/path?q=1`)
   await page.getByRole('button', { name: 'Добавить', exact: true }).click()
   await expect(page.getByText('нельзя направить домен на сам локальный прокси')).toBeVisible()
   await expect(domain).toHaveValue('loop.localhost')
+  await expect(port).toHaveValue(String(LOCAL_HTTP))
 
   const response = await page.request.get(`http://127.0.0.1:${LOCAL_HTTP}/`, {
     headers: { Host: `app.localhost:${LOCAL_HTTP}` },

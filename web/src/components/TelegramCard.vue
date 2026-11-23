@@ -3,7 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { Copy, ExternalLink, MessageCircle, RefreshCw, Send, ShieldAlert } from 'lucide-vue-next'
 import { api, notify } from '@/lib/store'
 import { useActionMutation } from '@/lib/queries'
-import { digitsOnly } from '@/lib/validators'
+import { digitsOnly, normalizeDomainInput } from '@/lib/validators'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
@@ -181,11 +181,23 @@ async function restart() {
   }
 }
 
+function onHostPaste(event, key) {
+  const text = event.clipboardData?.getData('text') || ''
+  const cleaned = normalizeDomainInput(text)
+  if (!cleaned) return
+  event.preventDefault()
+  form[key] = cleaned
+  markDirty()
+}
+
 async function save() {
   if (!portValid.value) {
     notify('Порт должен быть числом 1..65535', 'error')
     return
   }
+  form.fakeTls = normalizeDomainInput(form.fakeTls)
+  form.cfWorker = normalizeDomainInput(form.cfWorker)
+  form.cfProxy = normalizeDomainInput(form.cfProxy)
   try {
     await setAction.mutateAsync({
       port: Number(form.port),
@@ -486,30 +498,36 @@ async function openLink() {
           <Label>Fake TLS domain (необязательно)</Label>
           <Input
             v-model="form.fakeTls"
-            placeholder="example.com"
+            placeholder="example.com или ссылка из браузера"
             autocomplete="off"
             :disabled="saving"
             @input="markDirty"
+            @paste="onHostPaste($event, 'fakeTls')"
+            @blur="form.fakeTls = normalizeDomainInput(form.fakeTls); markDirty()"
           />
         </div>
         <div class="space-y-1">
           <Label>CF Worker domain</Label>
           <Input
             v-model="form.cfWorker"
-            placeholder="worker.example.workers.dev"
+            placeholder="worker.example.workers.dev или ссылка"
             autocomplete="off"
             :disabled="saving"
             @input="markDirty"
+            @paste="onHostPaste($event, 'cfWorker')"
+            @blur="form.cfWorker = normalizeDomainInput(form.cfWorker); markDirty()"
           />
         </div>
         <div class="space-y-1">
           <Label>CF Proxy domain</Label>
           <Input
             v-model="form.cfProxy"
-            placeholder="example.com"
+            placeholder="example.com или ссылка из браузера"
             autocomplete="off"
             :disabled="saving"
             @input="markDirty"
+            @paste="onHostPaste($event, 'cfProxy')"
+            @blur="form.cfProxy = normalizeDomainInput(form.cfProxy); markDirty()"
           />
         </div>
       </div>

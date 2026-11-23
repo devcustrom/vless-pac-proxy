@@ -39,7 +39,7 @@ fn domain_re() -> &'static Regex {
 
 fn tld_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"^[a-z]{2,24}$").unwrap())
+    RE.get_or_init(|| Regex::new(r"^(?:[a-z]{2,24}|xn--[a-z0-9-]{2,59})$").unwrap())
 }
 
 /// Строгий валидатор домена для пользовательского ввода (без схем, путей,
@@ -318,6 +318,7 @@ mod tests {
             "sub-domain.example.co.uk",
             "foo.localhost.",
             "localhost",
+            "xn--e1afmkfd.xn--p1ai",
         ] {
             assert!(validate_hostname(raw).is_some(), "должен принять {raw:?}");
         }

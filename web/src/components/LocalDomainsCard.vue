@@ -244,7 +244,7 @@ async function probe(name) {
   >
     <DomainAddForm
       show-port
-      placeholder="app.example.com"
+      placeholder="app.example.com или ссылка с портом"
       :submit="addDomain"
       :loading="addLoading"
       :disabled="!!removing || applyBusy"

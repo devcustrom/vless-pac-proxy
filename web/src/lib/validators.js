@@ -1,10 +1,57 @@
 import * as v from 'valibot'
 
 const LABEL = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
-const TLD = /^[a-z]{2,24}$/
+const TLD = /^(?:[a-z]{2,24}|xn--[a-z0-9-]{2,59})$/
 
 export function normalizeHostname(raw) {
   return String(raw || '').trim().replace(/\.$/, '').toLowerCase()
+}
+
+/**
+ * Принимает домен или любую вставленную из браузера ссылку:
+ * https://example.com/path?q=1 -> example.com
+ * http://app.localhost:3000/ -> { domain: 'app.localhost', port: '3000' }
+ */
+export function parseDomainInput(raw) {
+  let value = String(raw ?? '').trim()
+  if (!value) return { domain: '', port: '' }
+  value = value.replace(/^[\s<"'`]+/, '').replace(/[\s>"'`]+$/, '')
+  const scheme = value.match(/^[a-z][a-z0-9+.-]*:\/\//i)
+  if (scheme) {
+    value = value.slice(scheme[0].length)
+  } else if (value.startsWith('//')) {
+    value = value.slice(2)
+  }
+  // userinfo@host
+  value = value.replace(/^[^/?#@]*@/, '')
+  // path, query и fragment не относятся к домену
+  let authority = value.split(/[/?#]/, 1)[0]
+  let port = ''
+  if (!authority.startsWith('[')) {
+    const match = authority.match(/^(.*):(\d{1,5})$/)
+    if (match) {
+      authority = match[1]
+      port = match[2]
+    }
+  }
+  let domain = authority.trim().replace(/\.$/, '').toLowerCase()
+  if (domain && !/^[\x00-\x7f]*$/.test(domain)) {
+    try {
+      domain = new URL(`https://${domain}`).hostname
+    } catch {
+      /* оставляем как есть — isValidHostname отклонит */
+    }
+  }
+  return { domain, port }
+}
+
+export function normalizeDomainInput(raw) {
+  return parseDomainInput(raw).domain
+}
+
+/** Для поиска/фильтра: из вставленного URL оставляет только домен. */
+export function normalizeDomainQuery(raw) {
+  return normalizeDomainInput(raw)
 }
 
 export function isValidHostname(raw) {
@@ -23,7 +70,7 @@ export function isValidHostname(raw) {
 export const domainSchema = v.pipe(
   v.string(),
   v.trim(),
-  v.toLowerCase(),
+  v.transform(normalizeDomainInput),
   v.check(isValidHostname, 'Некорректный домен'),
 )
 

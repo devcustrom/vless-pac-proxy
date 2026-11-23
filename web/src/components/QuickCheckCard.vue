@@ -8,6 +8,7 @@ import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
 import Input from '@/components/ui/Input.vue'
 import StrategyDialog from '@/components/StrategyDialog.vue'
+import { isValidHostname, normalizeDomainInput } from '@/lib/validators'
 
 const props = defineProps({ s: { type: Object, required: true } })
 
@@ -31,9 +32,22 @@ function codeText(code) {
   return code === '000' ? 'нет' : code
 }
 
+function onPaste(event) {
+  const text = event.clipboardData?.getData('text') || ''
+  const cleaned = normalizeDomainInput(text)
+  if (!cleaned) return
+  event.preventDefault()
+  domain.value = cleaned
+}
+
 async function check() {
-  const value = domain.value.trim()
+  const value = normalizeDomainInput(domain.value)
+  domain.value = value
   if (!value) return
+  if (!isValidHostname(value)) {
+    notify('Не удалось выделить корректный домен из ссылки', 'error')
+    return
+  }
   busy.value = true
   try {
     result.value = await api('/api/check', { domain: value })
@@ -51,7 +65,13 @@ async function check() {
       <Search class="h-4 w-4 text-primary" />
     </template>
     <form class="flex gap-2" @submit.prevent="check">
-      <Input v-model="domain" placeholder="example.com" autocomplete="off" />
+      <Input
+        v-model="domain"
+        placeholder="example.com или ссылка из браузера"
+        autocomplete="off"
+        @paste="onPaste"
+        @blur="domain = normalizeDomainInput(domain)"
+      />
       <Button type="submit" :loading="busy">
         <Search class="h-3.5 w-3.5" />
         Проверить
