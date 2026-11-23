@@ -61,6 +61,50 @@ pub fn is_forbidden_ip(ip: IpAddr) -> bool {
     }
 }
 
+fn mapped_v4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    let seg = ip.segments();
+    if seg[0] == 0 && seg[1] == 0 && seg[2] == 0 && seg[3] == 0 && seg[4] == 0 && seg[5] == 0xffff {
+        return Some(Ipv4Addr::new(
+            ((seg[6] >> 8) & 0xff) as u8,
+            (seg[6] & 0xff) as u8,
+            ((seg[7] >> 8) & 0xff) as u8,
+            (seg[7] & 0xff) as u8,
+        ));
+    }
+    None
+}
+
+/// Частные сети, которые могут быть доступны через OpenVPN/LAN. Их можно
+/// разрешать только для доменов, явно добавленных пользователем в direct.
+pub fn is_local_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let n = u32::from(v4);
+            let in_range = |base: [u8; 4], mask: [u8; 4]| {
+                let b = u32::from(Ipv4Addr::from(base));
+                let m = u32::from(Ipv4Addr::from(mask));
+                (n & m) == (b & m)
+            };
+            in_range([10, 0, 0, 0], [255, 0, 0, 0])
+                || in_range([100, 64, 0, 0], [255, 192, 0, 0])
+                || in_range([172, 16, 0, 0], [255, 240, 0, 0])
+                || in_range([192, 168, 0, 0], [255, 255, 0, 0])
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = mapped_v4(v6) {
+                return is_local_private_ip(IpAddr::V4(v4));
+            }
+            v6.segments()[0] & 0xfe00 == 0xfc00 // ULA
+        }
+    }
+}
+
+/// Для direct-доменов разрешаем частные сети, но по-прежнему запрещаем
+/// loopback, link-local, multicast и прочие служебные диапазоны.
+pub fn is_forbidden_direct_ip(ip: IpAddr) -> bool {
+    is_forbidden_ip(ip) && !is_local_private_ip(ip)
+}
+
 pub fn forbidden_hostname(host: &str) -> bool {
     let h = host.trim().to_lowercase();
     h.is_empty() || h == "localhost" || h.ends_with(".localhost") || h.ends_with(".local")
@@ -82,6 +126,19 @@ pub async fn check_host(host: &str) -> Result<()> {
 
 /// Резолв с проверкой каждого адреса (аналог checkedLookup).
 pub async fn resolve_checked(host: &str) -> Result<Vec<IpAddr>> {
+    resolve_with(host, is_forbidden_ip).await
+}
+
+/// Резолв для явно разрешённых direct-доменов: частные сети OpenVPN/LAN
+/// допустимы, loopback и link-local — нет.
+pub async fn resolve_direct(host: &str) -> Result<Vec<IpAddr>> {
+    resolve_with(host, is_forbidden_direct_ip).await
+}
+
+async fn resolve_with(host: &str, forbidden: fn(IpAddr) -> bool) -> Result<Vec<IpAddr>> {
+    if forbidden_hostname(host) {
+        bail!("запрещённый хост: {host}");
+    }
     let addrs: Vec<IpAddr> = tokio::net::lookup_host((host, 0))
         .await
         .with_context(|| format!("не удалось разрешить {host}"))?
@@ -91,7 +148,7 @@ pub async fn resolve_checked(host: &str) -> Result<Vec<IpAddr>> {
         bail!("хост не разрешается: {host}");
     }
     for ip in &addrs {
-        if is_forbidden_ip(*ip) {
+        if forbidden(*ip) {
             bail!("{host} указывает на запрещённый адрес ({ip})");
         }
     }
@@ -123,6 +180,23 @@ mod tests {
             assert!(
                 !is_forbidden_ip(s.parse().unwrap()),
                 "{s} должен быть разрешён"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_exceptions_allow_private_but_not_loopback() {
+        for s in ["10.1.2.3", "192.168.100.155", "172.16.5.5", "100.64.0.1"] {
+            let ip = s.parse().unwrap();
+            assert!(is_forbidden_ip(ip), "{s} должен быть запрещён по умолчанию");
+            assert!(is_local_private_ip(ip), "{s} должен быть частным");
+            assert!(!is_forbidden_direct_ip(ip), "{s} разрешён для direct");
+        }
+        for s in ["127.0.0.1", "169.254.169.254", "0.0.0.0"] {
+            let ip = s.parse().unwrap();
+            assert!(
+                is_forbidden_direct_ip(ip),
+                "{s} должен быть запрещён и direct"
             );
         }
     }

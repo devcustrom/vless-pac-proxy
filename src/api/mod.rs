@@ -1929,6 +1929,7 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
             .smart_proxy_ready
             .load(std::sync::atomic::Ordering::SeqCst),
         "extra": extra,
+        "directDomains": read_domains(&st.dir, "direct-domains.txt"),
         "checks": checks,
         "visited": visited,
         "visitedTotal": visited_total,
@@ -1950,6 +1951,25 @@ async fn extra(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
     };
     let mut extra = read_domains(&st.dir, "extra-domains.txt");
     let mut direct = read_domains(&st.dir, "direct-domains.txt");
+    if action == "direct-remove" {
+        let before = direct.len();
+        direct.retain(|item| *item != domain);
+        if direct.len() != before {
+            if let Err(e) = write_domains(&st.dir, "direct-domains.txt", &direct) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": e.to_string() })),
+                )
+                    .into_response();
+            }
+            spawn_refresh(&st);
+        }
+        return Json(json!({
+            "ok": true,
+            "direct": read_domains(&st.dir, "direct-domains.txt"),
+        }))
+        .into_response();
+    }
     let enabled = match action {
         "add" => true,
         "remove" => false,
@@ -1966,7 +1986,7 @@ async fn extra(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "action должен быть add|remove|route" })),
+                Json(json!({ "error": "action должен быть add|remove|route|direct-remove" })),
             )
                 .into_response();
         }

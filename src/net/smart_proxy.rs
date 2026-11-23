@@ -163,10 +163,15 @@ async fn tunnel(
     rest: Vec<u8>,
 ) -> Result<()> {
     let (host, port) = parse_hostport(target, 443)?;
-    reject_forbidden(&host)?;
 
     let routing = state.routing_snapshot();
     let route = effective_route(&state, &routing, &host, port).await;
+    let explicit_direct = routing.is_direct_override(&host);
+    if route.is_some() || !explicit_direct {
+        reject_forbidden(&host)?;
+    } else {
+        reject_forbidden_direct(&host)?;
+    }
     if let Err(e) = state.store.note_visit(&host) {
         wlog!("история сайтов: {e:#}");
     }
@@ -180,7 +185,7 @@ async fn tunnel(
 
     let mut upstream = match route {
         Some(ch) => connect_proxy_tunnel(ch, target).await?,
-        None => direct_connect(&host, port).await?,
+        None => direct_connect(&host, port, explicit_direct).await?,
     };
     client
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -206,10 +211,15 @@ async fn forward_http(
     }
     let host = url.host_str().context("нет хоста в URL")?.to_string();
     let port = url.port_or_known_default().unwrap_or(80);
-    reject_forbidden(&host)?;
 
     let routing = state.routing_snapshot();
     let route = effective_route(&state, &routing, &host, port).await;
+    let explicit_direct = routing.is_direct_override(&host);
+    if route.is_some() || !explicit_direct {
+        reject_forbidden(&host)?;
+    } else {
+        reject_forbidden_direct(&host)?;
+    }
     if let Err(e) = state.store.note_visit(&host) {
         wlog!("история сайтов: {e:#}");
     }
@@ -264,7 +274,7 @@ async fn forward_http(
                 .await
                 .with_context(|| format!("upstream-прокси недоступен ({port})"))?
         }
-        None => direct_connect(&host, port).await?,
+        None => direct_connect(&host, port, explicit_direct).await?,
     };
     upstream.write_all(out.as_bytes()).await?;
     if !rest.is_empty() {
@@ -280,6 +290,20 @@ fn reject_forbidden(host: &str) -> Result<()> {
     }
     if let Ok(ip) = host.parse::<IpAddr>() {
         if dns_guard::is_forbidden_ip(ip) {
+            bail!("запрещённый адрес назначения: {host}");
+        }
+    }
+    Ok(())
+}
+
+/// Исключения из direct-списка могут указывать на частные адреса OpenVPN/LAN.
+/// Loopback, link-local и прочие служебные диапазоны всё равно запрещены.
+fn reject_forbidden_direct(host: &str) -> Result<()> {
+    if dns_guard::forbidden_hostname(host) {
+        bail!("запрещённый адрес назначения: {host}");
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if dns_guard::is_forbidden_direct_ip(ip) {
             bail!("запрещённый адрес назначения: {host}");
         }
     }
@@ -311,8 +335,12 @@ async fn connect_proxy_tunnel(channel: Channel, target: &str) -> Result<TcpStrea
     Ok(stream)
 }
 
-async fn direct_connect(host: &str, port: u16) -> Result<TcpStream> {
-    let addrs = dns_guard::resolve_checked(host).await?;
+async fn direct_connect(host: &str, port: u16, allow_private: bool) -> Result<TcpStream> {
+    let addrs = if allow_private {
+        dns_guard::resolve_direct(host).await?
+    } else {
+        dns_guard::resolve_checked(host).await?
+    };
     let mut last_err: Option<String> = None;
     for ip in addrs {
         match tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect((ip, port))).await {

@@ -52,6 +52,24 @@ impl Routing {
         None
     }
 
+    /// Домен явно добавлен в исключения (напрямую / OpenVPN / LAN).
+    pub fn is_direct_override(&self, host_raw: &str) -> bool {
+        let Some(host) = normalize(host_raw) else {
+            return false;
+        };
+        let mut current = host.as_str();
+        loop {
+            if self.direct_override.contains(current) {
+                return true;
+            }
+            match current.find('.') {
+                Some(i) => current = &current[i + 1..],
+                None => break,
+            }
+        }
+        false
+    }
+
     /// Домен принудительно закреплён за конкретным каналом (не общий VPN-список).
     pub fn is_forced_channel(&self, host_raw: &str) -> bool {
         let Some(host) = normalize(host_raw) else {
@@ -122,6 +140,8 @@ mod tests {
         let mut r = routing();
         r.proxied.insert("gosuslugi.ru".into());
         assert_eq!(r.route_for("www.gosuslugi.ru"), None);
+        assert!(r.is_direct_override("www.gosuslugi.ru"));
+        assert!(!r.is_direct_override("example.com"));
     }
 
     #[test]

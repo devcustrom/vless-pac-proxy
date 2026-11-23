@@ -36,6 +36,16 @@ const sections = [
     variant: 'secondary',
   },
   {
+    key: 'direct',
+    title: 'Напрямую (OpenVPN / LAN)',
+    hint: 'Всегда мимо VPN — через системные маршруты OpenVPN или локальной сети. Поддомены учитываются.',
+    items: () => props.s.directDomains || [],
+    add: async (domain) => post('/api/extra', { action: 'route', domain, enabled: false }),
+    remove: async (domain) => post('/api/extra', { action: 'direct-remove', domain }),
+    badge: 'DIRECT',
+    variant: 'outline',
+  },
+  {
     key: 'wg',
     title: 'Только через WireGuard',
     hint: 'Даже если основной канал — VLESS. При мёртвом WireGuard уходят в VLESS.',
