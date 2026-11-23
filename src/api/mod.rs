@@ -1880,6 +1880,7 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         "directFirst": settings.direct_first,
         "autoCheckSites": settings.auto_check_sites,
         "autoAddUnavailable": settings.auto_add_unavailable,
+        "autoDirectPrivate": settings.auto_direct_private,
         "nextPoolRefreshAt": next_pool_refresh,
         "subscriptions": subscriptions,
         "localProxy": {
@@ -2514,6 +2515,9 @@ async fn auto(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Respo
     if let Some(v) = body.get("autoAddUnavailable").and_then(|v| v.as_bool()) {
         s.auto_add_unavailable = v;
     }
+    if let Some(v) = body.get("autoDirectPrivate").and_then(|v| v.as_bool()) {
+        s.auto_direct_private = v;
+    }
     if let Err(e) = s.save(&st.dir) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2521,7 +2525,16 @@ async fn auto(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Respo
         )
             .into_response();
     }
-    Json(json!({ "ok": true, "autoRotate": s.auto_rotate, "autoPoolRefreshHours": s.auto_pool_refresh_hours, "directFirst": s.direct_first, "autoCheckSites": s.auto_check_sites, "autoAddUnavailable": s.auto_add_unavailable })).into_response()
+    Json(json!({
+        "ok": true,
+        "autoRotate": s.auto_rotate,
+        "autoPoolRefreshHours": s.auto_pool_refresh_hours,
+        "directFirst": s.direct_first,
+        "autoCheckSites": s.auto_check_sites,
+        "autoAddUnavailable": s.auto_add_unavailable,
+        "autoDirectPrivate": s.auto_direct_private,
+    }))
+    .into_response()
 }
 
 async fn local_domains_get(State(st): State<Arc<AppState>>) -> Json<Value> {

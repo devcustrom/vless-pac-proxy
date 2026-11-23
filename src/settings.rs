@@ -78,6 +78,10 @@ pub struct Settings {
     /// но открываются через VPN.
     #[serde(rename = "autoAddUnavailable", default = "default_true")]
     pub auto_add_unavailable: bool,
+    /// Домены вне VPN-списков, резолвящиеся в частные адреса OpenVPN/LAN,
+    /// направлять напрямую. По умолчанию выключено: это ослабляет SSRF-защиту.
+    #[serde(rename = "autoDirectPrivate", default)]
+    pub auto_direct_private: bool,
     /// Постоянный идентификатор устройства для подписок (заголовок x-hwid).
     #[serde(rename = "hwid", default)]
     pub hwid: String,
@@ -149,6 +153,7 @@ impl Default for Settings {
             direct_first: true,
             auto_check_sites: true,
             auto_add_unavailable: true,
+            auto_direct_private: false,
             hwid: String::new(),
         }
     }
@@ -253,6 +258,7 @@ mod tests {
             direct_first: true,
             auto_check_sites: true,
             auto_add_unavailable: true,
+            auto_direct_private: false,
             hwid: "test-hwid-0123456789".to_string(),
         };
         let json = serde_json::to_string(&s).unwrap();

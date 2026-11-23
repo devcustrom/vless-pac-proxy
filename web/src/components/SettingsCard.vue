@@ -28,6 +28,7 @@ const hwidAction = useActionMutation(
 const hwidLoading = computed(() => hwidAction.isLoading.value)
 const autoCheck = computed(() => props.s.autoCheckSites !== false)
 const autoAdd = computed(() => props.s.autoAddUnavailable !== false)
+const autoDirect = computed(() => !!props.s.autoDirectPrivate)
 const autoCheckAction = useActionMutation(
   (payload) => api('/api/auto', payload),
   [['status']],
@@ -113,6 +114,15 @@ async function toggleAutostart(value) {
     } else {
       notify(value ? 'Автозапуск включён' : 'Автозапуск выключен')
     }
+  } catch {
+    /* тост показан */
+  }
+}
+
+async function toggleAutoDirect(value) {
+  try {
+    await autoCheckAction.mutateAsync({ autoDirectPrivate: value })
+    notify(value ? 'Частные адреса будут идти напрямую' : 'Авто-направление частных адресов выключено')
   } catch {
     /* тост показан */
   }
@@ -251,6 +261,22 @@ async function toggleAutoAdd(value) {
         :model-value="autostart"
         :disabled="autostartLoading"
         @update:model-value="toggleAutostart"
+      />
+    </div>
+
+    <div class="mt-3 flex items-center justify-between gap-3 rounded-lg border bg-muted/30 px-3 py-3">
+      <div class="min-w-0">
+        <span class="text-sm font-medium">Частные адреса напрямую</span>
+        <p class="mt-1 text-xs text-muted-foreground">
+          Домены вне VPN-списков, указывающие на 10.x / 172.16-31.x / 192.168.x,
+          открывать через OpenVPN или локальную сеть. Loopback и link-local
+          по-прежнему запрещены.
+        </p>
+      </div>
+      <Switch
+        :model-value="autoDirect"
+        :disabled="autoCheckLoading"
+        @update:model-value="toggleAutoDirect"
       />
     </div>
 

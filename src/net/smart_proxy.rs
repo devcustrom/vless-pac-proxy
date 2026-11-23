@@ -68,6 +68,18 @@ async fn direct_probe_ok(state: &AppState, host: &str, port: u16) -> bool {
     ok
 }
 
+/// Автоматический direct для доменов вне списков, которые резолвятся в
+/// частные адреса OpenVPN/LAN. Включается только настройкой пользователя.
+async fn auto_private_direct(state: &AppState, host: &str) -> bool {
+    if !state.settings_snapshot().auto_direct_private {
+        return false;
+    }
+    dns_guard::resolve_direct(host)
+        .await
+        .map(|addrs| addrs.iter().any(|ip| dns_guard::is_local_private_ip(*ip)))
+        .unwrap_or(false)
+}
+
 async fn effective_route(
     state: &AppState,
     routing: &Routing,
@@ -167,7 +179,10 @@ async fn tunnel(
     let routing = state.routing_snapshot();
     let route = effective_route(&state, &routing, &host, port).await;
     let explicit_direct = routing.is_direct_override(&host);
-    if route.is_some() || !explicit_direct {
+    let auto_direct =
+        route.is_none() && !explicit_direct && auto_private_direct(&state, &host).await;
+    let allow_private = explicit_direct || auto_direct;
+    if route.is_some() || !allow_private {
         reject_forbidden(&host)?;
     } else {
         reject_forbidden_direct(&host)?;
@@ -180,12 +195,12 @@ async fn tunnel(
             Channel::Wireguard => "wireguard",
             Channel::Vless => "vless",
         })
-        .unwrap_or("direct");
+        .unwrap_or(if auto_direct { "direct-auto" } else { "direct" });
     wlog!("CONNECT {host}:{port} [VPN:{route_label}]");
 
     let mut upstream = match route {
         Some(ch) => connect_proxy_tunnel(ch, target).await?,
-        None => direct_connect(&host, port, explicit_direct).await?,
+        None => direct_connect(&host, port, allow_private).await?,
     };
     client
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -215,7 +230,10 @@ async fn forward_http(
     let routing = state.routing_snapshot();
     let route = effective_route(&state, &routing, &host, port).await;
     let explicit_direct = routing.is_direct_override(&host);
-    if route.is_some() || !explicit_direct {
+    let auto_direct =
+        route.is_none() && !explicit_direct && auto_private_direct(&state, &host).await;
+    let allow_private = explicit_direct || auto_direct;
+    if route.is_some() || !allow_private {
         reject_forbidden(&host)?;
     } else {
         reject_forbidden_direct(&host)?;
@@ -228,7 +246,7 @@ async fn forward_http(
             Channel::Wireguard => "wireguard",
             Channel::Vless => "vless",
         })
-        .unwrap_or("direct");
+        .unwrap_or(if auto_direct { "direct-auto" } else { "direct" });
     let path = match route {
         Some(_) => url.to_string(),
         None => match url.query() {
@@ -274,7 +292,7 @@ async fn forward_http(
                 .await
                 .with_context(|| format!("upstream-прокси недоступен ({port})"))?
         }
-        None => direct_connect(&host, port, explicit_direct).await?,
+        None => direct_connect(&host, port, allow_private).await?,
     };
     upstream.write_all(out.as_bytes()).await?;
     if !rest.is_empty() {
