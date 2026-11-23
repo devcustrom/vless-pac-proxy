@@ -82,9 +82,16 @@ pub struct Settings {
     /// направлять напрямую. По умолчанию выключено: это ослабляет SSRF-защиту.
     #[serde(rename = "autoDirectPrivate", default)]
     pub auto_direct_private: bool,
+    /// Домены, для которых подбирается и проверяется стратегия обхода DPI.
+    #[serde(rename = "zapretDomains", default = "default_zapret_domains")]
+    pub zapret_domains: Vec<String>,
     /// Постоянный идентификатор устройства для подписок (заголовок x-hwid).
     #[serde(rename = "hwid", default)]
     pub hwid: String,
+}
+
+fn default_zapret_domains() -> Vec<String> {
+    vec!["www.youtube.com".to_string(), "discord.com".to_string()]
 }
 
 fn default_vpn() -> String {
@@ -154,6 +161,7 @@ impl Default for Settings {
             auto_check_sites: true,
             auto_add_unavailable: true,
             auto_direct_private: false,
+            zapret_domains: default_zapret_domains(),
             hwid: String::new(),
         }
     }
@@ -259,6 +267,7 @@ mod tests {
             auto_check_sites: true,
             auto_add_unavailable: true,
             auto_direct_private: false,
+            zapret_domains: default_zapret_domains(),
             hwid: "test-hwid-0123456789".to_string(),
         };
         let json = serde_json::to_string(&s).unwrap();

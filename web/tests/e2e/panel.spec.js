@@ -182,36 +182,27 @@ test('проверка сайта показывает результат Zapret
   await expect(page.getByText('Открыть в истории сайтов')).toBeVisible()
 })
 
-test('несколько стратегий Zapret выбираются и уходят одним набором', async ({ page }) => {
+test('Обход DPI: одна кнопка и список доменов', async ({ page }) => {
   test.skip(process.platform !== 'win32', 'Zapret доступен только на Windows')
 
   const headers = { 'X-WPC': '1' }
   await page.request.post(`${PANEL}/api/plugins`, { headers, data: { zapret: true } })
   await page.reload()
   await page.getByRole('button', { name: 'Обход DPI', exact: true }).click()
-  await expect(page.getByText('Стратегии Zapret')).toBeVisible()
-  await page.getByRole('button', { name: 'Изменить' }).click()
 
-  const first = page.getByRole('checkbox', { name: 'general', exact: true })
-  const second = page.getByRole('checkbox', { name: 'general-alt', exact: true })
-  await expect(first).toBeChecked()
-  await expect(second).not.toBeChecked()
-  await second.check()
-  await page.getByRole('button', { name: 'Готово' }).click()
+  await expect(page.getByRole('heading', { name: 'Обход DPI', exact: true })).toBeVisible()
+  await expect(page.getByText('Домены для обхода')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Включить обход DPI' })).toBeVisible()
+  await expect(page.getByText('blockcheck2')).toHaveCount(0)
 
-  let payload = null
-  await page.route('**/api/zapret', async (route) => {
-    if (route.request().method() === 'POST') {
-      payload = route.request().postDataJSON()
-      await route.fulfill({ json: { ok: true } })
-      return
-    }
-    await route.continue()
-  })
-  await page.getByRole('button', { name: /Установить службу|Применить пресет/ }).click()
-  await expect.poll(() => payload).not.toBeNull()
-  expect(payload.action).toBe('install')
-  expect(payload.presets).toEqual(['general.bat', 'general-alt.bat'])
+  const input = page.getByPlaceholder(/youtube\.com или/)
+  await input.fill('https://example.org/watch?v=1')
+  await page.getByRole('button', { name: 'Добавить', exact: true }).click()
+  await expect(page.getByText('example.org', { exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Убрать example.org' }).click()
+  await expect(page.getByText('example.org', { exact: true })).toHaveCount(0)
+
   await page.request.post(`${PANEL}/api/plugins`, { headers, data: { zapret: false } })
 })
 
@@ -530,8 +521,7 @@ test('каталог Zaprett показывает источник и умеет
     await route.fulfill({ response, json: data })
   })
   await page.reload()
-  await page.getByRole('button', { name: 'Обход DPI', exact: true }).click()
-  await page.getByRole('link', { name: 'Открыть каталог' }).click()
+  await page.goto('/dpi/catalog')
   await expect(page.getByRole('heading', { name: 'Каталог Zaprett' })).toBeVisible()
   await expect(page.getByRole('link', { name: source })).toBeVisible()
   await expect(page.getByText('Стандартная стратегия')).toBeVisible()

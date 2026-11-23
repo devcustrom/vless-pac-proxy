@@ -105,6 +105,7 @@ pub fn status_json(state: &AppState) -> Value {
         "presets": presets,
         "preset": selected,
         "selectedPresets": selected_presets,
+        "domains": settings.zapret_domains,
         "catalog": catalog::status_json(state),
         "service": service,
         "autoTune": auto,

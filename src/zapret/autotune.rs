@@ -274,9 +274,14 @@ fn start_inner(state: &Arc<AppState>, domain: Option<String>, scan: &str) -> Res
             }
         };
         let was_running = service::query(&state.dir).running;
-        let domains = domain
-            .clone()
-            .unwrap_or_else(|| DEFAULT_DOMAINS.to_string());
+        let domains = domain.clone().unwrap_or_else(|| {
+            let configured = state.settings_snapshot().zapret_domains;
+            if configured.is_empty() {
+                DEFAULT_DOMAINS.to_string()
+            } else {
+                configured.join(" ")
+            }
+        });
         let cmd = match build_cmd(
             &state.dir,
             &paths,

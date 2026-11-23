@@ -932,10 +932,15 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
                 .into_response();
             }
             let client = st.client("zapret-probe", None);
-            let targets = [
-                ("YouTube", "https://www.youtube.com/"),
-                ("Discord", "https://discord.com/"),
-            ];
+            let mut domains = st.settings_snapshot().zapret_domains;
+            if domains.is_empty() {
+                domains = vec!["www.youtube.com".into(), "discord.com".into()];
+            }
+            let targets: Vec<(String, String)> = domains
+                .into_iter()
+                .take(8)
+                .map(|domain| (domain.clone(), format!("https://{domain}/")))
+                .collect();
             let mut results = Vec::new();
             for (name, url) in targets {
                 let started = std::time::Instant::now();
@@ -1228,11 +1233,50 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
                     .into_response(),
             }
         }
+        "add-domain" | "remove-domain" => {
+            let Some(domain) = body
+                .get("domain")
+                .and_then(Value::as_str)
+                .and_then(crate::lists::validate_hostname)
+            else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "некорректный домен" })),
+                )
+                    .into_response();
+            };
+            let domains = {
+                let mut settings = st.settings.lock().unwrap();
+                if action == "add-domain" {
+                    if !settings.zapret_domains.iter().any(|item| item == &domain) {
+                        if settings.zapret_domains.len() >= 50 {
+                            return (
+                                StatusCode::BAD_REQUEST,
+                                Json(json!({ "error": "слишком много доменов для Zapret" })),
+                            )
+                                .into_response();
+                        }
+                        settings.zapret_domains.push(domain);
+                    }
+                } else {
+                    settings.zapret_domains.retain(|item| item != &domain);
+                }
+                if let Err(e) = settings.save(&st.dir) {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": e.to_string() })),
+                    )
+                        .into_response();
+                }
+                settings.zapret_domains.clone()
+            };
+            Json(json!({ "ok": true, "domains": domains })).into_response()
+        }
         "refresh" => Json(crate::zapret::status_json(&st)).into_response(),
         _ => (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "action должен быть install|remove|start|stop|set-preset|open-folder|auto-tune|generate-strategies|apply-strategy|save-strategy|catalog-status|catalog-refresh|catalog-download|catalog-download-all|catalog-preview|catalog-test|catalog-test-reset|catalog-apply|catalog-select|probe|refresh"
+                "error": "action должен быть install|remove|start|stop|set-preset|open-folder|auto-tune|generate-strategies|apply-strategy|save-strategy|catalog-status|catalog-refresh|catalog-download|catalog-download-all|catalog-preview|catalog-test|catalog-test-reset|catalog-apply|catalog-select|probe|add-domain|remove-domain|refresh"
             })),
         )
             .into_response(),
