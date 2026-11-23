@@ -237,7 +237,26 @@ async fn autostart_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>)
         crate::autostart::uninstall()
     };
     match result {
-        Ok(()) => Json(json!({ "ok": true, "autostart": enabled })).into_response(),
+        Ok(()) => {
+            #[cfg(windows)]
+            let (exe, restart_required) = {
+                let stable = crate::autostart::stable_exe_path(&st.dir);
+                let current = std::env::current_exe().ok();
+                (
+                    stable.display().to_string(),
+                    stable.is_file() && current.as_deref() != Some(stable.as_path()),
+                )
+            };
+            #[cfg(not(windows))]
+            let (exe, restart_required) = (String::new(), false);
+            Json(json!({
+                "ok": true,
+                "autostart": enabled,
+                "exe": exe,
+                "restartRequired": restart_required,
+            }))
+            .into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": format!("{e:#}") })),

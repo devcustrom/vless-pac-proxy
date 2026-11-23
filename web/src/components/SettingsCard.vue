@@ -105,8 +105,14 @@ async function toggleZapret(value) {
 
 async function toggleAutostart(value) {
   try {
-    await autostartAction.mutateAsync(value)
-    notify(value ? 'Автозапуск включён' : 'Автозапуск выключен')
+    const result = await autostartAction.mutateAsync(value)
+    if (value && result?.restartRequired) {
+      notify(
+        'Автозапуск включён. Копия сохранена в AppData — перезапустите приложение, чтобы работать из неё.',
+      )
+    } else {
+      notify(value ? 'Автозапуск включён' : 'Автозапуск выключен')
+    }
   } catch {
     /* тост показан */
   }
@@ -237,7 +243,8 @@ async function toggleAutoAdd(value) {
       <div class="min-w-0">
         <span class="text-sm font-medium">Запускать при входе</span>
         <p class="mt-1 text-xs text-muted-foreground">
-          Панель и трей поднимутся автоматически после входа в систему.
+          Панель и трей поднимутся после входа. Exe копируется в AppData,
+          чтобы автозапуск не зависел от папки сборки.
         </p>
       </div>
       <Switch

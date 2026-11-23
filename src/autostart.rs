@@ -18,6 +18,12 @@ pub fn installed() -> bool {
     imp::installed()
 }
 
+/// Стабильная копия exe, на которую должен указывать автозапуск.
+#[cfg(windows)]
+pub fn stable_exe_path(dir: &Path) -> std::path::PathBuf {
+    imp::stable_exe(dir)
+}
+
 /// Если автозапуск включён, он должен указывать на текущий бинарник.
 /// Иначе после переезда/обновления из другого места при загрузке остаётся
 /// старая копия приложения.
@@ -27,25 +33,70 @@ pub fn ensure_current(dir: &Path) -> Result<()> {
 
 #[cfg(windows)]
 mod imp {
-    use anyhow::Result;
-    use std::path::Path;
+    use anyhow::{Context, Result};
+    use std::path::{Path, PathBuf};
     use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
     use winreg::RegKey;
 
     const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
     const VALUE: &str = "wireproxy-control";
 
-    pub fn install(dir: &Path) -> Result<()> {
-        let exe = std::env::current_exe()?;
-        let cmd = format!(
+    pub(super) fn stable_exe(dir: &Path) -> PathBuf {
+        dir.join("wireproxy-control.exe")
+    }
+
+    fn run_command(exe: &Path, dir: &Path) -> String {
+        format!(
             "\"{}\" --hidden --data-dir \"{}\"",
             exe.display(),
             dir.display()
-        );
+        )
+    }
+
+    fn write_run(exe: &Path, dir: &Path) -> Result<()> {
+        let cmd = run_command(exe, dir);
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let key = hkcu.open_subkey_with_flags(RUN_KEY, KEY_SET_VALUE)?;
         key.set_value(VALUE, &cmd)?;
-        println!("Автозапуск включён (HKCU\\Run): {cmd}");
+        Ok(())
+    }
+
+    /// Копирует текущий exe в каталог данных, чтобы автозапуск не зависел от
+    /// target/release, Downloads или временной папки.
+    fn ensure_stable_exe(dir: &Path) -> Result<PathBuf> {
+        let current = std::env::current_exe()?;
+        let stable = stable_exe(dir);
+        if current == stable {
+            return Ok(stable);
+        }
+        std::fs::create_dir_all(dir)?;
+        let tmp = stable.with_extension("exe.new");
+        let _ = std::fs::remove_file(&tmp);
+        std::fs::copy(&current, &tmp).with_context(|| {
+            format!(
+                "не удалось скопировать {} в {}",
+                current.display(),
+                tmp.display()
+            )
+        })?;
+        if stable.exists() {
+            if let Err(e) = std::fs::remove_file(&stable) {
+                let _ = std::fs::remove_file(&tmp);
+                anyhow::bail!(
+                    "не удалось заменить {}: {e}. Закройте запущенную копию и повторите",
+                    stable.display()
+                );
+            }
+        }
+        std::fs::rename(&tmp, &stable)
+            .with_context(|| format!("не удалось переименовать {}", stable.display()))?;
+        Ok(stable)
+    }
+
+    pub fn install(dir: &Path) -> Result<()> {
+        let exe = ensure_stable_exe(dir)?;
+        write_run(&exe, dir)?;
+        println!("Автозапуск включён (HKCU\\Run): {}", run_command(&exe, dir));
         Ok(())
     }
 
@@ -70,20 +121,23 @@ mod imp {
     }
 
     pub fn ensure_current(dir: &Path) -> Result<()> {
-        let exe = std::env::current_exe()?;
-        let expected = format!(
-            "\"{}\" --hidden --data-dir \"{}\"",
-            exe.display(),
-            dir.display()
-        );
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
         let key = hkcu.open_subkey_with_flags(RUN_KEY, KEY_READ)?;
-        match key.get_value::<String, _>(VALUE) {
-            Ok(value) if value == expected => Ok(()),
-            Ok(_) => install(dir),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e.into()),
+        let Ok(value) = key.get_value::<String, _>(VALUE) else {
+            return Ok(());
+        };
+        let stable = stable_exe(dir);
+        if !stable.is_file() {
+            // Автозапуск включён, но стабильной копии нет — создаём её.
+            return install(dir);
         }
+        let expected = run_command(&stable, dir);
+        if value == expected {
+            return Ok(());
+        }
+        // Не перезаписываем стабильную копию запущенным dev-бинарником:
+        // просто направляем автозапуск на неё.
+        write_run(&stable, dir)
     }
 }
 
