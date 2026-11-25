@@ -208,15 +208,9 @@ impl App {
             wlog!("трей: умный прокси не слушает 8081 — системный прокси не включаю");
             return;
         }
-        let domains: Vec<String> = self
-            .ctx
-            .state
-            .local_domains
-            .lock()
-            .map(|list| list.iter().map(|item| item.domain.clone()).collect())
-            .unwrap_or_default();
+        let state = self.ctx.state.clone();
         self.ctx.handle.spawn(async move {
-            if let Err(e) = crate::systemproxy::set_system_proxy(enabled, &domains) {
+            if let Err(e) = crate::systemproxy::apply(&state, enabled) {
                 wlog!("трей: системный прокси — {e:#}");
             }
         });

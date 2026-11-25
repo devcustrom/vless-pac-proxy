@@ -91,6 +91,69 @@ fn posix_path(path: &Path) -> String {
     plain_path(path).replace('\\', "/")
 }
 
+/// Корень бандла по пути к cygwin/bash: `<root>\cygwin\bin\bash.exe`.
+#[cfg(windows)]
+fn zapret_root(paths: &BlockcheckPaths) -> Option<&Path> {
+    paths.bash.parent()?.parent()?.parent()
+}
+
+/// Убивает только тестовые процессы из каталога Zapret. Широкий
+/// `taskkill /IM winws2.exe` задевал бы пользовательскую службу, а одного
+/// `bash.exe` мало: blockcheck2 оставляет `sh`, `tee`, `curl` и `winws2`,
+/// которые продолжают перезапускать друг друга и ломают новые соединения.
+#[cfg(windows)]
+fn cleanup_script(root: &Path) -> String {
+    let root = plain_path(root).replace('\'', "''");
+    format!(
+        "$ErrorActionPreference='SilentlyContinue'\n\
+         $root='{root}'\n\
+         $roots=@((Join-Path $root 'cygwin'),(Join-Path $root 'blockcheck'),(Join-Path $root 'zapret-winws'))\n\
+         function Test-WpcUnderRoot([string]$path) {{\n\
+         \x20 foreach ($item in $roots) {{ if ($path.StartsWith($item, [StringComparison]::OrdinalIgnoreCase)) {{ return $true }} }}\n\
+         \x20 return $false\n\
+         }}\n\
+         for ($pass=0; $pass -lt 6; $pass++) {{\n\
+         \x20 $targets=Get-CimInstance Win32_Process | Where-Object {{\n\
+         \x20   $path=$_.ExecutablePath\n\
+         \x20   $cmd=$_.CommandLine\n\
+         \x20   ($path -and (Test-WpcUnderRoot $path)) -or\n\
+         \x20   ($_.Name -eq 'bash.exe' -and $cmd -like '*blockcheck2.sh*') -or\n\
+         \x20   ($_.Name -eq 'wireproxy-control.exe' -and $cmd -like '*CatalogTest*')\n\
+         \x20 }}\n\
+         \x20 if (-not $targets) {{ break }}\n\
+         \x20 $targets | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}\n\
+         \x20 Start-Sleep -Milliseconds 500\n\
+         }}\n"
+    )
+}
+
+#[cfg(windows)]
+fn write_cleanup_script(data_dir: &Path, root: &Path) -> Result<PathBuf> {
+    let path = data_dir.join("zapret-blockcheck-cleanup.ps1");
+    std::fs::write(&path, cleanup_script(root))?;
+    Ok(path)
+}
+
+/// Очистка из уже Elevated-процесса (helper проверки каталога).
+#[cfg(windows)]
+pub(crate) fn cleanup_test_processes(data_dir: &Path) -> Result<()> {
+    let root = preset::bundle_dir(data_dir);
+    let path = data_dir.join("zapret-test-cleanup.ps1");
+    std::fs::write(&path, cleanup_script(&root))?;
+    let status = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .context("не удалось запустить очистку тестовых процессов Zapret")?;
+    if !status.success() {
+        bail!("очистка тестовых процессов Zapret завершилась с ошибкой");
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 fn build_cmd(
     data_dir: &Path,
@@ -117,6 +180,11 @@ fn build_cmd(
     let cygwin_bin = paths.bash.parent().context("нет каталога cygwin")?;
     let done = data_dir.join(DONE_FILE);
     let log_win = data_dir.join(LOG_FILE);
+    let root = zapret_root(paths)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| preset::bundle_dir(data_dir));
+    let cleanup_path = write_cleanup_script(data_dir, &root)?;
+    let cleanup = plain_path(&cleanup_path);
     let cmd_text = format!(
         "@echo off\r\n\
          setlocal\r\n\
@@ -124,26 +192,36 @@ fn build_cmd(
          set \"BATCH=1\"\r\n\
          set \"CURL_CMD=1\"\r\n\
          set \"SKIP_DNSCHECK=1\"\r\n\
+         set \"ENABLE_HTTP=0\"\r\n\
+         set \"ENABLE_HTTPS_TLS12=1\"\r\n\
+         set \"ENABLE_HTTPS_TLS13=0\"\r\n\
+         set \"ENABLE_HTTP3=0\"\r\n\
+         set \"CURL_MAX_TIME=1\"\r\n\
+         set \"CURL_MAX_TIME_DOH=1\"\r\n\
          set /p SCANLEVEL=<\"{}\"\r\n\
          set \"IPV=4\"\r\n\
          set /p DOMAINS=<\"{}\"\r\n\
          set \"WPC_RESTART={}\"\r\n\
          sc stop wireproxy-zapret >nul 2>&1\r\n\
          ping 127.0.0.1 -n 3 >nul\r\n\
+         powershell -NoProfile -ExecutionPolicy Bypass -File \"{}\" >nul 2>&1\r\n\
          del \"{}\" 2>nul\r\n\
          del \"{}\" 2>nul\r\n\
          \"{}\" -l -c \"'{}' 2>&1 | tee '{}'\"\r\n\
+         powershell -NoProfile -ExecutionPolicy Bypass -File \"{}\" >nul 2>&1\r\n\
          if \"%WPC_RESTART%\"==\"1\" sc start wireproxy-zapret >nul 2>&1\r\n\
          echo %errorlevel%>\"{}\"\r\n",
         plain_path(cygwin_bin),
         plain_path(&scan_path),
         plain_path(&domains_path),
         if restart_service { 1 } else { 0 },
+        cleanup,
         plain_path(&log_win),
         plain_path(&done),
         plain_path(&paths.bash),
         script,
         log,
+        cleanup,
         plain_path(&done),
     );
     let path = data_dir.join(CMD_FILE);
@@ -154,15 +232,36 @@ fn build_cmd(
 fn valid_candidate_args(args: &[String]) -> bool {
     !args.is_empty()
         && args.iter().all(|arg| arg.starts_with("--"))
-        && args.iter().any(|arg| arg.starts_with("--filter-"))
+        && args
+            .iter()
+            .any(|arg| arg.starts_with("--filter-") || arg.starts_with("--wf-"))
         && !args
             .iter()
             .any(|arg| arg.contains("exit_guard") || arg.contains("timer_set"))
 }
 
+fn candidate_from_line(line: &str) -> Option<(String, String)> {
+    let lower = line.to_ascii_lowercase();
+    let pos = lower.find(" : winws2 ")?;
+    let prefix = line[..pos]
+        .trim()
+        .trim_matches(|c: char| c == '!' || c == '-' || c.is_whitespace());
+    let args = line[pos + " : winws2 ".len()..]
+        .trim()
+        .trim_end_matches(|c: char| c == '!' || c.is_whitespace());
+    if args.is_empty() {
+        return None;
+    }
+    let tokens = preset::split_args(args);
+    if !valid_candidate_args(&tokens) {
+        return None;
+    }
+    Some((prefix.to_string(), args.to_string()))
+}
+
 fn parse_candidates(log: &str) -> Vec<StrategyCandidate> {
-    // Берём только SUMMARY: строки «!!!!! ... working strategy ...» могут
-    // содержать хвост из восклицательных знаков и дубликаты.
+    // Основной источник — SUMMARY. Если его нет (лог обрезан/blockcheck
+    // завершился нестандартно), берём стратегии, помеченные AVAILABLE.
     let section = log
         .split_once("* SUMMARY")
         .map(|(_, rest)| rest)
@@ -170,38 +269,63 @@ fn parse_candidates(log: &str) -> Vec<StrategyCandidate> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for line in section.lines() {
-        let lower = line.to_ascii_lowercase();
-        let Some(pos) = lower.find(" : winws2 ") else {
+        let Some((prefix, args)) = candidate_from_line(line) else {
             continue;
         };
-        let prefix = line[..pos]
-            .trim()
-            .trim_matches(|c: char| c == '!' || c == '-' || c.is_whitespace());
-        let args = line[pos + " : winws2 ".len()..]
-            .trim()
-            .trim_end_matches(|c: char| c == '!' || c.is_whitespace());
-        if args.is_empty() {
-            continue;
-        }
-        let tokens = preset::split_args(args);
-        if !valid_candidate_args(&tokens) {
-            continue;
-        }
-        if !seen.insert(args.to_string()) {
+        if !seen.insert(args.clone()) {
             continue;
         }
         let label = if prefix.is_empty() {
             format!("Стратегия {}", out.len() + 1)
         } else {
-            prefix.to_string()
+            prefix
         };
         out.push(StrategyCandidate {
             index: out.len(),
             label,
-            strategy: args.to_string(),
+            strategy: args,
         });
         if out.len() >= MAX_CANDIDATES {
             break;
+        }
+    }
+    if out.is_empty() {
+        out = parse_available(log);
+    }
+    out
+}
+
+/// Разбирает пары «- curl_test ... : winws2 ...» + «!!!!! AVAILABLE !!!!!».
+fn parse_available(log: &str) -> Vec<StrategyCandidate> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    let mut pending: Option<(String, String)> = None;
+    for line in log.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("- ") {
+            pending = candidate_from_line(rest.trim());
+            continue;
+        }
+        if trimmed.contains("!!!!! AVAILABLE !!!!!") {
+            let Some((prefix, args)) = pending.take() else {
+                continue;
+            };
+            if !seen.insert(args.clone()) {
+                continue;
+            }
+            let label = if prefix.is_empty() {
+                format!("Стратегия {}", out.len() + 1)
+            } else {
+                prefix
+            };
+            out.push(StrategyCandidate {
+                index: out.len(),
+                label,
+                strategy: args,
+            });
+            if out.len() >= MAX_CANDIDATES {
+                break;
+            }
         }
     }
     out
@@ -228,10 +352,10 @@ fn strategy_args(raw: &str) -> Result<Vec<String>> {
 }
 
 pub fn start(state: &Arc<AppState>) -> Result<()> {
-    // standard перебирает все комбинации и может идти 30+ минут, а монитор
-    // сдаётся раньше. Для кнопки «Перебрать стратегии» достаточно quick:
-    // он проверяет основные сценарии и завершается за минуты.
-    start_inner(state, None, "quick")
+    // veryquick останавливает перебор вариантов семейства после первого
+    // успеха. Этого достаточно для одной кнопки и не растягивает поиск
+    // на десятки минут.
+    start_inner(state, None, "veryquick")
 }
 
 /// Генерирует стратегии blockcheck2 для конкретного домена. В отличие от
@@ -275,7 +399,11 @@ fn start_inner(state: &Arc<AppState>, domain: Option<String>, scan: &str) -> Res
         };
         let was_running = service::query(&state.dir).running;
         let domains = domain.clone().unwrap_or_else(|| {
-            let configured = state.settings_snapshot().zapret_domains;
+            let mut configured = state.settings_snapshot().zapret_domains;
+            // blockcheck проверяет каждую стратегию по каждому домену.
+            // Три цели — разумный компромисс; остальные проверяются
+            // точечно через диалог стратегий.
+            configured.truncate(3);
             if configured.is_empty() {
                 DEFAULT_DOMAINS.to_string()
             } else {
@@ -370,6 +498,20 @@ async fn wait_started(state: Arc<AppState>) {
         }
         s.finished_at = Some(chrono::Utc::now().to_rfc3339());
     });
+    // Стратегия, подобранная для одного домена, не покрывает весь список.
+    let single_domain = state
+        .zapret_auto
+        .lock()
+        .map(|s| s.domain.is_some())
+        .unwrap_or(false);
+    if running && !single_domain {
+        let stamp = crate::zapret::domains_stamp(&state.settings_snapshot().zapret_domains);
+        let mut settings = state.settings.lock().unwrap();
+        settings.zapret_strategy_stamp = stamp;
+        if let Err(e) = settings.save(&state.dir) {
+            wlog!("zapret: не удалось сохранить отпечаток стратегии — {e:#}");
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -588,6 +730,25 @@ curl_test_https_tls13 ipv4 example.com : winws2 --lua-init=timer_set('x') --filt
         assert!(parse_strategy(log).is_none());
     }
 
+    #[test]
+    fn falls_back_to_available_lines() {
+        let log = r#"
+- curl_test_https_tls12 ipv4 www.youtube.com : winws2 --wf-l3=ipv4 --wf-tcp-out=443 --payload=tls_client_hello --lua-desync=fake
+curl: (28) Connection timed out after 2007 milliseconds
+UNAVAILABLE code=28
+- curl_test_https_tls12 ipv4 www.youtube.com : winws2 --wf-l3=ipv4 --wf-tcp-out=443 --payload=tls_client_hello --lua-desync=multisplit
+curl -w %{time_total}
+!!!!! AVAILABLE !!!!!
+"#;
+        let candidates = parse_candidates(log);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].label,
+            "curl_test_https_tls12 ipv4 www.youtube.com"
+        );
+        assert!(candidates[0].strategy.contains("--lua-desync=multisplit"));
+    }
+
     #[cfg(windows)]
     #[test]
     fn blockcheck_cmd_uses_plain_paths() {
@@ -614,6 +775,32 @@ curl_test_https_tls13 ipv4 example.com : winws2 --lua-init=timer_set('x') --filt
                 .to_string_lossy()
                 .replace('\\', "/")
         ));
+        // Широкий taskkill убивал бы пользовательскую службу Zapret.
+        assert!(!text.contains("taskkill /F /IM winws2.exe"));
+        assert!(!text.contains("taskkill /F /IM winws.exe"));
+        // Очистка запускается до и после blockcheck.
+        assert_eq!(text.matches("zapret-blockcheck-cleanup.ps1").count(), 2);
+        let cleanup = std::fs::read_to_string(base.join("zapret-blockcheck-cleanup.ps1")).unwrap();
+        assert!(cleanup.contains(&base.to_string_lossy().to_string()));
+        for dir in ["cygwin", "blockcheck", "zapret-winws"] {
+            assert!(cleanup.contains(&format!("'{}'", dir)));
+        }
+        assert!(cleanup.contains("blockcheck2.sh"));
+        assert!(cleanup.contains("Test-WpcUnderRoot"));
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cleanup_script_escapes_quotes_and_targets_test_dirs() {
+        use super::cleanup_script;
+        use std::path::Path;
+
+        let script = cleanup_script(Path::new(r"C:\Users\O'Brien\zapret"));
+        assert!(script.contains(r"C:\Users\O''Brien\zapret"));
+        for dir in ["cygwin", "blockcheck", "zapret-winws"] {
+            assert!(script.contains(&format!("'{}'", dir)));
+        }
+        assert!(script.contains("Stop-Process -Id"));
     }
 }

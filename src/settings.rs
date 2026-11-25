@@ -82,9 +82,16 @@ pub struct Settings {
     /// направлять напрямую. По умолчанию выключено: это ослабляет SSRF-защиту.
     #[serde(rename = "autoDirectPrivate", default)]
     pub auto_direct_private: bool,
+    /// Системный прокси был включён пользователем; после перезапуска
+    /// приложение включает его снова, когда умный прокси готов.
+    #[serde(rename = "systemProxyEnabled", default)]
+    pub system_proxy_enabled: bool,
     /// Домены, для которых подбирается и проверяется стратегия обхода DPI.
     #[serde(rename = "zapretDomains", default = "default_zapret_domains")]
     pub zapret_domains: Vec<String>,
+    /// Хэш списка доменов, для которого успешно собрана стратегия.
+    #[serde(rename = "zapretStrategyStamp", default)]
+    pub zapret_strategy_stamp: String,
     /// Постоянный идентификатор устройства для подписок (заголовок x-hwid).
     #[serde(rename = "hwid", default)]
     pub hwid: String,
@@ -161,7 +168,9 @@ impl Default for Settings {
             auto_check_sites: true,
             auto_add_unavailable: true,
             auto_direct_private: false,
+            system_proxy_enabled: false,
             zapret_domains: default_zapret_domains(),
+            zapret_strategy_stamp: String::new(),
             hwid: String::new(),
         }
     }
@@ -267,7 +276,9 @@ mod tests {
             auto_check_sites: true,
             auto_add_unavailable: true,
             auto_direct_private: false,
+            system_proxy_enabled: false,
             zapret_domains: default_zapret_domains(),
+            zapret_strategy_stamp: String::new(),
             hwid: "test-hwid-0123456789".to_string(),
         };
         let json = serde_json::to_string(&s).unwrap();

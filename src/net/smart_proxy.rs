@@ -12,7 +12,7 @@ use tokio::net::{TcpListener, TcpStream};
 use url::Url;
 
 use crate::net::dns_guard;
-use crate::routing::{Channel, Routing};
+use crate::routing::{AutoChannel, Channel, Routing};
 use crate::state::AppState;
 use crate::vless::{WIREPROXY_HTTP_PORT, XRAY_HTTP_PORT};
 use crate::wlog;
@@ -80,15 +80,69 @@ async fn auto_private_direct(state: &AppState, host: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn is_local_domain(state: &AppState, host: &str) -> bool {
+    let enabled = state
+        .settings
+        .lock()
+        .map(|settings| settings.local_domains_enabled)
+        .unwrap_or(false);
+    if !enabled {
+        return false;
+    }
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    state
+        .local_domains
+        .lock()
+        .map(|list| {
+            list.iter()
+                .any(|item| item.domain.eq_ignore_ascii_case(&host))
+        })
+        .unwrap_or(false)
+}
+
+async fn connect_local(port: u16) -> Result<TcpStream> {
+    tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(("127.0.0.1", port)))
+        .await
+        .context("локальный прокси не ответил")?
+        .with_context(|| format!("локальный прокси 127.0.0.1:{port} недоступен"))
+}
+
 async fn effective_route(
     state: &AppState,
     routing: &Routing,
     host: &str,
     port: u16,
 ) -> Option<Channel> {
+    // Домены локального плагина всегда идут в локальный HTTP/HTTPS-прокси,
+    // даже если системный прокси включён.
+    if is_local_domain(state, host) {
+        return None;
+    }
+    if routing.is_direct_override(host) {
+        return None;
+    }
+    // Явный режим «всегда через VPN»: прямой 200 может быть региональной
+    // заглушкой, поэтому авто-выбор и directFirst здесь не применяются.
+    if let Some(route) = routing.vpn_only_channel(host) {
+        return Some(route);
+    }
+    // Автопроверка уже сравнила скорость путей — её решение не переопределяем.
+    if let Some(choice) = routing.auto_for(host) {
+        return match choice.channel {
+            AutoChannel::Direct => {
+                if choice.via_zapret && !crate::zapret::service_running_cached(state) {
+                    Some(routing.available(routing.vpn_default))
+                } else {
+                    None
+                }
+            }
+            AutoChannel::Wireguard => Some(routing.available(Channel::Wireguard)),
+            AutoChannel::Vless => Some(routing.available(Channel::Vless)),
+        };
+    }
     let route = routing.route_for(host)?;
     let settings = state.settings_snapshot();
-    if !settings.direct_first || routing.is_forced_channel(host) {
+    if !settings.direct_first {
         return Some(route);
     }
     if !crate::zapret::service_running_cached(state) {
@@ -102,7 +156,7 @@ async fn effective_route(
 }
 
 pub async fn serve(state: Arc<AppState>) -> Result<()> {
-    let listener = TcpListener::bind(("127.0.0.1", crate::api::SMART_PROXY_PORT)).await?;
+    let listener = TcpListener::bind(("127.0.0.1", crate::api::smart_proxy_port())).await?;
     state
         .smart_proxy_ready
         .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -115,7 +169,7 @@ pub async fn serve(state: Arc<AppState>) -> Result<()> {
     let _ready = ReadyGuard(&state.smart_proxy_ready);
     wlog!(
         "умный прокси: 127.0.0.1:{} (режим {})",
-        crate::api::SMART_PROXY_PORT,
+        crate::api::smart_proxy_port(),
         crate::lists::MODE
     );
     loop {
@@ -177,30 +231,47 @@ async fn tunnel(
     let (host, port) = parse_hostport(target, 443)?;
 
     let routing = state.routing_snapshot();
+    let local = is_local_domain(&state, &host);
     let route = effective_route(&state, &routing, &host, port).await;
     let explicit_direct = routing.is_direct_override(&host);
     let auto_direct =
-        route.is_none() && !explicit_direct && auto_private_direct(&state, &host).await;
-    let allow_private = explicit_direct || auto_direct;
-    if route.is_some() || !allow_private {
-        reject_forbidden(&host)?;
-    } else {
-        reject_forbidden_direct(&host)?;
+        route.is_none() && !explicit_direct && !local && auto_private_direct(&state, &host).await;
+    let allow_private = explicit_direct || auto_direct || local;
+    if !local {
+        if route.is_some() || !allow_private {
+            reject_forbidden(&host)?;
+        } else {
+            reject_forbidden_direct(&host)?;
+        }
     }
     if let Err(e) = state.store.note_visit(&host) {
         wlog!("история сайтов: {e:#}");
     }
-    let route_label = route
-        .map(|c| match c {
-            Channel::Wireguard => "wireguard",
-            Channel::Vless => "vless",
-        })
-        .unwrap_or(if auto_direct { "direct-auto" } else { "direct" });
+    let route_label = if local {
+        "local"
+    } else {
+        route
+            .map(|c| match c {
+                Channel::Wireguard => "wireguard",
+                Channel::Vless => "vless",
+            })
+            .unwrap_or(if auto_direct { "direct-auto" } else { "direct" })
+    };
     wlog!("CONNECT {host}:{port} [VPN:{route_label}]");
 
-    let mut upstream = match route {
-        Some(ch) => connect_proxy_tunnel(ch, target).await?,
-        None => direct_connect(&host, port, allow_private).await?,
+    let mut upstream = if local {
+        let settings = state.settings_snapshot();
+        let local_port = if port == 443 {
+            settings.local_https_port
+        } else {
+            settings.local_proxy_port
+        };
+        connect_local(local_port).await?
+    } else {
+        match route {
+            Some(ch) => connect_proxy_tunnel(ch, target).await?,
+            None => direct_connect(&host, port, allow_private).await?,
+        }
     };
     client
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -228,25 +299,32 @@ async fn forward_http(
     let port = url.port_or_known_default().unwrap_or(80);
 
     let routing = state.routing_snapshot();
+    let local = is_local_domain(&state, &host);
     let route = effective_route(&state, &routing, &host, port).await;
     let explicit_direct = routing.is_direct_override(&host);
     let auto_direct =
-        route.is_none() && !explicit_direct && auto_private_direct(&state, &host).await;
-    let allow_private = explicit_direct || auto_direct;
-    if route.is_some() || !allow_private {
-        reject_forbidden(&host)?;
-    } else {
-        reject_forbidden_direct(&host)?;
+        route.is_none() && !explicit_direct && !local && auto_private_direct(&state, &host).await;
+    let allow_private = explicit_direct || auto_direct || local;
+    if !local {
+        if route.is_some() || !allow_private {
+            reject_forbidden(&host)?;
+        } else {
+            reject_forbidden_direct(&host)?;
+        }
     }
     if let Err(e) = state.store.note_visit(&host) {
         wlog!("история сайтов: {e:#}");
     }
-    let route_label = route
-        .map(|c| match c {
-            Channel::Wireguard => "wireguard",
-            Channel::Vless => "vless",
-        })
-        .unwrap_or(if auto_direct { "direct-auto" } else { "direct" });
+    let route_label = if local {
+        "local"
+    } else {
+        route
+            .map(|c| match c {
+                Channel::Wireguard => "wireguard",
+                Channel::Vless => "vless",
+            })
+            .unwrap_or(if auto_direct { "direct-auto" } else { "direct" })
+    };
     let path = match route {
         Some(_) => url.to_string(),
         None => match url.query() {
@@ -282,17 +360,22 @@ async fn forward_http(
     }
     out.push_str("Connection: close\r\n\r\n");
 
-    let mut upstream = match route {
-        Some(ch) => {
-            let port = match ch {
-                Channel::Wireguard => WIREPROXY_HTTP_PORT,
-                Channel::Vless => XRAY_HTTP_PORT,
-            };
-            TcpStream::connect(("127.0.0.1", port))
-                .await
-                .with_context(|| format!("upstream-прокси недоступен ({port})"))?
+    let mut upstream = if local {
+        let local_port = state.settings_snapshot().local_proxy_port;
+        connect_local(local_port).await?
+    } else {
+        match route {
+            Some(ch) => {
+                let port = match ch {
+                    Channel::Wireguard => WIREPROXY_HTTP_PORT,
+                    Channel::Vless => XRAY_HTTP_PORT,
+                };
+                TcpStream::connect(("127.0.0.1", port))
+                    .await
+                    .with_context(|| format!("upstream-прокси недоступен ({port})"))?
+            }
+            None => direct_connect(&host, port, allow_private).await?,
         }
-        None => direct_connect(&host, port, allow_private).await?,
     };
     upstream.write_all(out.as_bytes()).await?;
     if !rest.is_empty() {

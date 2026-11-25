@@ -47,6 +47,7 @@ const tabs = computed(() => {
     { label: 'Обзор', to: '/overview' },
     { label: 'Каналы', to: '/channels' },
     { label: 'Сайты', to: '/sites' },
+    { label: 'Маршрутизация', to: '/routing' },
   ]
   if (plugins.telegram) items.push({ label: 'Telegram', to: '/telegram' })
   if (plugins.zapret && data?.zapret?.supported) items.push({ label: 'Обход DPI', to: '/dpi' })

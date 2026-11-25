@@ -34,6 +34,13 @@ const tests = reactive({})
 const addOpen = ref(false)
 const usingSlug = ref('')
 const removingSlug = ref('')
+const testingAll = ref(false)
+const testedCount = computed(
+  () => Object.values(tests).filter((item) => item && !item.busy).length,
+)
+const workingCount = computed(
+  () => Object.values(tests).filter((item) => item?.ok).length,
+)
 
 const form = useForm({
   schema: xrayConfigSchema,
@@ -114,11 +121,39 @@ async function removeConfig(item) {
 
 async function testConfig(item) {
   tests[item.slug] = { busy: true }
+  // Автовыбор тоже запускает тестовый Xray. Если слот занят — ждём и
+  // повторяем, чтобы «Проверить все» не сдавался на первой же гонке.
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      const result = await api('/api/xray/configs', { action: 'test', slug: item.slug })
+      tests[item.slug] = { ok: true, ip: result.ip, ms: result.ms }
+      return
+    } catch (error) {
+      const busy = String(error.message || '').includes('уже идёт')
+      if (!busy || attempt === 39) {
+        tests[item.slug] = { ok: false, error: error.message }
+        return
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+    }
+  }
+}
+
+async function testAll() {
+  if (testingAll.value) return
+  const targets = configs.value.filter((item) => item.valid)
+  if (!targets.length) {
+    notify('Нет конфигов для проверки', 'error')
+    return
+  }
+  testingAll.value = true
   try {
-    const result = await api('/api/xray/configs', { action: 'test', slug: item.slug })
-    tests[item.slug] = { ok: true, ip: result.ip, ms: result.ms }
-  } catch (error) {
-    tests[item.slug] = { ok: false, error: error.message }
+    for (const item of targets) {
+      await testConfig(item)
+    }
+    notify(`Проверка завершена: рабочих ${workingCount.value} из ${targets.length}`)
+  } finally {
+    testingAll.value = false
   }
 }
 </script>
@@ -144,11 +179,26 @@ async function testConfig(item) {
             · {{ protocolLabel(active.protocol) }} {{ active.address }}:{{ active.port }}
           </template>
         </span>
-        <Button size="sm" variant="outline" class="ml-auto" @click="addOpen = true">
+        <Button
+          size="sm"
+          variant="outline"
+          class="ml-auto"
+          :loading="testingAll"
+          :disabled="testingAll || !configs.length"
+          @click="testAll"
+        >
+          <FlaskConical class="h-3.5 w-3.5" />
+          Проверить все
+        </Button>
+        <Button size="sm" variant="outline" @click="addOpen = true">
           <Plus class="h-3.5 w-3.5" />
           Добавить конфиг
         </Button>
       </div>
+
+      <p v-if="testedCount" class="text-xs text-muted-foreground">
+        Проверено {{ testedCount }} · рабочих {{ workingCount }}
+      </p>
 
       <div v-if="loading" class="rounded-lg border px-3 py-4 text-sm text-muted-foreground">
         Загружаю конфиги…
@@ -236,7 +286,7 @@ async function testConfig(item) {
         статические ссылки, <code class="rounded bg-muted px-1 py-0.5">ssconf://…#name</code>
         и <code class="rounded bg-muted px-1 py-0.5">https://…json</code> Outline.
       </p>
-      <RouterLink to="/domains/routing" class="inline-flex text-xs text-primary hover:underline">
+      <RouterLink to="/routing" class="inline-flex text-xs text-primary hover:underline">
         Настроить маршрутизацию доменов →
       </RouterLink>
     </div>

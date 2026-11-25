@@ -100,6 +100,25 @@ fn claim_test_slot() -> Result<TestGuard> {
     Ok(TestGuard)
 }
 
+pub fn test_busy() -> bool {
+    TESTING_POOL.load(Ordering::SeqCst)
+}
+
+/// Ждёт освобождения тестового xray. Автовыбор и автовосстановление могут
+/// пересечься; вместо мгновенной ошибки даём им завершить проверку по очереди.
+async fn claim_test_slot_wait(timeout: Duration) -> Result<TestGuard> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !TESTING_POOL.swap(true, Ordering::SeqCst) {
+            return Ok(TestGuard);
+        }
+        if Instant::now() >= deadline {
+            bail!("идёт проверка пула конфигов — попробуйте через минуту");
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PoolEntry {
     pub link: String,
@@ -719,6 +738,11 @@ pub async fn refresh(state: &Arc<AppState>) -> Result<()> {
             pool.error = Some(e.to_string());
         }
     }
+    if result.is_ok() {
+        // Пул только что проверен: можно безопасно сравнить его с
+        // сохранёнными Xray-конфигами и выбрать самый быстрый.
+        crate::config_auto::spawn_once(state.clone());
+    }
     result
 }
 
@@ -912,7 +936,7 @@ pub async fn apply_entry_checked(state: &Arc<AppState>, index: usize) -> Result<
         (entry.link.clone(), entry.name.clone())
     };
     let dir = xray_dir()?;
-    let guard = claim_test_slot()?;
+    let guard = claim_test_slot_wait(Duration::from_secs(60)).await?;
     let fresh = test_links(&dir, vec![link_url.clone()]).await;
     drop(guard);
     if fresh.is_empty() {
@@ -946,6 +970,12 @@ pub async fn apply_entry_checked(state: &Arc<AppState>, index: usize) -> Result<
 pub async fn maybe_auto_recover(state: &Arc<AppState>, reason: &str) -> bool {
     let settings = state.settings_snapshot();
     if !settings.auto_rotate {
+        return false;
+    }
+    // Автовыбор конфигов уже проверяет сохранённые конфиги и пул. Не
+    // конкурируем с ним за тестовый xray — иначе оба цикла тратят проверку
+    // впустую и канал остаётся мёртвым до следующего таймера.
+    if state.config_auto_running.load(Ordering::SeqCst) {
         return false;
     }
     // Пользователь явно выбрал сохранённый Xray-конфиг — пул не должен
@@ -1000,10 +1030,10 @@ pub async fn maybe_auto_recover(state: &Arc<AppState>, reason: &str) -> bool {
         idx.map(|i| {
             let entry = pool.entries[i].clone();
             pool.tried.insert(entry.link.clone());
-            entry
+            (i, entry)
         })
     };
-    let Some(entry) = candidate else {
+    let Some((index, entry)) = candidate else {
         let mut pool = state.pool.lock().unwrap();
         if !pool.tried.is_empty() {
             pool.tried.clear();
@@ -1011,20 +1041,10 @@ pub async fn maybe_auto_recover(state: &Arc<AppState>, reason: &str) -> bool {
         }
         return false;
     };
-    let _ = crate::vless::configs::clear_active(&state.dir);
-    match link::save_link(&state.dir, &entry.link) {
+    // Сохранённый статус мог устареть — перед применением проверяем
+    // кандидата живым трафиком через временный Xray.
+    match apply_entry_checked(state, index).await {
         Ok(info) => {
-            if let Ok(parsed) = link::parse_any(&entry.link) {
-                let _ = crate::vless::configs::sync_pool_active(&state.dir, &parsed);
-            }
-            let mut pool = state.pool.lock().unwrap();
-            pool.active_link = Some(entry.link.clone());
-            pool.last_rotate_at = Some(now);
-            drop(pool);
-            if state.settings_snapshot().xray_enabled {
-                state.xr.restart();
-            }
-            save_pool_state(state);
             wlog!(
                 "автовосстановление ({reason}): VLESS → {} ({} {}:{}, {} мс)",
                 entry.name,
@@ -1036,7 +1056,10 @@ pub async fn maybe_auto_recover(state: &Arc<AppState>, reason: &str) -> bool {
             true
         }
         Err(e) => {
-            wlog!("автовосстановление: не удалось применить конфиг — {e}");
+            wlog!(
+                "автовосстановление: кандидат «{}» не подошёл — {e}",
+                entry.name
+            );
             false
         }
     }

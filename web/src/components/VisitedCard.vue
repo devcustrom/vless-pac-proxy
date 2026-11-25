@@ -18,8 +18,8 @@ const props = defineProps({ s: { type: Object, required: true } })
 
 const PAGE_SIZE = 20
 const page = ref(1)
-const vpnBusy = ref('')
-const routeOverrides = reactive({})
+const autoBusy = ref('')
+const autoOverrides = reactive({})
 const checks = reactive({})
 const bulk = reactive({ running: false, done: 0, total: 0 })
 const filter = ref('all')
@@ -36,7 +36,7 @@ const canGenerate = computed(
 
 const FILTERS = [
   { value: 'all', label: 'Все' },
-  { value: 'vpn', label: 'Через VPN' },
+  { value: 'auto', label: 'В авто-списке' },
   { value: 'direct', label: 'Напрямую' },
   { value: 'needs', label: 'Нужен VPN' },
   { value: 'unchecked', label: 'Без проверки' },
@@ -83,8 +83,8 @@ const filtered = computed(() => {
   return items.value.filter((item) => {
     if (q && !item.domain.toLowerCase().includes(q)) return false
     const check = latestChecks.value[item.domain]
-    if (filter.value === 'vpn') return !!item.route
-    if (filter.value === 'direct') return !item.route
+    if (filter.value === 'auto') return !!item.inAuto
+    if (filter.value === 'direct') return !item.inAuto && !item.route
     if (filter.value === 'needs') return check?.verdict === 'vpn-helps'
     if (filter.value === 'unchecked') return !item.checked
     return true
@@ -118,8 +118,23 @@ function onQueryPaste(event) {
 }
 
 function routeLabel(item) {
+  if (item.routeSource === 'vpn-only') {
+    return `Всегда VPN · ${item.route === 'vless' ? 'VLESS' : 'WireGuard'}`
+  }
+  if (item.inAuto || item.routeSource === 'auto') {
+    if (item.autoRoute === 'direct') return 'Авто · напрямую'
+    if (item.autoRoute === 'vless') return 'Авто · VLESS'
+    if (item.autoRoute === 'wireguard') return 'Авто · WireGuard'
+    return 'В авто-списке'
+  }
   if (!item.route) return 'напрямую'
   return item.route === 'vless' ? 'VPN · VLESS' : 'VPN · WireGuard'
+}
+
+function routeVariant(item) {
+  if (item.routeSource === 'vpn-only') return 'success'
+  if (item.inAuto || item.routeSource === 'auto') return 'secondary'
+  return item.route ? 'success' : 'outline'
 }
 
 function checkFor(domain) {
@@ -132,6 +147,26 @@ function codeVariant(code) {
 
 function codeText(code) {
   return code === '000' ? 'нет' : code
+}
+
+function vpnBadges(item) {
+  if (!item) return []
+  const parts = []
+  if (item.wireguard) parts.push({ label: 'WG', code: item.wireguard.code })
+  if (item.vless) parts.push({ label: 'VLESS', code: item.vless.code })
+  if (!parts.length) parts.push({ label: 'VPN', code: item.vpn })
+  return parts
+}
+
+function bestRouteLabel(item) {
+  if (!item?.bestRoute) return ''
+  const name =
+    item.bestRoute === 'wireguard'
+      ? 'WireGuard'
+      : item.bestRoute === 'vless'
+        ? 'VLESS'
+        : 'напрямую'
+  return item.bestLatencyMs ? `${name} · ${item.bestLatencyMs} мс` : name
 }
 
 function zapretText(item) {
@@ -179,28 +214,27 @@ async function checkAll() {
   }
 }
 
-function vpnEnabled(item) {
-  return item.domain in routeOverrides ? routeOverrides[item.domain] : !!item.route
+function autoEnabled(item) {
+  return item.domain in autoOverrides ? autoOverrides[item.domain] : !!item.inAuto
 }
 
-async function toggleVpn(item, enabled) {
-  routeOverrides[item.domain] = enabled
-  vpnBusy.value = item.domain
+async function toggleAuto(item, enabled) {
+  autoOverrides[item.domain] = enabled
+  autoBusy.value = item.domain
   try {
     await post('/api/extra', {
-      action: 'route',
+      action: enabled ? 'add' : 'remove',
       domain: item.domain,
-      enabled,
     })
-    notify(`${item.domain}: ${enabled ? 'через VPN' : 'напрямую'}`)
+    notify(`${item.domain}: ${enabled ? 'в авто-списке' : 'убран из авто-списка'}`)
     await refresh()
     setTimeout(() => {
-      delete routeOverrides[item.domain]
+      delete autoOverrides[item.domain]
     }, 6000)
   } catch {
-    delete routeOverrides[item.domain]
+    delete autoOverrides[item.domain]
   } finally {
-    vpnBusy.value = ''
+    autoBusy.value = ''
   }
 }
 </script>
@@ -228,7 +262,7 @@ async function toggleVpn(item, enabled) {
             Проверить все
           </Button>
           <RouterLink
-            to="/domains/routing"
+            to="/routing"
             class="inline-flex h-8 items-center rounded-md border border-input bg-background px-3 text-xs font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground"
           >
             Маршрутизация
@@ -266,7 +300,7 @@ async function toggleVpn(item, enabled) {
             <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
               <span class="min-w-0 break-all text-sm font-medium">{{ item.domain }}</span>
               <span class="text-xs text-muted-foreground">×{{ item.count }}</span>
-              <Badge :variant="item.route ? 'success' : 'outline'">
+              <Badge :variant="routeVariant(item)">
                 {{ routeLabel(item) }}
               </Badge>
             </div>
@@ -275,7 +309,7 @@ async function toggleVpn(item, enabled) {
                 <button
                   type="button"
                   class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50"
-                  :disabled="anyChecking || !!vpnBusy"
+                  :disabled="anyChecking || !!autoBusy"
                   @click="runCheck(item.domain)"
                 >
                   <Check class="h-3.5 w-3.5" />
@@ -285,7 +319,7 @@ async function toggleVpn(item, enabled) {
                   v-if="canGenerate"
                   type="button"
                   class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent disabled:opacity-50"
-                  :disabled="anyChecking || !!vpnBusy || bulk.running"
+                  :disabled="anyChecking || !!autoBusy || bulk.running"
                   @click="strategyFor = item.domain"
                 >
                   <Wand2 class="h-3.5 w-3.5" />
@@ -294,17 +328,17 @@ async function toggleVpn(item, enabled) {
               </OverflowMenu>
               <div
                 class="flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs"
-                :class="vpnEnabled(item) ? 'border-primary/40 bg-primary/5' : 'bg-background'"
-                title="Маршрутизировать этот домен через VPN"
+                :class="autoEnabled(item) ? 'border-primary/40 bg-primary/5' : 'bg-background'"
+                title="Добавить домен в авто-список"
               >
                 <Switch
-                  aria-label="VPN"
-                  :model-value="vpnEnabled(item)"
-                  :disabled="!!vpnBusy || bulk.running"
-                  @update:model-value="toggleVpn(item, $event)"
+                  aria-label="Авто-маршрут"
+                  :model-value="autoEnabled(item)"
+                  :disabled="!!autoBusy || bulk.running"
+                  @update:model-value="toggleAuto(item, $event)"
                 />
-                <span>VPN</span>
-                <span v-if="vpnBusy === item.domain" class="text-muted-foreground">…</span>
+                <span>Авто</span>
+                <span v-if="autoBusy === item.domain" class="text-muted-foreground">…</span>
               </div>
             </div>
             <div v-if="checkFor(item.domain)?.busy" class="text-xs text-muted-foreground">
@@ -314,14 +348,24 @@ async function toggleVpn(item, enabled) {
               <Badge :variant="codeVariant(checkFor(item.domain).direct)">
                 напрямую {{ codeText(checkFor(item.domain).direct) }}
               </Badge>
-              <Badge :variant="codeVariant(checkFor(item.domain).vpn)">
-                VPN {{ codeText(checkFor(item.domain).vpn) }}
+              <Badge
+                v-for="part in vpnBadges(checkFor(item.domain))"
+                :key="part.label"
+                :variant="codeVariant(part.code)"
+              >
+                {{ part.label }} {{ codeText(part.code) }}
               </Badge>
               <Badge :variant="zapretVariant(checkFor(item.domain))">
                 Zapret {{ zapretText(checkFor(item.domain)) }}
               </Badge>
               <span class="text-muted-foreground">
                 {{ VERDICTS[checkFor(item.domain).verdict] || checkFor(item.domain).verdict }}
+              </span>
+              <span
+                v-if="bestRouteLabel(checkFor(item.domain))"
+                class="text-muted-foreground"
+              >
+                лучший: {{ bestRouteLabel(checkFor(item.domain)) }}
               </span>
               <span v-if="checkFor(item.domain).error" class="text-destructive">
                 {{ checkFor(item.domain).error }}

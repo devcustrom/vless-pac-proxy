@@ -1,8 +1,8 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { Search, Wand2 } from 'lucide-vue-next'
+import { Search, ShieldPlus, Wand2 } from 'lucide-vue-next'
 import { RouterLink } from 'vue-router'
-import { api, notify } from '@/lib/store'
+import { api, notify, post } from '@/lib/store'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
@@ -15,7 +15,19 @@ const props = defineProps({ s: { type: Object, required: true } })
 const domain = ref('')
 const result = ref(null)
 const busy = ref(false)
+const adding = ref(false)
 const strategyFor = ref('')
+const blocked = (code) => !code || ['000', '403', '451'].includes(code)
+const directBlocked = computed(() => !!result.value && blocked(result.value.direct))
+const vpnHelps = computed(() => !!result.value && !blocked(result.value.vpn))
+const inAuto = computed(() => {
+  if (!result.value) return false
+  const domain = result.value.domain.toLowerCase()
+  return (props.s.extra || []).some((item) => item.toLowerCase() === domain)
+})
+const canAddAuto = computed(
+  () => directBlocked.value && vpnHelps.value && !inAuto.value,
+)
 const canGenerate = computed(
   () =>
     !!props.s.plugins?.zapret &&
@@ -40,6 +52,39 @@ function onPaste(event) {
   domain.value = cleaned
 }
 
+async function addToAuto() {
+  if (!result.value) return
+  adding.value = true
+  try {
+    await post('/api/extra', { action: 'add', domain: result.value.domain })
+    notify(`Домен ${result.value.domain} добавлен в авто-список`)
+  } catch {
+    /* тост показан */
+  } finally {
+    adding.value = false
+  }
+}
+
+function vpnBadges(item) {
+  if (!item) return []
+  const parts = []
+  if (item.wireguard) parts.push({ label: 'WG', code: item.wireguard.code })
+  if (item.vless) parts.push({ label: 'VLESS', code: item.vless.code })
+  if (!parts.length) parts.push({ label: 'VPN', code: item.vpn })
+  return parts
+}
+
+function bestRouteLabel(item) {
+  if (!item?.bestRoute) return ''
+  const name =
+    item.bestRoute === 'wireguard'
+      ? 'WireGuard'
+      : item.bestRoute === 'vless'
+        ? 'VLESS'
+        : 'напрямую'
+  return item.bestLatencyMs ? `${name} · ${item.bestLatencyMs} мс` : name
+}
+
 async function check() {
   const value = normalizeDomainInput(domain.value)
   domain.value = value
@@ -60,7 +105,7 @@ async function check() {
 </script>
 
 <template>
-  <Card title="Проверить домен" description="Быстрая проверка напрямую, через VPN и Zapret.">
+  <Card title="Проверить домен" description="Быстрая проверка напрямую, через WireGuard/VLESS и Zapret.">
     <template #icon>
       <Search class="h-4 w-4 text-primary" />
     </template>
@@ -80,9 +125,18 @@ async function check() {
     <div v-if="result" class="mt-3 space-y-2 rounded-lg border bg-muted/30 px-3 py-2 text-sm">
       <div class="flex flex-wrap items-center gap-1.5">
         <Badge :variant="codeVariant(result.direct)">напрямую {{ codeText(result.direct) }}</Badge>
-        <Badge :variant="codeVariant(result.vpn)">VPN {{ codeText(result.vpn) }}</Badge>
+        <Badge
+          v-for="part in vpnBadges(result)"
+          :key="part.label"
+          :variant="codeVariant(part.code)"
+        >
+          {{ part.label }} {{ codeText(part.code) }}
+        </Badge>
         <Badge :variant="result.zapretRunning ? codeVariant(result.zapret) : 'secondary'">
           Zapret {{ result.zapretRunning ? codeText(result.zapret) : 'выкл' }}
+        </Badge>
+        <Badge v-if="result.bestRoute" variant="secondary">
+          лучший: {{ bestRouteLabel(result) }}
         </Badge>
       </div>
       <div class="flex flex-wrap items-center gap-2">
@@ -93,7 +147,19 @@ async function check() {
           Открыть в истории сайтов
         </RouterLink>
         <Button
-          v-if="canGenerate && ['000', '403', '451'].includes(result.direct)"
+          v-if="canAddAuto"
+          size="sm"
+          variant="outline"
+          :loading="adding"
+          :disabled="adding"
+          @click="addToAuto"
+        >
+          <ShieldPlus class="h-3.5 w-3.5" />
+          Добавить в авто
+        </Button>
+        <Badge v-else-if="directBlocked && inAuto" variant="secondary">уже в авто</Badge>
+        <Button
+          v-if="canGenerate && directBlocked"
           size="sm"
           variant="outline"
           @click="strategyFor = result.domain"

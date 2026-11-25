@@ -22,6 +22,12 @@ const routes = [
     meta: { title: 'Сайты' },
   },
   {
+    path: '/routing',
+    name: 'routing',
+    component: () => import('./views/RoutingView.vue'),
+    meta: { title: 'Маршрутизация' },
+  },
+  {
     path: '/telegram',
     name: 'telegram',
     component: () => import('./views/TelegramView.vue'),
@@ -39,25 +45,15 @@ const routes = [
     component: () => import('./views/CatalogView.vue'),
     meta: { title: 'Каталог Zaprett', plugin: 'zapret' },
   },
+  { path: '/domains', redirect: '/domains/local' },
   {
-    path: '/domains',
-    component: () => import('./views/DomainsView.vue'),
-    redirect: '/domains/local',
-    children: [
-      {
-        path: 'local',
-        name: 'domains-local',
-        component: () => import('./views/LocalDomainsView.vue'),
-        meta: { title: 'Локальные домены', plugin: 'localDomains' },
-      },
-      {
-        path: 'routing',
-        name: 'domains-routing',
-        component: () => import('./views/RoutingView.vue'),
-        meta: { title: 'Маршрутизация', plugin: 'localDomains' },
-      },
-    ],
+    path: '/domains/local',
+    name: 'domains-local',
+    component: () => import('./views/LocalDomainsView.vue'),
+    meta: { title: 'Локальные домены', plugin: 'localDomains' },
   },
+  // Старая ссылка: маршрутизация больше не относится к плагину локальных доменов.
+  { path: '/domains/routing', redirect: '/routing' },
   {
     path: '/settings',
     name: 'settings',

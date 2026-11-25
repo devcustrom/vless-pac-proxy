@@ -39,8 +39,6 @@ pub struct Pool {
 pub struct Lists {
     pub proxied: std::collections::HashSet<String>,
     pub direct: std::collections::HashSet<String>,
-    pub vless_only: std::collections::HashSet<String>,
-    pub wg_only: std::collections::HashSet<String>,
     pub last_update: Option<DateTime<Utc>>,
     pub error: Option<String>,
     pub refreshing: bool,
@@ -79,6 +77,8 @@ pub struct AppState {
     pub downloads: Mutex<HashMap<String, DownloadInfo>>,
     /// Умный прокси реально слушает 127.0.0.1:8081.
     pub smart_proxy_ready: AtomicBool,
+    /// Идёт автоподбор самого быстрого VPN-конфига.
+    pub config_auto_running: AtomicBool,
     pub tls_config:
         Mutex<Option<std::sync::Arc<tokio::sync::RwLock<std::sync::Arc<rustls::ServerConfig>>>>>,
     pub local_proxy_stop: Mutex<Option<(u64, tokio::sync::watch::Sender<bool>)>>,
@@ -91,6 +91,7 @@ pub struct AppState {
     pub zapret_auto: Mutex<crate::zapret::AutoTuneState>,
     pub direct_probe: Mutex<HashMap<String, (bool, Instant)>>,
     pub health: Mutex<Health>,
+    pub auto_routes: Mutex<crate::route_auto::AutoRoutes>,
     pub lists: Mutex<Lists>,
     pub pool: Mutex<Pool>,
     pub store: crate::store::Store,
@@ -121,6 +122,8 @@ impl AppState {
                 crate::store::Store::memory()
             }
         };
+        crate::route_auto::import_legacy_json(&dir, &store);
+        let auto_routes = crate::route_auto::AutoRoutes::from_store(&store);
         let st = std::sync::Arc::new(Self {
             dir,
             panel_port,
@@ -130,6 +133,7 @@ impl AppState {
             local_https_error: Mutex::new(None),
             downloads: Mutex::new(HashMap::new()),
             smart_proxy_ready: AtomicBool::new(false),
+            config_auto_running: AtomicBool::new(false),
             tls_config: Mutex::new(None),
             local_proxy_stop: Mutex::new(None),
             settings: Mutex::new(settings),
@@ -141,6 +145,7 @@ impl AppState {
             zapret_auto: Mutex::new(crate::zapret::AutoTuneState::default()),
             direct_probe: Mutex::new(HashMap::new()),
             health: Mutex::new(Health::default()),
+            auto_routes: Mutex::new(auto_routes),
             lists: Mutex::new(Lists::default()),
             pool: Mutex::new(Pool::default()),
             store,
@@ -166,20 +171,38 @@ impl AppState {
         let settings = self.settings_snapshot();
         let (wg_ok, vless_ok) = self.health_snapshot();
         let lists = self.lists.lock().ok();
-        let (proxied, direct, vless_only, wg_only) = match &lists {
-            Some(l) => (
-                l.proxied.clone(),
-                l.direct.clone(),
-                l.vless_only.clone(),
-                l.wg_only.clone(),
-            ),
+        let (proxied, direct) = match &lists {
+            Some(l) => (l.proxied.clone(), l.direct.clone()),
             None => Default::default(),
         };
+        let auto = self
+            .auto_routes
+            .lock()
+            .map(|routes| {
+                routes
+                    .routes
+                    .iter()
+                    .map(|(domain, decision)| {
+                        (
+                            domain.clone(),
+                            crate::routing::AutoChoice {
+                                channel: decision.channel,
+                                via_zapret: decision.via_zapret,
+                                vpn: decision.fastest_vpn(),
+                            },
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let vpn_only = crate::lists::read_domain_file(&self.dir, "vpn-only-domains.txt")
+            .into_iter()
+            .collect();
         crate::routing::Routing {
             proxied,
             direct_override: direct,
-            vless_only,
-            wg_only,
+            vpn_only,
+            auto,
             vpn_default: if settings.vpn_default == "vless" {
                 crate::routing::Channel::Vless
             } else {

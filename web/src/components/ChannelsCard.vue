@@ -16,13 +16,11 @@ const sysProxy = ref(!!props.s.systemProxy?.enabled)
 const sysProxyBusy = ref(false)
 const defaultBusy = ref('')
 const channelBusy = ref('')
-const directBusy = ref(false)
 // Оптимистичное состояние: переключатель меняется сразу, а не после
 // пятисекундного polling/refetch. При ошибке откатываемся.
 const wgEnabled = ref(props.s.channels?.wireguard !== false)
 const xrayEnabled = ref(props.s.channels?.xray !== false)
 const vpnDefault = ref(props.s.vpnDefault || 'wireguard')
-const directFirst = ref(props.s.directFirst !== false)
 const smartReady = computed(() => props.s.smartProxyReady !== false)
 watch(() => props.s.systemProxy?.enabled, (value) => {
   if (!sysProxyBusy.value) sysProxy.value = !!value
@@ -36,10 +34,6 @@ watch(() => props.s.channels?.xray, (value) => {
 watch(() => props.s.vpnDefault, (value) => {
   if (!defaultBusy.value) vpnDefault.value = value || 'wireguard'
 })
-watch(() => props.s.directFirst, (value) => {
-  if (!directBusy.value) directFirst.value = value !== false
-})
-
 const wgState = computed(() => {
   if (!props.s.wgConfigured) return { tone: 'secondary', text: 'не настроен' }
   return props.s.wgUp
@@ -108,21 +102,6 @@ async function setChannel(channel, enabled) {
   }
 }
 
-async function setDirectFirst(value) {
-  const previous = directFirst.value
-  directFirst.value = value
-  directBusy.value = true
-  try {
-    await post('/api/auto', { directFirst: value })
-    notify(value ? 'Сначала напрямую, затем VPN' : 'VPN по правилам списков')
-  } catch {
-    directFirst.value = previous
-  } finally {
-    await refreshStatus()
-    directFirst.value = props.s.directFirst !== false
-    directBusy.value = false
-  }
-}
 </script>
 
 <template>
@@ -180,45 +159,34 @@ async function setDirectFirst(value) {
         </div>
       </div>
 
-      <div class="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2">
-        <span class="text-sm text-muted-foreground">VPN-домены идут через:</span>
-        <div class="flex gap-1">
-          <Button
-            size="sm"
-            :variant="vpnDefault === 'wireguard' ? 'default' : 'outline'"
-            :loading="defaultBusy === 'wireguard'"
-            :disabled="!!defaultBusy"
-            @click="setDefault('wireguard')"
-          >
-            WireGuard
-          </Button>
-          <Button
-            size="sm"
-            :variant="vpnDefault === 'vless' ? 'default' : 'outline'"
-            :loading="defaultBusy === 'vless'"
-            :disabled="!!defaultBusy"
-            @click="setDefault('vless')"
-          >
-            VLESS
-          </Button>
-        </div>
-      </div>
-
       <details class="rounded-lg border bg-muted/30 px-3 py-2">
-        <summary class="cursor-pointer text-sm font-medium">Дополнительно</summary>
-        <div class="mt-3 flex items-center justify-between gap-3">
-          <div>
-            <div class="text-sm font-medium">Сначала напрямую</div>
-            <div class="text-xs text-muted-foreground">
-              Для VPN-доменов сначала пробовать прямой запрос через Zapret.
-            </div>
+        <summary class="cursor-pointer text-sm font-medium">
+          Основной канал для остальных доменов
+        </summary>
+        <div class="mt-3 flex flex-wrap items-center gap-2">
+          <span class="text-sm text-muted-foreground">
+            Если авто-маршрут ещё не определён:
+          </span>
+          <div class="flex gap-1">
+            <Button
+              size="sm"
+              :variant="vpnDefault === 'wireguard' ? 'default' : 'outline'"
+              :loading="defaultBusy === 'wireguard'"
+              :disabled="!!defaultBusy"
+              @click="setDefault('wireguard')"
+            >
+              WireGuard
+            </Button>
+            <Button
+              size="sm"
+              :variant="vpnDefault === 'vless' ? 'default' : 'outline'"
+              :loading="defaultBusy === 'vless'"
+              :disabled="!!defaultBusy"
+              @click="setDefault('vless')"
+            >
+              VLESS
+            </Button>
           </div>
-          <Switch
-            data-testid="direct-first"
-            :model-value="directFirst"
-            :disabled="directBusy"
-            @update:model-value="setDirectFirst"
-          />
         </div>
       </details>
 

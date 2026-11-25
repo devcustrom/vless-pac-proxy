@@ -19,6 +19,16 @@ use crate::wlog;
 pub const SMART_PROXY_PORT: u16 = 8081;
 pub const PANEL_PORT: u16 = 8080;
 
+/// Порт умного прокси. В E2E задаётся отдельный, чтобы не конфликтовать
+/// с уже запущенным рабочим экземпляром.
+pub fn smart_proxy_port() -> u16 {
+    std::env::var("WPC_SMART_PROXY_PORT")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|port| *port > 0)
+        .unwrap_or(SMART_PROXY_PORT)
+}
+
 #[cfg(unix)]
 async fn shutdown_signal() {
     use tokio::signal::unix::{signal, SignalKind};
@@ -47,7 +57,15 @@ static UI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/web/dist");
 pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
     let panel_port = state.panel_port;
     let test_mode = std::env::var_os("WPC_TEST_MODE").is_some();
-    wlog!("панель: http://127.0.0.1:{panel_port}/  |  умный прокси: 127.0.0.1:{SMART_PROXY_PORT}");
+    wlog!(
+        "панель: http://127.0.0.1:{panel_port}/  |  умный прокси: 127.0.0.1:{}",
+        smart_proxy_port()
+    );
+
+    crate::route_auto::migrate_lists(&state);
+    crate::route_auto::reconcile_lists(&state);
+    crate::route_auto::prune_decisions(&state);
+    crate::zapret::sync_domains(&state, &crate::route_auto::auto_domains(&state));
 
     // движки: скачиваем отсутствующие, затем запускаем супервизор
     if !test_mode {
@@ -79,6 +97,9 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
             }
         });
     }
+    if !test_mode {
+        crate::systemproxy::spawn_restore(state.clone());
+    }
     if state.settings_snapshot().local_domains_enabled {
         crate::net::local_proxy::preflight_ports(&state).await;
         crate::net::local_proxy::start(&state);
@@ -94,6 +115,8 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         crate::lists::spawn_scheduler(state.clone());
         crate::vless::pool::spawn_scheduler(state.clone());
         crate::site_check::spawn_scheduler(state.clone());
+        crate::route_auto::spawn_scheduler(state.clone());
+        crate::config_auto::spawn_scheduler(state.clone());
         spawn_health_probes(state.clone());
     }
 
@@ -142,6 +165,8 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         )
         .route("/api/local-ports", get(local_ports))
         .route("/api/check", post(check))
+        .route("/api/routes/check", post(routes_check))
+        .route("/api/configs/auto", post(configs_auto))
         .route("/api/pool/refresh", post(pool_refresh))
         .route("/api/pool/auto", post(pool_auto))
         .route("/api/pool/use", post(pool_use))
@@ -819,6 +844,7 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
             match result {
                 Ok(()) => {
                     tokio::time::sleep(Duration::from_millis(500)).await;
+                    crate::route_auto::spawn_check_all(st.clone());
                     Json(json!({
                         "ok": true,
                         "message": "установщик службы запущен (подтвердите UAC)",
@@ -839,6 +865,7 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
         "remove" => match crate::zapret::remove(&st) {
             Ok(()) => {
                 tokio::time::sleep(Duration::from_millis(300)).await;
+                crate::route_auto::spawn_check_all(st.clone());
                 Json(json!({
                     "ok": true,
                     "message": "удаление службы запущено (подтвердите UAC)",
@@ -858,6 +885,7 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
         "start" => match crate::zapret::start(&st) {
             Ok(_) => {
                 tokio::time::sleep(Duration::from_millis(400)).await;
+                crate::route_auto::spawn_check_all(st.clone());
                 Json(crate::zapret::status_json(&st)).into_response()
             }
             Err(e) => {
@@ -872,6 +900,7 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
         "stop" => match crate::zapret::stop(&st) {
             Ok(_) => {
                 tokio::time::sleep(Duration::from_millis(400)).await;
+                crate::route_auto::spawn_check_all(st.clone());
                 Json(crate::zapret::status_json(&st)).into_response()
             }
             Err(e) => {
@@ -986,7 +1015,10 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
         },
         "generate-strategies" => {
             let domain = body.get("domain").and_then(Value::as_str).unwrap_or("");
-            let scan = body.get("scan").and_then(Value::as_str).unwrap_or("quick");
+            let scan = body
+                .get("scan")
+                .and_then(Value::as_str)
+                .unwrap_or("veryquick");
             match crate::zapret::autotune::start_for_domain(&st, domain, scan) {
                 Ok(()) => Json(json!({
                     "ok": true,
@@ -1233,50 +1265,11 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
                     .into_response(),
             }
         }
-        "add-domain" | "remove-domain" => {
-            let Some(domain) = body
-                .get("domain")
-                .and_then(Value::as_str)
-                .and_then(crate::lists::validate_hostname)
-            else {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "некорректный домен" })),
-                )
-                    .into_response();
-            };
-            let domains = {
-                let mut settings = st.settings.lock().unwrap();
-                if action == "add-domain" {
-                    if !settings.zapret_domains.iter().any(|item| item == &domain) {
-                        if settings.zapret_domains.len() >= 50 {
-                            return (
-                                StatusCode::BAD_REQUEST,
-                                Json(json!({ "error": "слишком много доменов для Zapret" })),
-                            )
-                                .into_response();
-                        }
-                        settings.zapret_domains.push(domain);
-                    }
-                } else {
-                    settings.zapret_domains.retain(|item| item != &domain);
-                }
-                if let Err(e) = settings.save(&st.dir) {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": e.to_string() })),
-                    )
-                        .into_response();
-                }
-                settings.zapret_domains.clone()
-            };
-            Json(json!({ "ok": true, "domains": domains })).into_response()
-        }
         "refresh" => Json(crate::zapret::status_json(&st)).into_response(),
         _ => (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "action должен быть install|remove|start|stop|set-preset|open-folder|auto-tune|generate-strategies|apply-strategy|save-strategy|catalog-status|catalog-refresh|catalog-download|catalog-download-all|catalog-preview|catalog-test|catalog-test-reset|catalog-apply|catalog-select|probe|add-domain|remove-domain|refresh"
+                "error": "action должен быть install|remove|start|stop|set-preset|open-folder|auto-tune|generate-strategies|apply-strategy|save-strategy|catalog-status|catalog-refresh|catalog-download|catalog-download-all|catalog-preview|catalog-test|catalog-test-reset|catalog-apply|catalog-select|probe|refresh"
             })),
         )
             .into_response(),
@@ -1817,18 +1810,33 @@ async fn pac(State(st): State<Arc<AppState>>) -> Response {
 async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
     let settings = st.settings_snapshot();
     let health = st.health.lock().map(|h| h.clone()).unwrap_or_default();
-    let (lists_counts, last_update, update_error, refreshing, vless_only, wg_only) = {
+    let (lists_counts, last_update, update_error, refreshing) = {
         let l = st.lists.lock().unwrap();
         (
             (l.proxied.len(), l.direct.len()),
             l.last_update,
             l.error.clone(),
             l.refreshing,
-            l.vless_only.clone(),
-            l.wg_only.clone(),
         )
     };
     let extra = read_domains(&st.dir, "extra-domains.txt");
+    let direct_domains = read_domains(&st.dir, "direct-domains.txt");
+    let vpn_only = read_domains(&st.dir, "vpn-only-domains.txt");
+    let (auto_routes, auto_checking) = st
+        .auto_routes
+        .lock()
+        .map(|routes| {
+            let mut map = serde_json::Map::new();
+            for (domain, decision) in &routes.routes {
+                if extra.iter().any(|item| item == domain) {
+                    if let Ok(value) = serde_json::to_value(decision) {
+                        map.insert(domain.clone(), value);
+                    }
+                }
+            }
+            (Value::Object(map), routes.checking.len())
+        })
+        .unwrap_or((Value::Object(serde_json::Map::new()), 0));
     let subscriptions = read_subs(&st.dir);
     let (local_domains, local_http_err, local_https_err) = {
         let domains = st
@@ -1888,11 +1896,31 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
                     crate::routing::Channel::Wireguard => "wireguard",
                     crate::routing::Channel::Vless => "vless",
                 });
+                let auto = routing.auto_for(&row.domain);
+                let auto_route = auto.map(|choice| match choice.channel {
+                    crate::routing::AutoChannel::Direct => "direct",
+                    crate::routing::AutoChannel::Wireguard => "wireguard",
+                    crate::routing::AutoChannel::Vless => "vless",
+                });
+                let route_source = if routing.is_direct_override(&row.domain) {
+                    "direct"
+                } else if routing.is_vpn_only(&row.domain) {
+                    "vpn-only"
+                } else if auto.is_some() {
+                    "auto"
+                } else if route.is_some() {
+                    "default"
+                } else {
+                    "direct"
+                };
                 json!({
                     "domain": row.domain,
                     "count": row.count,
                     "last": row.last,
                     "route": route,
+                    "routeSource": route_source,
+                    "autoRoute": auto_route,
+                    "inAuto": extra.iter().any(|item| item == &row.domain),
                     "checked": row.checked,
                 })
             })
@@ -1925,6 +1953,9 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         "autoCheckSites": settings.auto_check_sites,
         "autoAddUnavailable": settings.auto_add_unavailable,
         "autoDirectPrivate": settings.auto_direct_private,
+        "autoConfigRunning": st
+            .config_auto_running
+            .load(std::sync::atomic::Ordering::SeqCst),
         "nextPoolRefreshAt": next_pool_refresh,
         "subscriptions": subscriptions,
         "localProxy": {
@@ -1961,8 +1992,8 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         "caTrusted": crate::trust_status::is_trusted(&st.dir),
         "enginesReady": engines_ready,
         "engineDownloads": downloads,
-        "vlessDomains": vless_only.into_iter().collect::<Vec<_>>(),
-        "wgDomains": wg_only.into_iter().collect::<Vec<_>>(),
+        "autoRoutes": auto_routes,
+        "autoChecking": auto_checking,
         "proxied": lists_counts.0,
         "direct": lists_counts.1,
         "lastUpdate": last_update,
@@ -1974,7 +2005,8 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
             .smart_proxy_ready
             .load(std::sync::atomic::Ordering::SeqCst),
         "extra": extra,
-        "directDomains": read_domains(&st.dir, "direct-domains.txt"),
+        "directDomains": direct_domains,
+        "vpnOnly": vpn_only,
         "checks": checks,
         "visited": visited,
         "visitedTotal": visited_total,
@@ -1996,6 +2028,7 @@ async fn extra(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
     };
     let mut extra = read_domains(&st.dir, "extra-domains.txt");
     let mut direct = read_domains(&st.dir, "direct-domains.txt");
+    let mut vpn_only = read_domains(&st.dir, "vpn-only-domains.txt");
     if action == "direct-remove" {
         let before = direct.len();
         direct.retain(|item| *item != domain);
@@ -2015,11 +2048,59 @@ async fn extra(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
         }))
         .into_response();
     }
-    let enabled = match action {
-        "add" => true,
-        "remove" => false,
+    if action == "vpn-only-add" || action == "vpn-only-remove" {
+        if action == "vpn-only-add" {
+            if !extra.contains(&domain) {
+                extra.push(domain.clone());
+            }
+            direct.retain(|item| *item != domain);
+            if !vpn_only.contains(&domain) {
+                vpn_only.push(domain.clone());
+            }
+        } else {
+            vpn_only.retain(|item| *item != domain);
+        }
+        if let Err(e) = write_domains(&st.dir, "extra-domains.txt", &extra) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
+        if let Err(e) = write_domains(&st.dir, "direct-domains.txt", &direct) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
+        if let Err(e) = write_domains(&st.dir, "vpn-only-domains.txt", &vpn_only) {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
+        crate::zapret::sync_domains(&st, &extra);
+        crate::route_auto::spawn_check_one(st.clone(), domain.clone());
+        spawn_refresh(&st);
+        return Json(json!({
+            "ok": true,
+            "extra": read_domains(&st.dir, "extra-domains.txt"),
+            "direct": read_domains(&st.dir, "direct-domains.txt"),
+            "vpnOnly": read_domains(&st.dir, "vpn-only-domains.txt"),
+        }))
+        .into_response();
+    }
+    // add — в авто-список; remove — только убрать из авто;
+    // direct-add — принудительно напрямую (и убрать из авто).
+    let (add, direct_add) = match action {
+        "add" => (true, false),
+        "remove" => (false, false),
+        "direct-add" => (false, true),
         "route" => match body.get("enabled").and_then(Value::as_bool) {
-            Some(value) => value,
+            Some(true) => (true, false),
+            Some(false) => (false, true),
             None => {
                 return (
                     StatusCode::BAD_REQUEST,
@@ -2031,35 +2112,27 @@ async fn extra(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "action должен быть add|remove|route|direct-remove" })),
+                Json(json!({
+                    "error": "action должен быть add|remove|direct-add|direct-remove|vpn-only-add|vpn-only-remove|route"
+                })),
             )
                 .into_response();
         }
     };
-    if enabled {
+    if add {
         if !extra.contains(&domain) {
             extra.push(domain.clone());
         }
         direct.retain(|item| *item != domain);
-    } else {
+    } else if direct_add {
         extra.retain(|item| *item != domain);
+        vpn_only.retain(|item| *item != domain);
         if !direct.contains(&domain) {
             direct.push(domain.clone());
         }
-        for name in ["vless-domains.txt", "wg-domains.txt"] {
-            let mut items = read_domains(&st.dir, name);
-            let before = items.len();
-            items.retain(|item| *item != domain);
-            if items.len() != before {
-                if let Err(e) = write_domains(&st.dir, name, &items) {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": e.to_string() })),
-                    )
-                        .into_response();
-                }
-            }
-        }
+    } else {
+        extra.retain(|item| *item != domain);
+        vpn_only.retain(|item| *item != domain);
     }
     if let Err(e) = write_domains(&st.dir, "extra-domains.txt", &extra) {
         return (
@@ -2075,12 +2148,26 @@ async fn extra(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
         )
             .into_response();
     }
+    if let Err(e) = write_domains(&st.dir, "vpn-only-domains.txt", &vpn_only) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response();
+    }
+    crate::zapret::sync_domains(&st, &extra);
+    if add {
+        crate::route_auto::spawn_check_one(st.clone(), domain.clone());
+    } else {
+        crate::route_auto::remove_decision(&st, &domain);
+    }
     spawn_refresh(&st);
     Json(json!({
         "ok": true,
-        "enabled": enabled,
+        "enabled": add,
         "extra": read_domains(&st.dir, "extra-domains.txt"),
         "direct": read_domains(&st.dir, "direct-domains.txt"),
+        "vpnOnly": read_domains(&st.dir, "vpn-only-domains.txt"),
     }))
     .into_response()
 }
@@ -2315,74 +2402,6 @@ async fn vless(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
             *st.settings.lock().unwrap() = candidate.clone();
             Json(json!({ "ok": true, "vpnDefault": candidate.vpn_default })).into_response()
         }
-        "add-domain" | "remove-domain" => {
-            let Some(domain) = body
-                .get("domain")
-                .and_then(|v| v.as_str())
-                .and_then(crate::lists::validate_hostname)
-            else {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "некорректный домен" })),
-                )
-                    .into_response();
-            };
-            let mut list = read_domains(&st.dir, "vless-domains.txt");
-            if action == "add-domain" {
-                if !list.contains(&domain) {
-                    list.push(domain);
-                }
-            } else {
-                list.retain(|d| *d != domain);
-            }
-            list.sort();
-            list.dedup();
-            if let Err(e) = write_domains(&st.dir, "vless-domains.txt", &list) {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": e.to_string() })),
-                )
-                    .into_response();
-            }
-            if let Ok(mut l) = st.lists.lock() {
-                l.vless_only = list.iter().cloned().collect();
-            }
-            Json(json!({ "ok": true, "vlessDomains": list })).into_response()
-        }
-        "add-wg-domain" | "remove-wg-domain" => {
-            let Some(domain) = body
-                .get("domain")
-                .and_then(|v| v.as_str())
-                .and_then(crate::lists::validate_hostname)
-            else {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "некорректный домен" })),
-                )
-                    .into_response();
-            };
-            let mut list = read_domains(&st.dir, "wg-domains.txt");
-            if action == "add-wg-domain" {
-                if !list.contains(&domain) {
-                    list.push(domain);
-                }
-            } else {
-                list.retain(|d| *d != domain);
-            }
-            list.sort();
-            list.dedup();
-            if let Err(e) = write_domains(&st.dir, "wg-domains.txt", &list) {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": e.to_string() })),
-                )
-                    .into_response();
-            }
-            if let Ok(mut l) = st.lists.lock() {
-                l.wg_only = list.iter().cloned().collect();
-            }
-            Json(json!({ "ok": true, "wgDomains": list })).into_response()
-        }
         "restart" => {
             st.xr.restart();
             Json(json!({ "ok": true })).into_response()
@@ -2419,12 +2438,7 @@ async fn system_proxy(State(st): State<Arc<AppState>>, Json(body): Json<Value>) 
         )
             .into_response();
     }
-    let domains: Vec<String> = st
-        .local_domains
-        .lock()
-        .map(|list| list.iter().map(|item| item.domain.clone()).collect())
-        .unwrap_or_default();
-    match crate::systemproxy::set_system_proxy(enabled, &domains) {
+    match crate::systemproxy::apply(&st, enabled) {
         Ok(state) => Json(json!({ "ok": true, "state": state })).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2518,6 +2532,9 @@ async fn channels(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> R
         engine.restart();
         wlog!("канал {channel}: перезапуск");
     }
+    if enabled.is_some() || restart {
+        crate::route_auto::spawn_check_all(st.clone());
+    }
     let settings = st.settings_snapshot();
     Json(json!({
         "ok": true,
@@ -2541,8 +2558,10 @@ async fn auto(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Respo
         }
     }
     let mut s = st.settings.lock().unwrap();
+    let mut enable_auto = false;
     if let Some(v) = body.get("autoRotate").and_then(|v| v.as_bool()) {
         s.auto_rotate = v;
+        enable_auto = v;
     }
     if let Some(v) = body.get("directFirst").and_then(|v| v.as_bool()) {
         s.direct_first = v;
@@ -2569,14 +2588,19 @@ async fn auto(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Respo
         )
             .into_response();
     }
+    let snapshot = s.clone();
+    drop(s);
+    if enable_auto {
+        crate::config_auto::spawn_once(st.clone());
+    }
     Json(json!({
         "ok": true,
-        "autoRotate": s.auto_rotate,
-        "autoPoolRefreshHours": s.auto_pool_refresh_hours,
-        "directFirst": s.direct_first,
-        "autoCheckSites": s.auto_check_sites,
-        "autoAddUnavailable": s.auto_add_unavailable,
-        "autoDirectPrivate": s.auto_direct_private,
+        "autoRotate": snapshot.auto_rotate,
+        "autoPoolRefreshHours": snapshot.auto_pool_refresh_hours,
+        "directFirst": snapshot.direct_first,
+        "autoCheckSites": snapshot.auto_check_sites,
+        "autoAddUnavailable": snapshot.auto_add_unavailable,
+        "autoDirectPrivate": snapshot.auto_direct_private,
     }))
     .into_response()
 }
@@ -2887,7 +2911,17 @@ async fn check(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
         )
             .into_response();
     };
-    let entry = crate::site_check::check_domain(&st, &domain).await;
+    let outcome = crate::site_check::check_domain_full(&st, &domain).await;
+    let entry = &outcome.entry;
+    let best_route = outcome
+        .best
+        .as_ref()
+        .map(|decision| match decision.channel {
+            crate::routing::AutoChannel::Direct => "direct",
+            crate::routing::AutoChannel::Wireguard => "wireguard",
+            crate::routing::AutoChannel::Vless => "vless",
+        });
+    let best_latency = outcome.best.as_ref().map(|decision| decision.latency_ms);
     Json(json!({
         "domain": entry.domain,
         "direct": entry.direct,
@@ -2896,9 +2930,35 @@ async fn check(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
         "zapretRunning": entry.zapret_running,
         "zapretSupported": entry.zapret_supported,
         "verdict": entry.verdict,
+        "wireguard": outcome.probes.wireguard,
+        "vless": outcome.probes.vless,
+        "bestRoute": best_route,
+        "bestLatencyMs": best_latency,
+        "inAuto": outcome.in_auto,
         "at": entry.at,
     }))
     .into_response()
+}
+
+async fn routes_check(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    if let Some(raw) = body.get("domain").and_then(|v| v.as_str()) {
+        let Some(domain) = crate::lists::validate_hostname(raw) else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "некорректный домен" })),
+            )
+                .into_response();
+        };
+        crate::route_auto::spawn_check_one(st.clone(), domain);
+    } else {
+        crate::route_auto::spawn_check_all(st.clone());
+    }
+    (StatusCode::ACCEPTED, Json(json!({ "ok": true }))).into_response()
+}
+
+async fn configs_auto(State(st): State<Arc<AppState>>) -> Response {
+    crate::config_auto::spawn_once(st);
+    (StatusCode::ACCEPTED, Json(json!({ "ok": true }))).into_response()
 }
 
 async fn pool_refresh(State(st): State<Arc<AppState>>) -> Response {
@@ -3053,14 +3113,7 @@ pub fn read_domains(dir: &std::path::Path, name: &str) -> Vec<String> {
 }
 
 pub fn write_domains(dir: &std::path::Path, name: &str, list: &[String]) -> std::io::Result<()> {
-    let path = crate::paths::in_dir(dir, name)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
-    let mut text = String::from("# wireproxy-control: домены (по одному в строке)\n\n");
-    for d in list {
-        text.push_str(d);
-        text.push('\n');
-    }
-    std::fs::write(path, text)
+    crate::lists::write_domain_file(dir, name, list)
 }
 
 fn read_subs(dir: &std::path::Path) -> Vec<String> {

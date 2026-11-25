@@ -56,7 +56,6 @@ const importLoading = computed(() => importAction.isLoading.value)
 const useLoading = computed(() => useAction.isLoading.value)
 const subBusy = ref('')
 const autoBusy = ref(false)
-const rotateBusy = ref(false)
 const usingIndex = ref(null)
 watch(
   () => props.s.autoPoolRefreshHours,
@@ -150,17 +149,6 @@ async function saveAuto() {
   }
 }
 
-async function toggleRotate(value) {
-  rotateBusy.value = true
-  try {
-    await autoAction.mutateAsync({ autoRotate: value })
-    notify(value ? 'Автопереключение включено' : 'Автопереключение выключено')
-  } catch {
-    /* тост уже показан */
-  } finally {
-    rotateBusy.value = false
-  }
-}
 </script>
 
 <template>
@@ -274,7 +262,7 @@ async function toggleRotate(value) {
         <label class="flex items-center gap-2 text-sm">
           <Switch
             :model-value="autoPool"
-            :disabled="autoBusy || rotateBusy"
+            :disabled="autoBusy"
             @update:model-value="(v) => { autoPool = v; saveAuto() }"
           />
           Автообновление
@@ -283,18 +271,10 @@ async function toggleRotate(value) {
           <Select
             v-model="hours"
             :options="hourOptions"
-            :disabled="autoBusy || rotateBusy || !autoPool"
+            :disabled="autoBusy || !autoPool"
             @update:model-value="autoPool && saveAuto()"
           />
         </div>
-        <label class="flex items-center gap-2 text-sm">
-          <Switch
-            :model-value="!!s.autoRotate"
-            :disabled="rotateBusy || autoBusy"
-            @update:model-value="toggleRotate"
-          />
-          Автопереключение
-        </label>
         </div>
       </details>
 

@@ -26,10 +26,10 @@ const canGenerate = computed(
 const running = computed(() => !!auto.value.running)
 const thisDomain = computed(() => auto.value.domain === props.domain)
 const candidates = computed(() => (thisDomain.value ? auto.value.candidates || [] : []))
-const scan = ref('quick')
+const scan = ref('veryquick')
 const scanOptions = [
-  { value: 'veryquick', label: 'Очень быстро' },
-  { value: 'quick', label: 'Быстро (рекомендуется)' },
+  { value: 'veryquick', label: 'Очень быстро (рекомендуется)' },
+  { value: 'quick', label: 'Быстро' },
   { value: 'standard', label: 'Стандартно' },
   { value: 'force', label: 'Полно (долго)' },
 ]

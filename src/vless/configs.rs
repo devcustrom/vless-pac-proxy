@@ -21,6 +21,10 @@ const TEST_PROBE_MS: u64 = 8000;
 pub const POOL_SLUG: &str = "pool-active";
 static TESTING: AtomicBool = AtomicBool::new(false);
 
+pub fn test_busy() -> bool {
+    TESTING.load(Ordering::SeqCst)
+}
+
 struct TestGuard;
 
 impl Drop for TestGuard {
@@ -331,6 +335,16 @@ pub fn add_parsed(
 }
 
 pub fn activate(dir: &Path, slug: &str) -> Result<()> {
+    activate_inner(dir, slug, true)
+}
+
+/// Активация автовыбором: не помечает конфиг как ручной выбор, чтобы
+/// авто-восстановление пула могло заменить его при падении канала.
+pub fn activate_auto(dir: &Path, slug: &str) -> Result<()> {
+    activate_inner(dir, slug, false)
+}
+
+fn activate_inner(dir: &Path, slug: &str, user_selected: bool) -> Result<()> {
     let config = read_config(dir, slug)?;
     write_active_config(dir, slug)?;
     let mut meta = read_meta(dir);
@@ -347,7 +361,7 @@ pub fn activate(dir: &Path, slug: &str) -> Result<()> {
         .entry(slug.to_string())
         .or_insert_with(|| slug.to_string());
     meta.active = Some(slug.to_string());
-    meta.user_selected = true;
+    meta.user_selected = user_selected;
     write_meta(dir, &meta)?;
     Ok(())
 }
@@ -580,6 +594,8 @@ mod tests {
                 .dynamic
         );
 
+        activate_auto(&dir, &second).unwrap();
+        assert!(user_selected_active(&dir).is_none());
         activate(&dir, &second).unwrap();
         assert_eq!(user_selected_active(&dir).as_deref(), Some(second.as_str()));
         let items = list(&dir).unwrap();

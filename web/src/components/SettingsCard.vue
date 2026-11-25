@@ -320,9 +320,9 @@ async function toggleAutoAdd(value) {
         </div>
         <div class="flex items-center justify-between gap-3">
           <div class="min-w-0">
-            <span class="text-sm">Добавлять недоступные в VPN</span>
+            <span class="text-sm">Добавлять недоступные в авто-список</span>
             <p class="mt-1 text-xs text-muted-foreground">
-              Если сайт открывается только через VPN — добавить домен в VPN-список.
+              Если сайт открывается только через VPN — добавить домен в авто-список.
             </p>
           </div>
           <Switch

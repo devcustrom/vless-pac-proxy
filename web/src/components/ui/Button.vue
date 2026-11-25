@@ -39,9 +39,10 @@ const buttonVariants = cva(
   <button
     :type="type"
     :disabled="disabled || loading"
+    :aria-busy="loading || undefined"
     :class="cn(buttonVariants({ variant, size }))"
   >
     <Loader2 v-if="loading" class="h-3.5 w-3.5 animate-spin" />
-    <slot v-if="!loading" />
+    <slot />
   </button>
 </template>

@@ -1,5 +1,5 @@
 //! SQLite-хранилище истории сайтов и проверок.
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -7,6 +7,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
+use crate::route_auto::{ProbeResult, RouteDecision};
+use crate::routing::AutoChannel;
 use crate::state::CheckEntry;
 
 const DB_FILE: &str = "wireproxy.db";
@@ -67,7 +69,22 @@ impl Store {
                 verdict          TEXT NOT NULL,
                 at               TEXT NOT NULL
              );
-             CREATE INDEX IF NOT EXISTS checks_domain ON checks(domain, id DESC);",
+             CREATE INDEX IF NOT EXISTS checks_domain ON checks(domain, id DESC);
+             CREATE TABLE IF NOT EXISTS auto_routes (
+                domain         TEXT PRIMARY KEY,
+                route          TEXT NOT NULL,
+                available      INTEGER NOT NULL,
+                latency_ms     INTEGER NOT NULL,
+                direct_code    TEXT NOT NULL,
+                direct_ms      INTEGER NOT NULL,
+                wireguard_code TEXT,
+                wireguard_ms   INTEGER,
+                vless_code     TEXT,
+                vless_ms       INTEGER,
+                via_zapret     INTEGER NOT NULL,
+                checked_at     INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS auto_routes_checked ON auto_routes(checked_at);",
         )?;
         Ok(())
     }
@@ -179,6 +196,116 @@ impl Store {
         Ok(())
     }
 
+    pub fn auto_routes(&self) -> Result<HashMap<String, RouteDecision>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT domain, route, available, latency_ms, direct_code, direct_ms,
+                    wireguard_code, wireguard_ms, vless_code, vless_ms, via_zapret, checked_at
+             FROM auto_routes",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let channel =
+                AutoChannel::parse(&row.get::<_, String>(1)?).unwrap_or(AutoChannel::Direct);
+            let opt_probe = |code: Option<String>, ms: Option<i64>| match (code, ms) {
+                (Some(code), Some(ms)) => Some(ProbeResult {
+                    code,
+                    ms: ms.max(0) as u64,
+                }),
+                _ => None,
+            };
+            Ok((
+                row.get::<_, String>(0)?,
+                RouteDecision {
+                    channel,
+                    available: row.get::<_, i64>(2)? != 0,
+                    latency_ms: row.get::<_, i64>(3)?.max(0) as u64,
+                    direct: ProbeResult {
+                        code: row.get(4)?,
+                        ms: row.get::<_, i64>(5)?.max(0) as u64,
+                    },
+                    wireguard: opt_probe(row.get(6)?, row.get(7)?),
+                    vless: opt_probe(row.get(8)?, row.get(9)?),
+                    via_zapret: row.get::<_, i64>(10)? != 0,
+                    checked_at: row.get(11)?,
+                },
+            ))
+        })?;
+        let mut out = HashMap::new();
+        for row in rows {
+            let (domain, decision) = row?;
+            out.insert(domain, decision);
+        }
+        Ok(out)
+    }
+
+    pub fn save_auto_route(&self, domain: &str, decision: &RouteDecision) -> Result<()> {
+        let (wg_code, wg_ms) = decision
+            .wireguard
+            .as_ref()
+            .map(|probe| (Some(probe.code.clone()), Some(probe.ms as i64)))
+            .unwrap_or((None, None));
+        let (vless_code, vless_ms) = decision
+            .vless
+            .as_ref()
+            .map(|probe| (Some(probe.code.clone()), Some(probe.ms as i64)))
+            .unwrap_or((None, None));
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO auto_routes(domain, route, available, latency_ms,
+                 direct_code, direct_ms, wireguard_code, wireguard_ms,
+                 vless_code, vless_ms, via_zapret, checked_at)
+             VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(domain) DO UPDATE SET
+                 route = excluded.route,
+                 available = excluded.available,
+                 latency_ms = excluded.latency_ms,
+                 direct_code = excluded.direct_code,
+                 direct_ms = excluded.direct_ms,
+                 wireguard_code = excluded.wireguard_code,
+                 wireguard_ms = excluded.wireguard_ms,
+                 vless_code = excluded.vless_code,
+                 vless_ms = excluded.vless_ms,
+                 via_zapret = excluded.via_zapret,
+                 checked_at = excluded.checked_at",
+            params![
+                domain,
+                decision.channel.as_str(),
+                decision.available as i64,
+                decision.latency_ms as i64,
+                decision.direct.code,
+                decision.direct.ms as i64,
+                wg_code,
+                wg_ms,
+                vless_code,
+                vless_ms,
+                decision.via_zapret as i64,
+                decision.checked_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_auto_route(&self, domain: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM auto_routes WHERE domain = ?1", params![domain])?;
+        Ok(())
+    }
+
+    pub fn prune_auto_routes(&self, keep: &HashSet<String>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let existing: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT domain FROM auto_routes")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for domain in existing {
+            if !keep.contains(&domain) {
+                conn.execute("DELETE FROM auto_routes WHERE domain = ?1", params![domain])?;
+            }
+        }
+        Ok(())
+    }
+
     /// Согласованный снимок БД для архива (без WAL-файлов).
     pub fn backup_to(&self, path: &Path) -> Result<()> {
         let _ = std::fs::remove_file(path);
@@ -203,6 +330,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn auto_routes_roundtrip() {
+        let dir = temp_dir();
+        let store = Store::open(&dir).unwrap();
+        let decision = RouteDecision {
+            channel: AutoChannel::Wireguard,
+            available: true,
+            latency_ms: 120,
+            direct: ProbeResult {
+                code: "403".into(),
+                ms: 80,
+            },
+            wireguard: Some(ProbeResult {
+                code: "200".into(),
+                ms: 120,
+            }),
+            vless: None,
+            via_zapret: false,
+            checked_at: 42,
+        };
+        store.save_auto_route("chatgpt.com", &decision).unwrap();
+        let loaded = store.auto_routes().unwrap();
+        assert_eq!(
+            loaded.get("chatgpt.com").unwrap().channel,
+            AutoChannel::Wireguard
+        );
+        assert_eq!(loaded.get("chatgpt.com").unwrap().latency_ms, 120);
+        drop(store);
+        let reopened = Store::open(&dir).unwrap();
+        assert!(reopened.auto_routes().unwrap().contains_key("chatgpt.com"));
+        reopened
+            .prune_auto_routes(&HashSet::from(["other.com".to_string()]))
+            .unwrap();
+        assert!(reopened.auto_routes().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

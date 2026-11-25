@@ -39,7 +39,7 @@ async function refreshLists() {
         </div>
         <div class="rounded-lg border bg-muted/30 px-2 py-3">
           <div class="text-lg font-semibold">{{ (s.extra || []).length }}</div>
-          <div class="text-xs text-muted-foreground">своих</div>
+          <div class="text-xs text-muted-foreground">в авто</div>
         </div>
       </div>
 

@@ -5,22 +5,18 @@ import {
   ExternalLink,
   FlaskConical,
   FolderOpen,
-  Plus,
   RotateCw,
   ShieldAlert,
   ShieldCheck,
   Square,
   Trash2,
-  X,
 } from 'lucide-vue-next'
 import { RouterLink } from 'vue-router'
 import { api, notify } from '@/lib/store'
 import { useActionMutation } from '@/lib/queries'
-import { isValidHostname, normalizeDomainInput } from '@/lib/validators'
 import Card from '@/components/ui/Card.vue'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
-import Input from '@/components/ui/Input.vue'
 import Select from '@/components/ui/Select.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
@@ -33,8 +29,6 @@ const installed = computed(() => !!service.value.installed)
 const running = computed(() => !!service.value.running)
 const auto = computed(() => z.value.autoTune || {})
 const domains = computed(() => z.value.domains || [])
-const domainInput = ref('')
-const domainBusy = ref(false)
 const probeResult = ref(null)
 
 const presetOptions = computed(() =>
@@ -92,10 +86,6 @@ const removeAction = useActionMutation(
   () => api('/api/zapret', { action: 'remove' }),
   [['status']],
 )
-const domainAction = useActionMutation(
-  (payload) => api('/api/zapret', payload),
-  [['status']],
-)
 
 const autoRunning = computed(() => !!auto.value.running || autoAction.isLoading.value)
 const busy = computed(
@@ -107,8 +97,7 @@ const busy = computed(
     stopAction.isLoading.value ||
     probeAction.isLoading.value ||
     openAction.isLoading.value ||
-    removeAction.isLoading.value ||
-    domainBusy.value,
+    removeAction.isLoading.value,
 )
 
 const phaseLabel = computed(() => {
@@ -244,35 +233,6 @@ async function installDefaultPreset() {
   }
 }
 
-async function addDomain() {
-  const value = normalizeDomainInput(domainInput.value)
-  if (!isValidHostname(value)) {
-    notify('Не удалось выделить корректный домен из ссылки', 'error')
-    return
-  }
-  domainBusy.value = true
-  try {
-    await domainAction.mutateAsync({ action: 'add-domain', domain: value })
-    domainInput.value = ''
-    notify('Домен добавлен: ' + value)
-  } catch {
-    /* тост показан */
-  } finally {
-    domainBusy.value = false
-  }
-}
-
-async function removeDomain(domain) {
-  domainBusy.value = true
-  try {
-    await domainAction.mutateAsync({ action: 'remove-domain', domain })
-  } catch {
-    /* тост показан */
-  } finally {
-    domainBusy.value = false
-  }
-}
-
 async function probe() {
   try {
     probeResult.value = await probeAction.mutateAsync()
@@ -342,6 +302,7 @@ async function removeService() {
 
             <div class="mt-4 flex flex-wrap items-center gap-2">
               <Button
+                data-testid="zapret-primary"
                 size="lg"
                 :variant="primary.variant || 'default'"
                 :loading="primary.loading"
@@ -390,53 +351,53 @@ async function removeService() {
         </p>
       </div>
 
+      <div
+        v-if="z.strategyStale && !autoRunning"
+        class="flex flex-wrap items-center gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3"
+      >
+        <RotateCw class="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+        <div class="min-w-0 flex-1">
+          <div class="text-sm font-medium">Список доменов изменился</div>
+          <p class="mt-0.5 text-xs text-muted-foreground">
+            Стратегия собрана для старого списка. Пересоберите её, чтобы учесть новые домены.
+          </p>
+        </div>
+        <Button size="sm" variant="outline" :disabled="busy" @click="autoTune">
+          Пересобрать стратегию
+        </Button>
+      </div>
+
       <div class="rounded-xl border p-4">
         <div class="flex flex-wrap items-start justify-between gap-2">
           <div>
             <div class="text-sm font-medium">Домены для обхода</div>
             <p class="mt-1 text-xs text-muted-foreground">
-              По этим доменам подбирается стратегия и проверяется результат.
-              Можно вставить полную ссылку из браузера.
+              Берутся из общего списка доменов. Для поиска стратегии используются
+              первые 3 цели, остальные можно проверить точечно.
             </p>
           </div>
           <Badge variant="outline">{{ domains.length }}</Badge>
         </div>
 
-        <form class="mt-3 flex gap-2" @submit.prevent="addDomain">
-          <Input
-            v-model="domainInput"
-            placeholder="youtube.com или https://youtube.com/watch?v=…"
-            autocomplete="off"
-            :disabled="domainBusy"
-            @blur="domainInput = normalizeDomainInput(domainInput)"
-          />
-          <Button type="submit" :loading="domainBusy" :disabled="domainBusy || !domainInput.trim()">
-            <Plus class="h-3.5 w-3.5" />
-            Добавить
-          </Button>
-        </form>
-
         <div v-if="domains.length" class="mt-3 flex flex-wrap gap-1.5">
           <span
             v-for="domain in domains"
             :key="domain"
-            class="inline-flex items-center gap-1 rounded-md border bg-muted/40 px-2 py-1 text-xs"
+            class="inline-flex items-center rounded-md border bg-muted/40 px-2 py-1 text-xs"
           >
             {{ domain }}
-            <button
-              type="button"
-              class="rounded-sm text-muted-foreground hover:text-destructive"
-              :aria-label="`Убрать ${domain}`"
-              :disabled="domainBusy"
-              @click="removeDomain(domain)"
-            >
-              <X class="h-3 w-3" />
-            </button>
           </span>
         </div>
         <p v-else class="mt-3 text-xs text-muted-foreground">
           Список пуст — будут использованы YouTube и Discord.
         </p>
+
+        <RouterLink
+          to="/routing"
+          class="mt-3 inline-flex h-8 items-center gap-1.5 rounded-md border border-input bg-background px-3 text-xs font-medium hover:bg-accent"
+        >
+          Изменить в общем списке
+        </RouterLink>
       </div>
 
       <details class="rounded-xl border bg-muted/20 px-4 py-3">

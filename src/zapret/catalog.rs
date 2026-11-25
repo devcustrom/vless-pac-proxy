@@ -902,13 +902,15 @@ pub struct PreparedStrategy {
     pub manifest: Manifest,
     pub bin: PathBuf,
     pub args: Vec<String>,
+    pub converted_from_v1: bool,
+    pub skipped_profiles: usize,
 }
 
 pub fn prepare(state: &AppState, id: &str) -> Result<PreparedStrategy> {
     let id = safe_id(id)?.to_string();
     let data_dir = &state.dir;
     let index = load_index(data_dir).context("каталог не загружен")?;
-    let item = index
+    let mut item = index
         .items
         .iter()
         .find(|item| item.id == id && supported_kind(&item.kind))
@@ -939,7 +941,18 @@ pub fn prepare(state: &AppState, id: &str) -> Result<PreparedStrategy> {
     if !args.iter().any(|arg| arg.starts_with("--filter-")) {
         bail!("в стратегии каталога нет фильтров");
     }
-    let full = full_strategy_args(&item.kind, &args);
+    let (engine_args, converted_from_v1, skipped_profiles) = if item.kind == "nfqws" {
+        match crate::zapret::translate::translate_nfqws(&args) {
+            Ok(Some(translated)) => {
+                item.kind = "nfqws2".to_string();
+                (translated.args, true, translated.skipped_profiles)
+            }
+            _ => (args.clone(), false, 0),
+        }
+    } else {
+        (args.clone(), false, 0)
+    };
+    let full = full_strategy_args(&item.kind, &engine_args);
     let bin = match item.kind.as_str() {
         "nfqws" => crate::zapret::preset::engine_path_v1(data_dir)?,
         "nfqws2" => crate::zapret::preset::engine_path_v2(data_dir)?,
@@ -950,6 +963,8 @@ pub fn prepare(state: &AppState, id: &str) -> Result<PreparedStrategy> {
         manifest,
         bin,
         args: full,
+        converted_from_v1,
+        skipped_profiles,
     })
 }
 
@@ -963,6 +978,8 @@ pub fn preview_json(state: &AppState, id: &str) -> Result<Value> {
         "source": prepared.item.manifest,
         "bin": prepared.bin.display().to_string(),
         "args": prepared.args,
+        "convertedFromV1": prepared.converted_from_v1,
+        "skippedProfiles": prepared.skipped_profiles,
     }))
 }
 
@@ -1210,6 +1227,9 @@ pub fn run_test_helper(data_dir: &Path) -> Result<()> {
             }
             std::thread::sleep(Duration::from_millis(1500));
         }
+        // Перед прогоном добиваем тестовые движки, оставшиеся от прерванного
+        // blockcheck/предыдущей проверки: они держат WinDivert и ломают пробы.
+        let _ = super::autotune::cleanup_test_processes(data_dir);
         let outcome = (|| -> Result<()> {
             for (index, strategy) in payload.strategies.iter().enumerate() {
                 if strategy.args.is_empty()
@@ -1289,6 +1309,9 @@ pub fn run_test_helper(data_dir: &Path) -> Result<()> {
             }
             Ok(())
         })();
+        // После прогона не оставляем тестовые движки, даже если последний
+        // child.kill() не успел или helper завершился с ошибкой.
+        let _ = super::autotune::cleanup_test_processes(data_dir);
         if was_running {
             let _ = crate::zapret::service::start();
         }

@@ -3,6 +3,7 @@ pub mod bundle;
 pub mod catalog;
 pub mod preset;
 pub mod service;
+pub mod translate;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -12,6 +13,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::state::AppState;
+use crate::wlog;
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -42,6 +44,61 @@ pub struct AutoTuneState {
 
 pub fn supported() -> bool {
     cfg!(windows)
+}
+
+pub const DEFAULT_TARGETS: [&str; 2] = ["www.youtube.com", "discord.com"];
+pub const MAX_TARGETS: usize = 12;
+
+/// Синхронизирует цели Zapret с единым списком доменов.
+/// Берём YouTube/Discord и первые домены авто-списка, максимум 12:
+/// blockcheck проверяет каждую стратегию по каждому домену.
+fn target_list(auto: &[String]) -> Vec<String> {
+    let mut targets: Vec<String> = DEFAULT_TARGETS
+        .iter()
+        .map(|item| item.to_string())
+        .collect();
+    for domain in auto {
+        if targets.len() >= MAX_TARGETS {
+            break;
+        }
+        let domain = domain.trim().to_lowercase();
+        if !domain.is_empty() && !targets.iter().any(|item| item == &domain) {
+            targets.push(domain);
+        }
+    }
+    targets
+}
+
+pub fn sync_domains(state: &AppState, auto: &[String]) {
+    let targets = target_list(auto);
+    let Ok(mut settings) = state.settings.lock() else {
+        return;
+    };
+    if settings.zapret_domains == targets {
+        return;
+    }
+    settings.zapret_domains = targets;
+    if let Err(e) = settings.save(&state.dir) {
+        wlog!("zapret: не удалось сохранить цели стратегии — {e:#}");
+    }
+}
+
+/// Стабильный отпечаток списка доменов для проверки актуальности стратегии.
+pub fn domains_stamp(domains: &[String]) -> String {
+    use sha2::Digest;
+    let mut items: Vec<String> = domains
+        .iter()
+        .map(|item| item.trim().to_lowercase())
+        .filter(|item| !item.is_empty())
+        .collect();
+    items.sort();
+    items.dedup();
+    let mut hasher = sha2::Sha256::new();
+    for item in items {
+        hasher.update(item.as_bytes());
+        hasher.update(b"\n");
+    }
+    hex::encode(hasher.finalize())
 }
 
 pub fn selected_preset(state: &AppState) -> String {
@@ -106,6 +163,9 @@ pub fn status_json(state: &AppState) -> Value {
         "preset": selected,
         "selectedPresets": selected_presets,
         "domains": settings.zapret_domains,
+        "strategyStale": service.installed
+            && !settings.zapret_strategy_stamp.is_empty()
+            && settings.zapret_strategy_stamp != domains_stamp(&settings.zapret_domains),
         "catalog": catalog::status_json(state),
         "service": service,
         "autoTune": auto,
@@ -169,4 +229,34 @@ pub fn service_running_cached(state: &AppState) -> bool {
 
 pub fn record_error(state: &AppState, error: &anyhow::Error) {
     set_error(state, Some(format!("{error:#}")));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::domains_stamp;
+
+    fn list(items: &[&str]) -> Vec<String> {
+        items.iter().map(|item| item.to_string()).collect()
+    }
+
+    #[test]
+    fn domains_stamp_is_order_and_case_insensitive() {
+        let a = domains_stamp(&list(&["youtube.com", "Discord.com"]));
+        let b = domains_stamp(&list(&[" discord.com ", "YOUTUBE.COM", ""]));
+        assert_eq!(a, b);
+        assert_ne!(a, domains_stamp(&list(&["youtube.com"])));
+    }
+
+    #[test]
+    fn targets_are_capped_and_deduped() {
+        let mut auto = vec!["discord.com".to_string()];
+        for index in 0..30 {
+            auto.push(format!("site{index}.example"));
+        }
+        let targets = super::target_list(&auto);
+        assert_eq!(targets.len(), super::MAX_TARGETS);
+        assert_eq!(targets[0], "www.youtube.com");
+        assert_eq!(targets[1], "discord.com");
+        assert_eq!(targets[2], "site0.example");
+    }
 }

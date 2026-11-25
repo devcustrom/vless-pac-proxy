@@ -74,9 +74,16 @@ const app = spawn(binary, [
   '--data-dir', dataDir,
   '--panel-port', String(PANEL_PORT),
   '--no-tray',
+  // Не открывать панель в системном браузере: тесты работают через Playwright.
+  '--hidden',
 ], {
   cwd: dataDir,
-  env: { ...process.env, WPC_TEST_MODE: '1' },
+  env: {
+    ...process.env,
+    WPC_TEST_MODE: '1',
+    // Не конфликтовать с рабочим экземпляром на 8081.
+    WPC_SMART_PROXY_PORT: '28881',
+  },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 

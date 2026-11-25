@@ -1,4 +1,5 @@
 //! VLESS/SS: парсер ссылок, менеджер конфигов, пул подписок, авто-ротация.
+pub mod auto;
 pub mod configs;
 pub mod link;
 pub mod pool;

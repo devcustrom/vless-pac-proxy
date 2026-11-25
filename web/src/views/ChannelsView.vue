@@ -2,6 +2,7 @@
 import WireGuardCard from '@/components/WireGuardCard.vue'
 import VlessCard from '@/components/VlessCard.vue'
 import PoolCard from '@/components/PoolCard.vue'
+import ConfigAutoCard from '@/components/ConfigAutoCard.vue'
 
 defineProps({ s: { type: Object, required: true } })
 </script>
@@ -13,6 +14,7 @@ defineProps({ s: { type: Object, required: true } })
       <VlessCard :s="s" />
     </div>
     <div class="space-y-4">
+      <ConfigAutoCard :s="s" />
       <PoolCard :s="s" />
     </div>
   </div>

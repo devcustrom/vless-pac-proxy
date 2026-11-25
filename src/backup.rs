@@ -15,6 +15,8 @@ const ALLOWED_FILES: &[&str] = &[
     "local-domains.txt",
     "extra-domains.txt",
     "direct-domains.txt",
+    "vpn-only-domains.txt",
+    "auto-routes.json",
     "vless-domains.txt",
     "wg-domains.txt",
     "subscriptions.txt",

@@ -1,39 +1,55 @@
-//! Проверка доменов (напрямую / через VPN / через Zapret) и фоновая
+//! Проверка доменов (напрямую / WireGuard / VLESS / Zapret) и фоновая
 //! проверка новых доменов из «Недавних сайтов».
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::route_auto::{ProbeResult, ProbeSet, RouteDecision};
+use crate::routing::AutoChannel;
 use crate::state::{AppState, CheckEntry};
 use crate::wlog;
 
-async fn http_code(client: &reqwest::Client, url: &str) -> String {
-    match client.get(url).send().await {
-        Ok(resp) => resp.status().as_u16().to_string(),
-        Err(_) => "000".to_string(),
-    }
+pub struct CheckOutcome {
+    pub entry: CheckEntry,
+    pub probes: ProbeSet,
+    pub best: Option<RouteDecision>,
+    pub in_auto: bool,
 }
 
-pub async fn check_domain(st: &Arc<AppState>, domain: &str) -> CheckEntry {
-    let url = format!("https://{domain}/");
-    let direct_client = st.client("check-direct", None);
-    let direct = http_code(&direct_client, &url).await;
+fn best_vpn(probes: &ProbeSet) -> Option<(AutoChannel, &ProbeResult)> {
+    let mut items: Vec<(AutoChannel, &ProbeResult)> = Vec::new();
+    if let Some(item) = probes.wireguard.as_ref().filter(|item| item.usable()) {
+        items.push((AutoChannel::Wireguard, item));
+    }
+    if let Some(item) = probes.vless.as_ref().filter(|item| item.usable()) {
+        items.push((AutoChannel::Vless, item));
+    }
+    items.into_iter().min_by_key(|(_, item)| item.ms)
+}
 
-    let settings = st.settings_snapshot();
-    let (_, vless_ok) = st.health_snapshot();
-    let port = if settings.vpn_default == "vless" && vless_ok {
-        crate::vless::XRAY_HTTP_PORT
-    } else {
-        crate::vless::WIREPROXY_HTTP_PORT
+pub async fn check_domain_full(st: &Arc<AppState>, domain: &str) -> CheckOutcome {
+    let probes = match crate::route_auto::probe(st, domain).await {
+        Ok(probes) => probes,
+        Err(e) => {
+            wlog!("проверка {domain}: {e:#}");
+            ProbeSet {
+                direct: ProbeResult {
+                    code: "000".to_string(),
+                    ms: 0,
+                },
+                ..ProbeSet::default()
+            }
+        }
     };
-    let vpn_client = st.client(&format!("check-vpn-{port}"), Some(port));
-    let vpn = http_code(&vpn_client, &url).await;
 
-    let zapret_supported = crate::zapret::supported();
-    let zapret_running = zapret_supported && crate::zapret::service_running_cached(st);
-    let zapret = if zapret_running {
-        let client = st.client("check-zapret", None);
-        http_code(&client, &url).await
+    let direct = probes.direct.code.clone();
+    let vpn_best = best_vpn(&probes);
+    let vpn = vpn_best
+        .map(|(_, item)| item.code.clone())
+        .or_else(|| probes.wireguard.as_ref().map(|item| item.code.clone()))
+        .or_else(|| probes.vless.as_ref().map(|item| item.code.clone()))
+        .unwrap_or_else(|| "000".to_string());
+    let zapret = if probes.zapret_running {
+        direct.clone()
     } else {
         "n/a".to_string()
     };
@@ -45,28 +61,47 @@ pub async fn check_domain(st: &Arc<AppState>, domain: &str) -> CheckEntry {
         "direct-only"
     } else if ok(&direct) && ok(&vpn) {
         "both-ok"
-    } else if zapret_running && ok(&zapret) && !ok(&vpn) {
+    } else if probes.zapret_running && ok(&zapret) && !ok(&vpn) {
         "zapret-helps"
     } else if vpn == "000" {
         "blocked-everywhere"
     } else {
         "challenge"
     };
+
+    let in_auto = crate::lists::read_domain_file(&st.dir, "extra-domains.txt")
+        .iter()
+        .any(|item| item == domain);
+    let best = if in_auto {
+        crate::route_auto::store_decision(st, domain, &probes)
+    } else {
+        crate::route_auto::choose(None, &probes)
+    };
+
     let entry = CheckEntry {
         domain: domain.to_string(),
         direct: direct.clone(),
         vpn: vpn.clone(),
         zapret: zapret.clone(),
-        zapret_running,
-        zapret_supported,
+        zapret_running: probes.zapret_running,
+        zapret_supported: crate::zapret::supported(),
         verdict: verdict.to_string(),
         at: chrono::Utc::now().to_rfc3339(),
     };
     if let Err(e) = st.store.insert_check(&entry) {
         wlog!("история проверок: {e:#}");
     }
-    wlog!("проверка {domain}: напрямую {direct}, через VPN {vpn}, Zapret {zapret} -> {verdict}");
-    entry
+    wlog!("проверка {domain}: напрямую {direct}, VPN {vpn}, Zapret {zapret} -> {verdict}");
+    CheckOutcome {
+        entry,
+        probes,
+        best,
+        in_auto,
+    }
+}
+
+pub async fn check_domain(st: &Arc<AppState>, domain: &str) -> CheckEntry {
+    check_domain_full(st, domain).await.entry
 }
 
 fn valid_candidate(domain: &str) -> bool {
@@ -83,15 +118,12 @@ async fn add_unavailable(st: &Arc<AppState>, domain: &str) {
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await;
-    let mut extra = crate::api::read_domains(&st.dir, "extra-domains.txt");
-    if extra.iter().any(|d| d == domain) {
+    // Явное исключение «Напрямую» не трогаем: пользователь выбрал его сам.
+    if crate::route_auto::is_direct_domain(st, domain) {
         return;
     }
-    let blocked: HashSet<String> = ["vless-domains.txt", "wg-domains.txt"]
-        .into_iter()
-        .flat_map(|name| crate::api::read_domains(&st.dir, name))
-        .collect();
-    if blocked.contains(domain) {
+    let mut extra = crate::api::read_domains(&st.dir, "extra-domains.txt");
+    if extra.iter().any(|d| d == domain) {
         return;
     }
     extra.push(domain.to_string());
@@ -99,7 +131,9 @@ async fn add_unavailable(st: &Arc<AppState>, domain: &str) {
         wlog!("автопроверка: не удалось добавить {domain} — {e}");
         return;
     }
-    wlog!("автопроверка: {domain} недоступен напрямую, добавлен в VPN-список");
+    crate::zapret::sync_domains(st, &extra);
+    crate::route_auto::spawn_check_one(st.clone(), domain.to_string());
+    wlog!("автопроверка: {domain} недоступен напрямую, добавлен в авто-список");
     let st = st.clone();
     tokio::spawn(async move {
         if let Err(e) = crate::lists::refresh(&st).await {

@@ -96,9 +96,10 @@ sidecar и ограничения — в [TELEGRAM.md](TELEGRAM.md).
 4. `AppState.local_domains`, `local_http_error`, `local_https_error`,
    `tls_config`, `local_proxy_stop`.
 5. API: `/api/local-domains`, `/probe`, `/hosts`, `/api/plugins`.
-6. UI: `web/src/components/LocalDomainsCard.vue`, вкладка «Домены».
-   Маршрутизация доменов — отдельная модалка на «Обзоре»
-   (`RoutingDialog.vue` + `DomainRoutingCard.vue`).
+6. UI: `web/src/components/LocalDomainsCard.vue`, раздел
+   «Локальные домены» (`/domains/local`). Маршрутизация доменов — отдельный
+   постоянный раздел ядра `/routing` (`DomainRoutingCard.vue`), не часть
+   этого плагина.
 
 Запуск/остановка:
 

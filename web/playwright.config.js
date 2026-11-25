@@ -9,6 +9,8 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     baseURL: 'http://127.0.0.1:28180',
+    // Тесты не должны показывать окна браузера и мешать работе.
+    headless: true,
     trace: 'retain-on-failure',
   },
   webServer: {

@@ -5,6 +5,7 @@ import { test, expect } from '@playwright/test'
 
 const PANEL = 'http://127.0.0.1:28180'
 const LOCAL_HTTP = 28080
+const SMART_PROXY = 28881
 
 test.beforeEach(async ({ page }) => {
   const headers = { 'X-WPC': '1' }
@@ -32,23 +33,14 @@ test('вкладки показываются только для включён
   await expect(page.getByRole('button', { name: 'Обзор' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Каналы' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Сайты' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Маршрутизация' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Локальные домены' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Telegram' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Обход DPI' })).toHaveCount(0)
 })
 
-test('polling обновляет переключатель без перезагрузки', async ({ page }) => {
-  const direct = page.getByTestId('direct-first')
-  await expect(direct).toHaveAttribute('aria-checked', 'true')
-  const response = await page.request.post(`${PANEL}/api/auto`, {
-    headers: { 'X-WPC': '1' },
-    data: { directFirst: false },
-  })
-  expect(response.ok()).toBeTruthy()
-  await expect(direct).toHaveAttribute('aria-checked', 'false', { timeout: 8_000 })
-})
-
 test('смена основного канала обновляет кнопки без перезагрузки', async ({ page }) => {
+  await page.getByText('Основной канал для остальных доменов').click()
   const wireguard = page.getByRole('button', { name: 'WireGuard', exact: true })
   const vless = page.getByRole('button', { name: 'VLESS', exact: true })
   await wireguard.click()
@@ -81,6 +73,29 @@ test('канал переключается оптимистично, не ож�
   await response
 })
 
+test('автовыбор конфигов включает режим и запускает проверку', async ({ page }) => {
+  let autoPayload = null
+  let runPayload = null
+  await page.route('**/api/auto', async (request) => {
+    autoPayload = request.request().postDataJSON()
+    await request.fulfill({ json: { ok: true } })
+  })
+  await page.route('**/api/configs/auto', async (request) => {
+    runPayload = request.request().postDataJSON()
+    await request.fulfill({ json: { ok: true } })
+  })
+
+  await page.getByRole('button', { name: 'Каналы' }).click()
+  await expect(page.getByText('Автовыбор конфигураций')).toBeVisible()
+  const toggle = page.getByTestId('auto-configs')
+  await expect(toggle).toHaveAttribute('aria-checked', 'false')
+  await toggle.click()
+  await expect.poll(() => autoPayload).toEqual({ autoRotate: true })
+  await page.getByRole('button', { name: 'Проверить и выбрать сейчас' }).click()
+  await expect.poll(() => runPayload).toEqual({})
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
+})
+
 test('локальный домен отдаёт backend, ошибка не стирает форму', async ({ page }) => {
   await page.getByRole('button', { name: 'Локальные домены' }).click()
   await page.getByRole('button', { name: 'Добавить домен' }).click()
@@ -98,6 +113,19 @@ test('локальный домен отдаёт backend, ошибка не ст
   })
   expect(response.status()).toBe(200)
   expect(await response.text()).toContain('e2e local domain ok')
+})
+
+test('локальный домен работает через системный прокси', async ({ playwright }) => {
+  const context = await playwright.request.newContext({
+    proxy: { server: `http://127.0.0.1:${SMART_PROXY}` },
+  })
+  try {
+    const response = await context.get('http://app.localhost/')
+    expect(response.status()).toBe(200)
+    expect(await response.text()).toContain('e2e local domain ok')
+  } finally {
+    await context.dispose()
+  }
 })
 
 test('Telegram: невалидный порт блокирует сохранение', async ({ page }) => {
@@ -124,7 +152,7 @@ test('вкладка сайтов показывает фильтры и про�
   await page.getByRole('button', { name: 'Сайты' }).click()
   await expect(page.getByText('Недавние сайты')).toBeVisible()
   await page.getByRole('combobox').click()
-  await expect(page.getByRole('option', { name: 'Через VPN' })).toBeVisible()
+  await expect(page.getByRole('option', { name: 'В авто-списке' })).toBeVisible()
   await expect(page.getByRole('option', { name: 'Без проверки' })).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.getByRole('button', { name: 'Проверить все' })).toBeVisible()
@@ -156,7 +184,7 @@ test('в настройках показан HWID и кнопка копиров
   await expect(page.getByRole('button', { name: 'Сменить HWID' })).toBeVisible()
   await page.getByText('Проверка сайтов', { exact: true }).click()
   await expect(page.getByText('Автопроверка новых сайтов')).toBeVisible()
-  await expect(page.getByText('Добавлять недоступные в VPN')).toBeVisible()
+  await expect(page.getByText('Добавлять недоступные в авто-список')).toBeVisible()
   await expect(page.getByText('Резервная копия')).toBeVisible()
   await expect(page.getByText('Скачать бэкап')).toBeVisible()
 })
@@ -182,6 +210,32 @@ test('проверка сайта показывает результат Zapret
   await expect(page.getByText('Открыть в истории сайтов')).toBeVisible()
 })
 
+test('из проверки сайта можно добавить домен в авто-список', async ({ page }) => {
+  await page.route('**/api/check', (route) =>
+    route.fulfill({
+      json: {
+        domain: 'vpn-only.example',
+        direct: '000',
+        vpn: '200',
+        zapret: 'n/a',
+        zapretRunning: false,
+        zapretSupported: true,
+        verdict: 'vpn-helps',
+        at: new Date().toISOString(),
+      },
+    }),
+  )
+  let payload = null
+  await page.route('**/api/extra', async (route) => {
+    payload = route.request().postDataJSON()
+    await route.fulfill({ json: { ok: true } })
+  })
+  await page.getByPlaceholder('example.com').fill('vpn-only.example')
+  await page.getByRole('button', { name: 'Проверить', exact: true }).click()
+  await page.getByRole('button', { name: 'Добавить в авто' }).click()
+  await expect.poll(() => payload).toEqual({ action: 'add', domain: 'vpn-only.example' })
+})
+
 test('Обход DPI: одна кнопка и список доменов', async ({ page }) => {
   test.skip(process.platform !== 'win32', 'Zapret доступен только на Windows')
 
@@ -192,17 +246,39 @@ test('Обход DPI: одна кнопка и список доменов', asy
 
   await expect(page.getByRole('heading', { name: 'Обход DPI', exact: true })).toBeVisible()
   await expect(page.getByText('Домены для обхода')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Включить обход DPI' })).toBeVisible()
+  await expect(page.getByText('Берутся из общего списка доменов')).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Изменить в общем списке' })).toBeVisible()
+  // Текст зависит от системной службы: у разработчика Zapret может быть
+  // уже установлен и запущен, поэтому проверяем саму основную кнопку.
+  await expect(page.getByTestId('zapret-primary')).toBeVisible()
   await expect(page.getByText('blockcheck2')).toHaveCount(0)
 
-  const input = page.getByPlaceholder(/youtube\.com или/)
-  await input.fill('https://example.org/watch?v=1')
-  await page.getByRole('button', { name: 'Добавить', exact: true }).click()
-  await expect(page.getByText('example.org', { exact: true })).toBeVisible()
+  await page.request.post(`${PANEL}/api/plugins`, { headers, data: { zapret: false } })
+})
 
-  await page.getByRole('button', { name: 'Убрать example.org' }).click()
-  await expect(page.getByText('example.org', { exact: true })).toHaveCount(0)
+test('Обход DPI предлагает пересобрать стратегию после смены списка', async ({ page }) => {
+  test.skip(process.platform !== 'win32', 'Zapret доступен только на Windows')
 
+  const headers = { 'X-WPC': '1' }
+  await page.request.post(`${PANEL}/api/plugins`, { headers, data: { zapret: true } })
+  await page.route('**/api/status', async (route) => {
+    const response = await route.fetch()
+    const data = await response.json()
+    data.zapret.strategyStale = true
+    data.zapret.service = { ...data.zapret.service, installed: true, running: false }
+    await route.fulfill({ response, json: data })
+  })
+  await page.reload()
+  await page.getByRole('button', { name: 'Обход DPI', exact: true }).click()
+  await expect(page.getByText('Список доменов изменился')).toBeVisible()
+
+  let payload = null
+  await page.route('**/api/zapret', async (route) => {
+    payload = route.request().postDataJSON()
+    await route.fulfill({ json: { ok: true } })
+  })
+  await page.getByRole('button', { name: 'Пересобрать стратегию' }).click()
+  await expect.poll(() => payload?.action).toBe('auto-tune')
   await page.request.post(`${PANEL}/api/plugins`, { headers, data: { zapret: false } })
 })
 
@@ -282,7 +358,7 @@ test('из проверки сайта можно сгенерировать и 
   await expect(page.getByRole('heading', { name: 'Стратегии для example.com' })).toBeVisible()
   await expect.poll(() => generated).not.toBeNull()
   expect(generated.domain).toBe('example.com')
-  expect(generated.scan).toBe('quick')
+  expect(generated.scan).toBe('veryquick')
 
   autoState = {
     running: false,
@@ -314,9 +390,8 @@ test('из проверки сайта можно сгенерировать и 
   await page.request.post(`${PANEL}/api/plugins`, { headers, data: { zapret: false } })
 })
 
-test('чекбокс VPN в недавних сайтах переключает маршрут', async ({ page }) => {
+test('переключатель в недавних сайтах добавляет и убирает авто-маршрут', async ({ page }) => {
   const now = Math.floor(Date.now() / 1000)
-  let route = 'wireguard'
   await page.route('**/api/status', async (request) => {
     const response = await request.fetch()
     const data = await response.json()
@@ -325,7 +400,10 @@ test('чекбокс VPN в недавних сайтах переключает
         domain: 'example.com',
         count: 2,
         last: now,
-        route,
+        route: 'wireguard',
+        routeSource: 'auto',
+        autoRoute: 'wireguard',
+        inAuto: true,
         checked: true,
       },
     ]
@@ -336,19 +414,82 @@ test('чекбокс VPN в недавних сайтах переключает
   let payload = null
   await page.route('**/api/extra', async (request) => {
     payload = request.request().postDataJSON()
-    route = payload.enabled ? 'wireguard' : null
-    await request.fulfill({ json: { ok: true, enabled: payload.enabled } })
+    await request.fulfill({ json: { ok: true } })
   })
 
   await page.reload()
   await page.getByRole('button', { name: 'Сайты' }).click()
-  const vpn = page.getByRole('switch', { name: 'VPN' })
-  await expect(vpn).toHaveAttribute('aria-checked', 'true')
-  await vpn.click()
+  const toggle = page.getByRole('switch', { name: 'Авто-маршрут' })
+  await expect(toggle).toHaveAttribute('aria-checked', 'true')
+  await expect(page.getByText('Авто · WireGuard')).toBeVisible()
+  await toggle.click()
   await expect.poll(() => payload).not.toBeNull()
-  expect(payload).toEqual({ action: 'route', domain: 'example.com', enabled: false })
-  await expect(vpn).toHaveAttribute('aria-checked', 'false')
+  expect(payload).toEqual({ action: 'remove', domain: 'example.com' })
+  await expect(toggle).toHaveAttribute('aria-checked', 'false')
 
+  await page.unrouteAll({ behavior: 'ignoreErrors' })
+})
+
+test('маршрутизация: один авто-список и маршруты по скорости', async ({ page }) => {
+  const now = Math.floor(Date.now() / 1000)
+  await page.route('**/api/status', async (request) => {
+    const response = await request.fetch()
+    const data = await response.json()
+    data.extra = ['chatgpt.com', 'example.org', 'claude.ai']
+    data.directDomains = ['lan.example']
+    data.vpnOnly = ['claude.ai']
+    data.autoRoutes = {
+      'chatgpt.com': {
+        route: 'wireguard',
+        latencyMs: 120,
+        viaZapret: false,
+        checkedAt: now,
+        direct: { code: '403', ms: 80 },
+        wireguard: { code: '200', ms: 120 },
+        vless: { code: '200', ms: 180 },
+      },
+      'example.org': {
+        route: 'direct',
+        latencyMs: 40,
+        viaZapret: true,
+        checkedAt: now,
+        direct: { code: '200', ms: 40 },
+      },
+      'claude.ai': {
+        route: 'direct',
+        latencyMs: 30,
+        viaZapret: false,
+        checkedAt: now,
+        direct: { code: '200', ms: 30 },
+      },
+    }
+    await request.fulfill({ response, json: data })
+  })
+  let checked = null
+  await page.route('**/api/routes/check', async (request) => {
+    checked = request.request().postDataJSON()
+    await request.fulfill({ json: { ok: true } })
+  })
+  let pinned = null
+  await page.route('**/api/extra', async (request) => {
+    pinned = request.request().postDataJSON()
+    await request.fulfill({ json: { ok: true } })
+  })
+
+  await page.goto('/domains/routing')
+  await expect(page.getByText('Домены с авто-маршрутом')).toBeVisible()
+  await expect(page.getByText('Только через WireGuard')).toHaveCount(0)
+  await expect(page.getByText('Только через VLESS')).toHaveCount(0)
+  await expect(page.getByText(/WireGuard · 120 мс/)).toBeVisible()
+  await expect(page.getByText(/Напрямую · Zapret · 40 мс/)).toBeVisible()
+  await expect(page.getByText('Всегда VPN · WireGuard')).toBeVisible()
+  await page.getByRole('button', { name: 'Всегда через VPN: claude.ai' }).click()
+  await expect.poll(() => pinned).toEqual({
+    action: 'vpn-only-remove',
+    domain: 'claude.ai',
+  })
+  await page.getByRole('button', { name: 'Проверить все' }).click()
+  await expect.poll(() => checked).toEqual({})
   await page.unrouteAll({ behavior: 'ignoreErrors' })
 })
 
@@ -364,7 +505,10 @@ test('router: deep links, back/forward и выключенный плагин', 
   await page.goForward()
   await expect(page.getByText('Недавние сайты')).toBeVisible()
 
+  await page.goto('/routing')
+  await expect(page.getByRole('heading', { name: 'Маршрутизация доменов' })).toBeVisible()
   await page.goto('/domains/routing')
+  await expect(page).toHaveURL(/\/routing$/)
   await expect(page.getByRole('heading', { name: 'Маршрутизация доменов' })).toBeVisible()
 
   // Старые hash-ссылки редиректятся на чистый путь.
@@ -372,7 +516,7 @@ test('router: deep links, back/forward и выключенный плагин', 
   await expect(page).toHaveURL(/\/channels$/)
 
   await page.goto('/dpi')
-  await expect(page.getByRole('heading', { name: 'Обход DPI' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Обход DPI', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Включить в Настройках' })).toBeVisible()
   await page.getByRole('button', { name: 'Включить в Настройках' }).click()
   await expect(page.getByRole('heading', { name: 'Плагины' })).toBeVisible()
@@ -409,6 +553,19 @@ test('Xray-конфиги добавляются, выбираются и уда
     await expect(card.getByText('E2E Outline', { exact: true })).toBeVisible()
     await expect(card.getByText('Outline / SS', { exact: true }).first()).toBeVisible()
     await expect(card.getByText('активен', { exact: true })).toBeVisible()
+
+    await page.route('**/api/xray/configs', async (route) => {
+      const request = route.request()
+      const body = request.method() === 'POST' ? request.postDataJSON() : null
+      if (body?.action === 'test') {
+        await route.fulfill({ json: { ok: true, ip: '203.0.113.9', ms: 42 } })
+      } else {
+        await route.continue()
+      }
+    })
+    await card.getByRole('button', { name: 'Проверить все' }).click()
+    await expect(card.getByText(/203\.0\.113\.9 · 42 мс/)).toBeVisible()
+    await expect(card.getByText('Проверено 1 · рабочих 1')).toBeVisible()
 
     await page.request.post(`${PANEL}/api/xray/configs`, {
       headers,
@@ -577,4 +734,21 @@ test('каталог Zaprett показывает источник и умеет
 
   await page.unrouteAll({ behavior: 'ignoreErrors' })
   await page.request.post(`${PANEL}/api/plugins`, { headers, data: { zapret: false } })
+})
+
+test('маршрутизация не зависит от плагина локальных доменов', async ({ page }) => {
+  const headers = { 'X-WPC': '1' }
+  await page.request.post(`${PANEL}/api/plugins`, {
+    headers,
+    data: { localDomains: false },
+  })
+  await page.reload()
+  await expect(page.getByRole('button', { name: 'Маршрутизация' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Локальные домены' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Маршрутизация' }).click()
+  await expect(page.getByRole('heading', { name: 'Маршрутизация доменов' })).toBeVisible()
+  await page.request.post(`${PANEL}/api/plugins`, {
+    headers,
+    data: { localDomains: true },
+  })
 })

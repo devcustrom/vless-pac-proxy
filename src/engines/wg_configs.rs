@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpStream;
 
 use crate::engines::wireproxy;
+use crate::state::AppState;
 use crate::wlog;
 
 const TEST_HTTP_PORT: u16 = 26250;
@@ -17,6 +19,10 @@ const TEST_SOCKS_PORT: u16 = 26249;
 const TEST_PROBE_MS: u64 = 8000;
 
 static TESTING: AtomicBool = AtomicBool::new(false);
+
+pub fn test_busy() -> bool {
+    TESTING.load(Ordering::SeqCst)
+}
 
 struct TestGuard;
 
@@ -302,9 +308,9 @@ async fn wait_port(port: u16, deadline: Duration) -> bool {
     false
 }
 
-async fn probe() -> Option<(u64, String)> {
+async fn probe_port(port: u16) -> Option<(u64, String)> {
     let client = reqwest::Client::builder()
-        .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{TEST_HTTP_PORT}")).ok()?)
+        .proxy(reqwest::Proxy::all(format!("http://127.0.0.1:{port}")).ok()?)
         .timeout(Duration::from_millis(TEST_PROBE_MS))
         .pool_max_idle_per_host(0)
         .build()
@@ -317,6 +323,10 @@ async fn probe() -> Option<(u64, String)> {
     } else {
         Some((started.elapsed().as_millis() as u64, ip))
     }
+}
+
+async fn probe() -> Option<(u64, String)> {
+    probe_port(TEST_HTTP_PORT).await
 }
 
 /// Поднимает временный wireproxy на этом конфиге и проверяет реальный трафик.
@@ -357,6 +367,101 @@ pub async fn test(dir: &Path, slug: &str) -> Result<(u64, String)> {
         Some(value) => Ok(value),
         None => bail!("трафик через конфиг не прошёл"),
     }
+}
+
+/// Проверяет все сохранённые WireGuard-конфиги и активирует самый быстрый.
+/// Возвращает true, если активный конфиг изменился.
+pub async fn select_fastest(state: &Arc<AppState>) -> Result<bool> {
+    let settings = state.settings_snapshot();
+    if !settings.wireguard_enabled {
+        return Ok(false);
+    }
+    if test_busy() {
+        return Ok(false);
+    }
+    let configs = list(&state.dir)?;
+    let valid: Vec<WgConfigInfo> = configs.into_iter().filter(|item| item.valid).collect();
+    if valid.is_empty() {
+        return Ok(false);
+    }
+    let active = valid.iter().find(|item| item.active).cloned();
+    let inactive: Vec<WgConfigInfo> = valid
+        .iter()
+        .filter(|item| active.as_ref().map(|a| a.slug.as_str()) != Some(item.slug.as_str()))
+        .cloned()
+        .collect();
+    if inactive.is_empty() {
+        return Ok(false);
+    }
+    if valid.len() == 1 {
+        let only = &valid[0];
+        if only.active {
+            return Ok(false);
+        }
+        if !state.settings_snapshot().auto_rotate {
+            return Ok(false);
+        }
+        activate(&state.dir, &only.slug)?;
+        if settings.wireguard_enabled {
+            state.wg.restart();
+        }
+        log_active(&state.dir, &only.slug);
+        return Ok(true);
+    }
+
+    // Активный конфиг не поднимаем вторым wireproxy с тем же ключом:
+    // измеряем его текущую задержку через уже работающий HTTP-порт.
+    let active_ms = if active.is_some() {
+        probe_port(crate::vless::WIREPROXY_HTTP_PORT)
+            .await
+            .map(|(ms, _)| ms)
+    } else {
+        None
+    };
+    if let (Some(item), Some(ms)) = (active.as_ref(), active_ms) {
+        wlog!("авто-конфиг WireGuard: активный «{}» — {ms} мс", item.name);
+    }
+
+    let mut best: Option<(String, String, u64, String)> = None;
+    for item in &inactive {
+        match test(&state.dir, &item.slug).await {
+            Ok((ms, ip)) => {
+                wlog!("авто-конфиг WireGuard: «{}» — {ms} мс, IP {ip}", item.name);
+                if best
+                    .as_ref()
+                    .map(|(_, _, best_ms, _)| ms < *best_ms)
+                    .unwrap_or(true)
+                {
+                    best = Some((item.slug.clone(), item.name.clone(), ms, ip));
+                }
+            }
+            Err(e) => wlog!("авто-конфиг WireGuard: «{}» — {e:#}", item.name),
+        }
+    }
+    let Some((slug, name, ms, ip)) = best else {
+        bail!("ни один запасной WireGuard-конфиг не прошёл проверку трафика");
+    };
+    if let Some(active_ms) = active_ms {
+        if ms >= active_ms {
+            if let Some(item) = active.as_ref() {
+                wlog!(
+                    "авто-конфиг WireGuard: активный «{}» быстрее запасных ({active_ms} мс)",
+                    item.name
+                );
+            }
+            return Ok(false);
+        }
+    }
+    if !state.settings_snapshot().auto_rotate {
+        return Ok(false);
+    }
+    activate(&state.dir, &slug)?;
+    if settings.wireguard_enabled {
+        state.wg.restart();
+    }
+    log_active(&state.dir, &slug);
+    wlog!("авто-конфиг WireGuard: выбран «{name}» — {ms} мс, IP {ip}");
+    Ok(true)
 }
 
 /// Небольшая обёртка для логов API.
