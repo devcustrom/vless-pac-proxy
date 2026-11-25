@@ -517,9 +517,16 @@ test('router: deep links, back/forward и выключенный плагин', 
 
   await page.goto('/dpi')
   await expect(page.getByRole('heading', { name: 'Обход DPI', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Включить в Настройках' })).toBeVisible()
-  await page.getByRole('button', { name: 'Включить в Настройках' }).click()
-  await expect(page.getByRole('heading', { name: 'Плагины' })).toBeVisible()
+  if (process.platform === 'win32') {
+    await expect(page.getByRole('button', { name: 'Включить в Настройках' })).toBeVisible()
+    await page.getByRole('button', { name: 'Включить в Настройках' }).click()
+    await expect(page.getByRole('heading', { name: 'Плагины' })).toBeVisible()
+  } else {
+    // На macOS Zapret недоступен, поэтому кнопки включения нет.
+    await expect(
+      page.getByText('Этот плагин доступен только на Windows.'),
+    ).toBeVisible()
+  }
 })
 
 test('Xray-конфиги добавляются, выбираются и удаляются', async ({ page }) => {

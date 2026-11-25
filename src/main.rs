@@ -204,11 +204,11 @@ fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool, hidden: bool) -> an
             }
             #[cfg(target_os = "macos")]
             if !reachable {
-                crate::macos::show_alert(&format!(
+                crate::macos::show_alert(
                     "wireproxy-control уже запущен, но панель не отвечает.\n\
                      Завершите старый процесс wireproxy-control в «Мониторинге системы» \
-                     или перезагрузите Mac и запустите приложение снова."
-                ));
+                     или перезагрузите Mac и запустите приложение снова.",
+                );
             }
             return Ok(());
         }
