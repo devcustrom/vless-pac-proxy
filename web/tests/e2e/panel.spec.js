@@ -288,11 +288,15 @@ test('Обход DPI предлагает пересобрать стратег�
   const headers = { 'X-WPC': '1' }
   await page.request.post(`${PANEL}/api/plugins`, { headers, data: { zapret: true } })
   await page.route('**/api/status', async (route) => {
-    const response = await route.fetch()
-    const data = await response.json()
-    data.zapret.strategyStale = true
-    data.zapret.service = { ...data.zapret.service, installed: true, running: false }
-    await route.fulfill({ response, json: data })
+    try {
+      const response = await route.fetch()
+      const data = await response.json()
+      data.zapret.strategyStale = true
+      data.zapret.service = { ...data.zapret.service, installed: true, running: false }
+      await route.fulfill({ response, json: data })
+    } catch {
+      // Статус-поллинг может оборваться при закрытии теста.
+    }
   })
   await page.reload()
   await page.getByRole('button', { name: 'Обход DPI', exact: true }).click()
@@ -328,10 +332,14 @@ test('из проверки сайта можно сгенерировать и 
 
   let autoState = null
   await page.route('**/api/status', async (route) => {
-    const response = await route.fetch()
-    const data = await response.json()
-    if (autoState) data.zapret.autoTune = autoState
-    await route.fulfill({ response, json: data })
+    try {
+      const response = await route.fetch()
+      const data = await response.json()
+      if (autoState) data.zapret.autoTune = autoState
+      await route.fulfill({ response, json: data })
+    } catch {
+      // Статус-поллинг может оборваться при закрытии теста.
+    }
   })
   await page.reload()
 
