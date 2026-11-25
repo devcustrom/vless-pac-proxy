@@ -490,6 +490,10 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
     for dc in sorted(proxy_config.dc_redirects.keys()):
         ip = proxy_config.dc_redirects.get(dc)
         log.info("    DC%d: %s", dc, ip)
+    log.info("  Media DC IPs:")
+    for dc in sorted(proxy_config.media_dc_redirects.keys()):
+        ip = proxy_config.media_dc_redirects.get(dc)
+        log.info("    DC%d: %s", dc, ip)
     if proxy_config.fallback_cfproxy:
         user_domain = ", ".join(proxy_config.cfproxy_user_domains) if proxy_config.cfproxy_user_domains else "auto"
         log.info("  CF proxy:      enabled (%s)", user_domain)
@@ -664,13 +668,27 @@ def _apply_managed_config(path: str, status_override: Optional[str] = None) -> d
         raise ValueError("secret must be 32 hex characters")
     bytes.fromhex(secret)
 
-    raw_dc = data.get("dcRedirects") or {"2": "149.154.167.220", "4": "149.154.167.220"}
+    raw_dc = data.get("dcRedirects") or {
+        "2": "149.154.167.220",
+        "4": "149.154.167.220",
+    }
     if not isinstance(raw_dc, dict) or not raw_dc:
         raise ValueError("dcRedirects must be a non-empty object")
     dc_redirects = {}
     for key, value in raw_dc.items():
         dc = int(key)
         dc_redirects[dc] = _public_dc_ip(str(value))
+
+    raw_media_dc = data.get("mediaDcRedirects")
+    if raw_media_dc is None:
+        media_dc_redirects = dict(dc_redirects)
+    else:
+        if not isinstance(raw_media_dc, dict):
+            raise ValueError("mediaDcRedirects must be an object")
+        media_dc_redirects = {}
+        for key, value in raw_media_dc.items():
+            dc = int(key)
+            media_dc_redirects[dc] = _public_dc_ip(str(value))
 
     order = [
         str(item) for item in (data.get("upstreamOrder") or ["direct"])
@@ -683,6 +701,7 @@ def _apply_managed_config(path: str, status_override: Optional[str] = None) -> d
     proxy_config.port = port
     proxy_config.secret = secret
     proxy_config.dc_redirects = dc_redirects
+    proxy_config.media_dc_redirects = media_dc_redirects
     proxy_config.buffer_size = max(4, int(data.get("bufferSize", 262144) // 1024)) * 1024
     proxy_config.pool_size = max(0, int(data.get("poolSize", 4)))
     proxy_config.fallback_cfproxy = bool(data.get("fallbackCfproxy", False))

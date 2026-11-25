@@ -430,7 +430,7 @@ pub async fn probe(state: &Arc<AppState>) -> ProbeResult {
 pub async fn probe_direct(state: &Arc<AppState>) -> ProbeResult {
     let targets = [
         ("1", "149.154.175.50"),
-        ("2", "149.154.167.220"),
+        ("2", "149.154.167.51"),
         ("3", "149.154.175.100"),
         ("4", "149.154.167.220"),
         ("5", "149.154.171.5"),

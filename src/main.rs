@@ -36,6 +36,7 @@ mod route_auto;
 mod routing;
 mod settings;
 mod shell;
+mod simple;
 mod single_instance;
 mod site_check;
 mod state;

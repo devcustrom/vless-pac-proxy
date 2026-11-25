@@ -25,6 +25,10 @@ test.beforeEach(async ({ page }) => {
     headers,
     data: { directFirst: true, autoCheckSites: true, autoAddUnavailable: true },
   })
+  await page.request.post(`${PANEL}/api/ui-mode`, {
+    headers,
+    data: { simple: false },
+  })
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'wireproxy-control' })).toBeVisible()
 })
@@ -37,6 +41,28 @@ test('вкладки показываются только для включён
   await expect(page.getByRole('button', { name: 'Локальные домены' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Telegram' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Обход DPI' })).toHaveCount(0)
+})
+
+test('простой режим: одна кнопка и возврат в расширенный', async ({ page }) => {
+  const headers = { 'X-WPC': '1' }
+  await page.request.post(`${PANEL}/api/ui-mode`, {
+    headers,
+    data: { simple: true },
+  })
+  await page.reload()
+
+  await expect(page.getByTestId('simple-enable')).toBeVisible()
+  await expect(page.getByText('Telegram-прокси')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Каналы' })).toHaveCount(0)
+  await page.getByTestId('advanced-toggle').click()
+  await expect(page.getByRole('button', { name: 'Каналы' })).toBeVisible()
+  await page.getByTestId('simple-toggle').click()
+  await expect(page.getByTestId('simple-enable')).toBeVisible()
+
+  await page.request.post(`${PANEL}/api/ui-mode`, {
+    headers,
+    data: { simple: false },
+  })
 })
 
 test('смена основного канала обновляет кнопки без перезагрузки', async ({ page }) => {

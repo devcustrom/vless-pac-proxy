@@ -27,6 +27,9 @@ pub struct Settings {
     pub xray_enabled: bool,
     #[serde(rename = "onboardingDone", default)]
     pub onboarding_done: bool,
+    /// Простой интерфейс: одна кнопка включения и автоподписки.
+    #[serde(rename = "simpleUi", default = "default_true")]
+    pub simple_ui: bool,
     #[serde(rename = "telegramEnabled", default)]
     pub telegram_enabled: bool,
     #[serde(rename = "telegramHost", default = "default_telegram_host")]
@@ -145,6 +148,7 @@ impl Default for Settings {
             wireguard_enabled: true,
             xray_enabled: true,
             onboarding_done: false,
+            simple_ui: true,
             telegram_enabled: false,
             telegram_host: default_telegram_host(),
             telegram_port: default_telegram_port(),
@@ -253,6 +257,7 @@ mod tests {
             wireguard_enabled: true,
             xray_enabled: true,
             onboarding_done: false,
+            simple_ui: true,
             telegram_enabled: false,
             telegram_host: default_telegram_host(),
             telegram_port: default_telegram_port(),
@@ -297,6 +302,7 @@ mod tests {
         assert!(!s.local_domains_enabled);
         assert!(s.wireguard_enabled);
         assert!(s.xray_enabled);
+        assert!(s.simple_ui);
     }
 
     #[test]

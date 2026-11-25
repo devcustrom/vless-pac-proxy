@@ -16,6 +16,9 @@ pub struct TelegramConfig {
     pub port: u16,
     pub secret: String,
     pub dc_redirects: BTreeMap<String, String>,
+    /// Отдельная карта для медиа: upstream рекомендует не направлять
+    /// медиа-DC2 на общий WS-edge, иначе фото/видео зависают.
+    pub media_dc_redirects: BTreeMap<String, String>,
     pub buffer_size: u32,
     pub pool_size: u32,
     pub fallback_cfproxy: bool,
@@ -152,14 +155,24 @@ impl TelegramConfig {
         let fake_tls_domain = fake.first().cloned().unwrap_or_default();
         let order = order_for(settings)?;
         let h2 = settings.telegram_h2 && order == ["direct"];
+        // Обычные соединения DC2/DC4 держим на WS-edge — иначе почти всё
+        // уходит в TCP fallback и Telegram теряет соединения. Для медиа
+        // upstream рекомендует только DC4: redirect DC2 ломает фото/видео
+        // на аккаунтах без Premium.
         let mut dc_redirects = BTreeMap::new();
         dc_redirects.insert("2".to_string(), "149.154.167.220".to_string());
         dc_redirects.insert("4".to_string(), "149.154.167.220".to_string());
+        // DC203 в Telegram использует те же kws2-эндпоинты; без него
+        // большинство соединений уходило в TCP fallback.
+        dc_redirects.insert("203".to_string(), "149.154.167.220".to_string());
+        let mut media_dc_redirects = BTreeMap::new();
+        media_dc_redirects.insert("4".to_string(), "149.154.167.220".to_string());
         Ok(Self {
             host: "127.0.0.1".to_string(),
             port: settings.telegram_port,
             secret: settings.telegram_secret.clone(),
             dc_redirects,
+            media_dc_redirects,
             buffer_size: 256 * 1024,
             pool_size: 4,
             fallback_cfproxy: !cfproxy.is_empty() || !cfworker.is_empty(),
@@ -227,6 +240,29 @@ mod tests {
             order_for(&settings("vless,direct,vless", true)).unwrap(),
             ["vless", "direct"]
         );
+    }
+
+    #[test]
+    fn media_redirects_are_separate_from_normal_ws() {
+        let cfg = TelegramConfig::from_settings(&settings("vpn-first", true), 8080).unwrap();
+        assert_eq!(
+            cfg.dc_redirects.get("2").map(String::as_str),
+            Some("149.154.167.220")
+        );
+        assert_eq!(
+            cfg.dc_redirects.get("4").map(String::as_str),
+            Some("149.154.167.220")
+        );
+        assert_eq!(
+            cfg.dc_redirects.get("203").map(String::as_str),
+            Some("149.154.167.220")
+        );
+        assert_eq!(cfg.media_dc_redirects.len(), 1);
+        assert_eq!(
+            cfg.media_dc_redirects.get("4").map(String::as_str),
+            Some("149.154.167.220")
+        );
+        assert!(!cfg.media_dc_redirects.contains_key("2"));
     }
 
     #[test]

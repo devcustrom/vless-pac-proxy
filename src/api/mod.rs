@@ -117,6 +117,7 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         crate::site_check::spawn_scheduler(state.clone());
         crate::route_auto::spawn_scheduler(state.clone());
         crate::config_auto::spawn_scheduler(state.clone());
+        crate::simple::spawn_bootstrap(state.clone());
         spawn_health_probes(state.clone());
     }
 
@@ -149,6 +150,9 @@ pub async fn run(state: Arc<AppState>) -> anyhow::Result<()> {
         .route("/api/auto", post(auto))
         .route("/api/channels", post(channels))
         .route("/api/onboarding", post(onboarding_done))
+        .route("/api/ui-mode", post(ui_mode))
+        .route("/api/simple/enable", post(simple_enable))
+        .route("/api/simple/disable", post(simple_disable))
         .route(
             "/api/local-domains",
             get(local_domains_get).post(local_domains_post),
@@ -1977,6 +1981,8 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
         "version": env!("CARGO_PKG_VERSION"),
         "hwid": settings.hwid,
         "onboardingDone": settings.onboarding_done,
+        "simpleUi": settings.simple_ui,
+        "simple": crate::simple::status(&st),
         "plugins": {
             "localDomains": settings.local_domains_enabled,
             "telegram": settings.telegram_enabled,
@@ -2467,6 +2473,51 @@ async fn onboarding_done(State(st): State<Arc<AppState>>) -> Json<Value> {
         *st.settings.lock().unwrap() = candidate;
     }
     Json(json!({ "ok": true, "onboardingDone": true }))
+}
+
+async fn ui_mode(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let Some(simple) = body.get("simple").and_then(Value::as_bool) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "нужно simple: true|false" })),
+        )
+            .into_response();
+    };
+    let mut settings = st.settings_snapshot();
+    settings.simple_ui = simple;
+    if let Err(e) = settings.save(&st.dir) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response();
+    }
+    *st.settings.lock().unwrap() = settings;
+    Json(json!({ "ok": true, "simpleUi": simple })).into_response()
+}
+
+async fn simple_enable(State(st): State<Arc<AppState>>) -> Response {
+    crate::simple::spawn_enable(st.clone());
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({ "ok": true, "simple": crate::simple::status(&st) })),
+    )
+        .into_response()
+}
+
+async fn simple_disable(State(st): State<Arc<AppState>>) -> Response {
+    match crate::simple::disable(&st) {
+        Ok(()) => Json(json!({
+            "ok": true,
+            "simple": crate::simple::status(&st),
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("{e:#}") })),
+        )
+            .into_response(),
+    }
 }
 
 async fn channels(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {

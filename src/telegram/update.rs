@@ -267,6 +267,18 @@ fn set_update_state(state: &AppState, f: impl FnOnce(&mut UpdateState)) {
     }
 }
 
+/// Числовая часть версии: `1.11.4+managed.5` → [1, 11, 4, 5].
+fn version_key(value: &str) -> Vec<u64> {
+    value
+        .split(|c: char| !c.is_ascii_digit())
+        .filter_map(|part| part.parse().ok())
+        .collect()
+}
+
+fn installed_is_newer(installed: &str, manifest: &str) -> bool {
+    version_key(installed) > version_key(manifest)
+}
+
 /// Проверяет манифест и при необходимости обновляет sidecar.
 pub async fn check_and_update(state: &Arc<AppState>, _manual: bool) -> Result<String> {
     if state.telegram.updating.swap(true, Ordering::SeqCst) {
@@ -289,13 +301,17 @@ pub async fn check_and_update(state: &Arc<AppState>, _manual: bool) -> Result<St
         let target = supervisor::sidecar_path(&state.dir);
         let installed = read_installed(&state.dir);
         if let Some(installed) = &installed {
-            if installed.version == manifest.version
+            let up_to_date = installed.version == manifest.version
                 && installed.sha256.eq_ignore_ascii_case(&asset.sha256)
-                && target.is_file()
-            {
+                && target.is_file();
+            // Локальная сборка может быть новее манифеста (например, до
+            // публикации релиза). Не откатываем её на старую версию.
+            let local_newer =
+                installed_is_newer(&installed.version, &manifest.version) && target.is_file();
+            if up_to_date || local_newer {
                 set_update_state(state, |s| {
                     s.installed_version = Some(installed.version.clone());
-                    s.available_version = Some(manifest.version.clone());
+                    s.available_version = Some(installed.version.clone());
                 });
                 return Ok(installed.version.clone());
             }
@@ -395,6 +411,14 @@ mod tests {
         let dest = dir.join("target.exe");
         assert!(download_asset(&asset, &dest).await.is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn managed_build_versions_compare() {
+        assert!(installed_is_newer("1.11.4+managed.5", "1.11.4+managed.4"));
+        assert!(!installed_is_newer("1.11.4+managed.4", "1.11.4+managed.5"));
+        assert!(!installed_is_newer("1.11.4+managed.4", "1.11.4+managed.4"));
+        assert!(installed_is_newer("1.11.5", "1.11.4+managed.9"));
     }
 
     #[test]

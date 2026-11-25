@@ -79,6 +79,9 @@ pub struct AppState {
     pub smart_proxy_ready: AtomicBool,
     /// Идёт автоподбор самого быстрого VPN-конфига.
     pub config_auto_running: AtomicBool,
+    /// Состояние простого режима (включение одной кнопкой).
+    pub simple: Mutex<crate::simple::SimpleState>,
+    pub simple_running: AtomicBool,
     pub tls_config:
         Mutex<Option<std::sync::Arc<tokio::sync::RwLock<std::sync::Arc<rustls::ServerConfig>>>>>,
     pub local_proxy_stop: Mutex<Option<(u64, tokio::sync::watch::Sender<bool>)>>,
@@ -134,6 +137,8 @@ impl AppState {
             downloads: Mutex::new(HashMap::new()),
             smart_proxy_ready: AtomicBool::new(false),
             config_auto_running: AtomicBool::new(false),
+            simple: Mutex::new(crate::simple::SimpleState::default()),
+            simple_running: AtomicBool::new(false),
             tls_config: Mutex::new(None),
             local_proxy_stop: Mutex::new(None),
             settings: Mutex::new(settings),

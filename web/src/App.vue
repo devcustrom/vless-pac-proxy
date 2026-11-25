@@ -1,8 +1,8 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch, watchEffect } from 'vue'
-import { BookOpen, RefreshCw, ShieldCheck } from 'lucide-vue-next'
+import { BookOpen, RefreshCw, ShieldCheck, SlidersHorizontal, Sparkles } from 'lucide-vue-next'
 import { RouterView, useRoute, useRouter } from 'vue-router'
-import { api, store } from '@/lib/store'
+import { api, post, store } from '@/lib/store'
 import { useStatusQuery } from '@/lib/queries'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
@@ -11,6 +11,7 @@ import DocsDialog from '@/components/DocsDialog.vue'
 import PluginSetupDialog from '@/components/PluginSetupDialog.vue'
 import StatusDialog from '@/components/StatusDialog.vue'
 import PluginDisabledView from '@/views/PluginDisabledView.vue'
+import SimpleView from '@/views/SimpleView.vue'
 import Toast from '@/components/Toast.vue'
 
 const router = useRouter()
@@ -19,6 +20,10 @@ const statusQuery = useStatusQuery()
 const s = computed(() => statusQuery.data.value)
 const offline = computed(() => !!statusQuery.error.value)
 const online = computed(() => !offline.value && !!s.value && (s.value.wgUp || s.value.vlessUp))
+const simpleMode = computed(() => s.value?.simpleUi !== false)
+const vpnActive = computed(
+  () => online.value && (!simpleMode.value || !!s.value?.systemProxy?.enabled),
+)
 const docsOpen = ref(false)
 const statusOpen = ref(false)
 const firstRunOpen = ref(false)
@@ -66,7 +71,7 @@ watchEffect(() => {
   if (statusQuery.data.value) {
     store.status = statusQuery.data.value
     const data = statusQuery.data.value
-    if (!data.onboardingDone && !firstRunDismissed.value) {
+    if (!simpleMode.value && !data.onboardingDone && !firstRunDismissed.value) {
       if (data.plugins?.localDomains) {
         // Плагин уже включён — мастер первого запуска не нужен.
         firstRunDismissed.value = true
@@ -77,6 +82,14 @@ watchEffect(() => {
     }
   }
 })
+
+watch(
+  simpleMode,
+  (value) => {
+    if (value) document.title = 'VPN · wireproxy-control'
+  },
+  { immediate: true },
+)
 
 watch(
   () => route.query.docs,
@@ -99,6 +112,16 @@ async function dismissFirstRun() {
   firstRunOpen.value = false
   firstRunDismissed.value = true
   await api('/api/onboarding', {}).catch(() => {})
+}
+
+async function setUiMode(simple) {
+  try {
+    await post('/api/ui-mode', { simple })
+    if (!simple) router.push('/overview')
+    await statusQuery.refetch()
+  } catch {
+    /* тост уже показан */
+  }
 }
 
 function onPluginEnabled() {
@@ -162,31 +185,54 @@ onUnmounted(() => {
         </div>
         <div class="min-w-0">
           <h1 class="text-lg font-semibold leading-tight">wireproxy-control</h1>
-          <p class="text-xs text-muted-foreground">WireGuard + Xray · умная маршрутизация по доменам</p>
+          <p class="text-xs text-muted-foreground">
+            {{ simpleMode ? 'Простое подключение к VPN' : 'WireGuard + Xray · умная маршрутизация по доменам' }}
+          </p>
         </div>
         <div class="ml-auto flex flex-wrap items-center gap-2">
           <Button variant="ghost" size="sm" class="h-8 px-2" @click="statusOpen = true">
-            <Badge :variant="online ? 'success' : 'destructive'">
-              {{ online ? 'VPN активен' : 'VPN не активен' }}
+            <Badge :variant="vpnActive ? 'success' : 'destructive'">
+              {{ vpnActive ? 'VPN активен' : 'VPN не активен' }}
             </Badge>
           </Button>
+          <template v-if="!simpleMode">
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label="Обновить состояние"
+              title="Обновить состояние"
+              :loading="refreshing"
+              @click="refreshStatus"
+            >
+              <RefreshCw class="h-3.5 w-3.5" />
+            </Button>
+            <Button variant="outline" size="sm" @click="docsOpen = true">
+              <BookOpen class="h-3.5 w-3.5" />
+              Документация
+            </Button>
+            <Button
+              data-testid="simple-toggle"
+              variant="ghost"
+              size="sm"
+              @click="setUiMode(true)"
+            >
+              <Sparkles class="h-3.5 w-3.5" />
+              Простой режим
+            </Button>
+          </template>
           <Button
+            v-else
+            data-testid="advanced-toggle"
             variant="outline"
-            size="icon"
-            aria-label="Обновить состояние"
-            title="Обновить состояние"
-            :loading="refreshing"
-            @click="refreshStatus"
+            size="sm"
+            @click="setUiMode(false)"
           >
-            <RefreshCw class="h-3.5 w-3.5" />
-          </Button>
-          <Button variant="outline" size="sm" @click="docsOpen = true">
-            <BookOpen class="h-3.5 w-3.5" />
-            Документация
+            <SlidersHorizontal class="h-3.5 w-3.5" />
+            Расширенный режим
           </Button>
         </div>
       </div>
-      <Tabs :tabs="tabs" />
+      <Tabs v-if="!simpleMode" :tabs="tabs" />
     </header>
 
     <main class="container space-y-4 py-5">
@@ -201,7 +247,8 @@ onUnmounted(() => {
       </div>
 
       <template v-if="s">
-        <RouterView v-slot="{ Component, route: currentRoute }">
+        <SimpleView v-if="simpleMode" :s="s" @advanced="setUiMode(false)" />
+        <RouterView v-else v-slot="{ Component, route: currentRoute }">
           <Transition name="page" mode="out-in">
             <component
               :is="Component"
@@ -227,7 +274,7 @@ onUnmounted(() => {
     <DocsDialog :open="docsOpen" @close="closeDocs" />
     <StatusDialog v-if="s" :open="statusOpen" :s="s" @close="statusOpen = false" />
     <PluginSetupDialog
-      v-if="s"
+      v-if="s && !simpleMode"
       :open="firstRunOpen"
       :s="s"
       first-run

@@ -32,6 +32,7 @@ const settings = {
   wireguardEnabled: false,
   xrayEnabled: false,
   onboardingDone: true,
+  simpleUi: false,
   telegramEnabled: true,
   telegramHost: '127.0.0.1',
   telegramPort: 15443,

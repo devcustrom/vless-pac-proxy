@@ -31,7 +31,9 @@ class _WsPool:
 
     async def get(self, dc: int, is_media: bool, *, is_test_dc: bool = False
                   ) -> Optional[RawWebSocket]:
-        target_ip = proxy_config.dc_redirects.get(dc)
+        redirects = (proxy_config.media_dc_redirects if is_media
+                     else proxy_config.dc_redirects)
+        target_ip = redirects.get(dc)
         if not target_ip or proxy_config.pool_size <= 0:
             return None
         key = (dc, is_media, is_test_dc)
@@ -201,14 +203,21 @@ class _WsPool:
             pass
 
     async def warmup(self):
-        for dc, target_ip in proxy_config.dc_redirects.items():
-            if target_ip is None:
-                continue
-            for is_media in (False, True):
+        for is_media, redirects in (
+            (False, proxy_config.dc_redirects),
+            (True, proxy_config.media_dc_redirects),
+        ):
+            for dc, target_ip in redirects.items():
+                if target_ip is None:
+                    continue
                 domains = ws_domains(dc, is_media)
                 key = (dc, is_media, proxy_config.force_test_dc)
                 self._schedule_refill(key, target_ip, domains)
-        log.info("WS pool warmup started for %d DC(s)", len(proxy_config.dc_redirects))
+        log.info(
+            "WS pool warmup started for %d DC(s) + %d media DC(s)",
+            len(proxy_config.dc_redirects),
+            len(proxy_config.media_dc_redirects),
+        )
 
     def reset(self):
         loop = asyncio.get_running_loop()
