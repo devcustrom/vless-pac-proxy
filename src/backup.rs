@@ -107,6 +107,8 @@ pub fn create(state: &Arc<AppState>) -> Result<Vec<u8>> {
     zip.write_all(&db_data)?;
     let _ = std::fs::remove_file(&db_snapshot);
     let manifest = serde_json::json!({
+        "formatVersion": 2,
+        "schemaVersion": state.store.schema_version().unwrap_or(0),
         "version": env!("CARGO_PKG_VERSION"),
         "createdAt": chrono::Utc::now().to_rfc3339(),
         "hwid": state.settings_snapshot().hwid,
@@ -206,5 +208,48 @@ mod tests {
         assert!(!allowed("manager.log"));
         assert!(!allowed("certs/../evil"));
         assert!(!allowed("wireproxy-control.exe"));
+    }
+}
+
+#[cfg(test)]
+mod storage_tests {
+    use super::*;
+
+    #[test]
+    fn backup_contains_sqlite_and_restores_it() {
+        let base = std::env::temp_dir().join(format!(
+            "wpc-backup-storage-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let restored = base.join("restored");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
+        let state = crate::state::AppState::new(base.clone(), 28090, false).unwrap();
+        state
+            .mutate_domain_sets(|sets| sets.extra.push("example.com".into()))
+            .unwrap();
+        let bytes = create(&state).unwrap();
+        let zip_path = base.join("backup.zip");
+        std::fs::write(&zip_path, bytes).unwrap();
+        std::fs::create_dir_all(&restored).unwrap();
+        extract(&zip_path, &restored).unwrap();
+
+        let store = crate::store::Store::open(&restored).unwrap();
+        assert_eq!(
+            store.domain_sets().unwrap().extra,
+            vec!["example.com".to_string()]
+        );
+        assert!(store.settings_json().unwrap().is_some());
+
+        let archive = ZipArchive::new(std::fs::File::open(&zip_path).unwrap()).unwrap();
+        assert!(archive.file_names().any(|name| name == "wireproxy.db"));
+        assert!(archive
+            .file_names()
+            .any(|name| name == "backup-manifest.json"));
+        drop(archive);
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

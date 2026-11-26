@@ -71,14 +71,10 @@ fn target_list(auto: &[String]) -> Vec<String> {
 
 pub fn sync_domains(state: &AppState, auto: &[String]) {
     let targets = target_list(auto);
-    let Ok(mut settings) = state.settings.lock() else {
-        return;
-    };
-    if settings.zapret_domains == targets {
+    if state.settings_snapshot().zapret_domains == targets {
         return;
     }
-    settings.zapret_domains = targets;
-    if let Err(e) = settings.save(&state.dir) {
+    if let Err(e) = state.update_settings(|settings| settings.zapret_domains = targets) {
         wlog!("zapret: не удалось сохранить цели стратегии — {e:#}");
     }
 }

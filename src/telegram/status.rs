@@ -110,6 +110,7 @@ pub fn status_json(st: &AppState) -> Value {
         "statusAt": sidecar.as_ref().and_then(|v| v.get("updatedAt")).cloned(),
         "stats": sidecar.as_ref().and_then(|v| v.get("stats")).cloned(),
         "upstream": sidecar.as_ref().and_then(|v| v.get("upstream")).cloned(),
+        "health": sidecar.as_ref().and_then(|v| v.get("health")).cloned(),
         "probe": probe,
     })
 }

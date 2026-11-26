@@ -51,18 +51,18 @@ pub fn default_subscription_urls() -> Vec<String> {
 
 /// Добавляет стартовые подписки, только если пользователь ещё ничего не задал.
 pub fn ensure_sources(state: &AppState) -> bool {
-    ensure_sources_dir(&state.dir)
+    ensure_sources_in(&state.store)
 }
 
-fn ensure_sources_dir(dir: &std::path::Path) -> bool {
-    if !pool::read_subscriptions(dir).is_empty() {
+fn ensure_sources_in(store: &crate::store::Store) -> bool {
+    if !pool::read_subscriptions(store).is_empty() {
         return false;
     }
     let urls = default_subscription_urls();
     if urls.is_empty() {
         return false;
     }
-    match pool::write_subscriptions(dir, &urls) {
+    match pool::write_subscriptions(store, &urls) {
         Ok(()) => {
             wlog!(
                 "простой режим: добавлены подписки igareck BLACK ({} файлов)",
@@ -159,16 +159,12 @@ async fn ensure_vpn_config(state: &Arc<AppState>) -> Result<()> {
 }
 
 fn save_channels(state: &Arc<AppState>, wg: bool, xray: bool) -> Result<()> {
-    let mut settings = state.settings_snapshot();
-    settings.wireguard_enabled = wg;
-    settings.xray_enabled = xray;
-    settings.auto_rotate = true;
-    settings.system_proxy_enabled = true;
-    settings.save(&state.dir)?;
-    *state
-        .settings
-        .lock()
-        .map_err(|_| anyhow::anyhow!("настройки недоступны"))? = settings;
+    state.update_settings(|settings| {
+        settings.wireguard_enabled = wg;
+        settings.xray_enabled = xray;
+        settings.auto_rotate = true;
+        settings.system_proxy_enabled = true;
+    })?;
     Ok(())
 }
 
@@ -249,15 +245,11 @@ pub fn spawn_enable(state: Arc<AppState>) {
 
 pub fn disable(state: &Arc<AppState>) -> Result<()> {
     let proxy = crate::systemproxy::apply(state, false);
-    let mut settings = state.settings_snapshot();
-    settings.wireguard_enabled = false;
-    settings.xray_enabled = false;
-    settings.system_proxy_enabled = false;
-    settings.save(&state.dir)?;
-    *state
-        .settings
-        .lock()
-        .map_err(|_| anyhow::anyhow!("настройки недоступны"))? = settings;
+    state.update_settings(|settings| {
+        settings.wireguard_enabled = false;
+        settings.xray_enabled = false;
+        settings.system_proxy_enabled = false;
+    })?;
     state.wg.stop();
     state.xr.stop();
     set_state(state, |item| {
@@ -308,7 +300,7 @@ pub fn spawn_bootstrap(state: Arc<AppState>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_subscription_urls, ensure_sources_dir};
+    use super::{default_subscription_urls, ensure_sources_in};
 
     #[test]
     fn default_sources_are_https_black_lists() {
@@ -328,10 +320,11 @@ mod tests {
             N.fetch_add(1, Ordering::SeqCst)
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        assert!(ensure_sources_dir(&dir));
-        let subs = crate::vless::pool::read_subscriptions(&dir);
+        let store = crate::store::Store::open(&dir).unwrap();
+        assert!(ensure_sources_in(&store));
+        let subs = crate::vless::pool::read_subscriptions(&store);
         assert_eq!(subs, default_subscription_urls());
-        assert!(!ensure_sources_dir(&dir));
+        assert!(!ensure_sources_in(&store));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

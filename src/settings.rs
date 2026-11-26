@@ -1,11 +1,9 @@
-//! settings.json — совместимый с legacy-версией формат; новые поля имеют
-//! значения по умолчанию и не ломают старые файлы.
+//! Настройки приложения. Канонический источник — SQLite; `settings.json`
+//! читается только один раз для миграции старых установок.
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-
-use crate::paths;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
@@ -198,14 +196,33 @@ pub fn valid_hwid(value: &str) -> bool {
 }
 
 impl Settings {
-    pub fn load(dir: &Path) -> Self {
-        let path = match paths::in_dir(dir, "settings.json") {
-            Ok(p) => p,
-            Err(_) => return Self::default(),
-        };
-        let mut settings = match std::fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str::<Settings>(&text).unwrap_or_default(),
-            Err(_) => Self::default(),
+    /// Loads settings from SQLite. On the first run after the upgrade, a
+    /// legacy `settings.json` is imported and archived. Invalid legacy data is
+    /// an error, not a silent reset to defaults.
+    pub fn load(store: &crate::store::Store, dir: &Path) -> Result<Self> {
+        let stored = store.settings_json()?;
+        let (mut settings, from_legacy) = if let Some(json) = stored {
+            (
+                serde_json::from_str::<Settings>(&json)
+                    .context("настройки в wireproxy.db повреждены")?,
+                false,
+            )
+        } else {
+            match crate::paths::in_dir(dir, "settings.json")
+                .ok()
+                .filter(|path| path.is_file())
+            {
+                Some(path) => {
+                    let text = std::fs::read_to_string(&path)
+                        .with_context(|| format!("чтение {}", path.display()))?;
+                    (
+                        serde_json::from_str::<Settings>(&text)
+                            .context("settings.json повреждён; файл оставлен без изменений")?,
+                        true,
+                    )
+                }
+                None => (Self::default(), false),
+            }
         };
         // Старые установки с уже включённым плагином не должны получать
         // мастер первого запуска после обновления.
@@ -218,19 +235,18 @@ impl Settings {
             settings.hwid = generate_hwid();
             changed = true;
         }
-        if changed {
-            let _ = settings.save(dir);
+        if changed || from_legacy || store.settings_json()?.is_none() {
+            settings.save_to_store(store)?;
         }
-        settings
+        if from_legacy {
+            crate::storage::legacy::archive_settings(dir);
+        }
+        Ok(settings)
     }
 
-    pub fn save(&self, dir: &Path) -> Result<()> {
-        let path = paths::in_dir(dir, "settings.json")?;
+    pub fn save_to_store(&self, store: &crate::store::Store) -> Result<()> {
         let text = serde_json::to_string_pretty(self)?;
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(tmp, path)?;
-        Ok(())
+        store.save_settings_json(&text)
     }
 
     pub fn valid(&self) -> bool {
@@ -314,5 +330,39 @@ mod tests {
         assert_ne!(a, b);
         assert!(!valid_hwid(""));
         assert!(!valid_hwid("bad hwid"));
+    }
+
+    #[test]
+    fn migrates_legacy_file_and_reloads_from_db() {
+        let dir = std::env::temp_dir().join(format!(
+            "wpc-settings-store-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let legacy = Settings {
+            vpn_default: "vless".into(),
+            onboarding_done: true,
+            ..Settings::default()
+        };
+        std::fs::write(
+            dir.join("settings.json"),
+            serde_json::to_vec_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+        let store = crate::store::Store::open(&dir).unwrap();
+        let loaded = Settings::load(&store, &dir).unwrap();
+        assert_eq!(loaded.vpn_default, "vless");
+        assert!(store.settings_json().unwrap().is_some());
+        assert!(!dir.join("settings.json").exists());
+        assert!(std::fs::read_dir(&dir).unwrap().flatten().any(|entry| entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("legacy-settings-")));
+
+        let again = Settings::load(&store, &dir).unwrap();
+        assert_eq!(again.vpn_default, "vless");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

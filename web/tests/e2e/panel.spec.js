@@ -53,6 +53,8 @@ test('простой режим: одна кнопка и возврат в ра
 
   await expect(page.getByTestId('simple-enable')).toBeVisible()
   await expect(page.getByText('Telegram-прокси')).toBeVisible()
+  await expect(page.getByTestId('simple-update')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Обновление' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Каналы' })).toHaveCount(0)
   await page.getByTestId('advanced-toggle').click()
   await expect(page.getByRole('button', { name: 'Каналы' })).toBeVisible()

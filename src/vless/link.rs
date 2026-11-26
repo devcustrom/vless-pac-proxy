@@ -694,6 +694,48 @@ pub fn build_outbound(p: &ParsedLink, tag: &str) -> Value {
     }
 }
 
+/// Тег второго outbound-а, через который Shadowsocks-сервер недоступен
+/// напрямую (например, его IP блокирует провайдер).
+pub const CHAIN_TAG: &str = "wpc-chain";
+
+/// Добавляет второй outbound и направляет подключение к Shadowsocks-серверу
+/// через него. Xray умеет это через `streamSettings.sockopt.dialerProxy`.
+/// Возвращает None, если конфиг не Shadowsocks или уже содержит цепочку.
+pub fn chain_shadowsocks(config: &Value, chain_outbound: &Value) -> Option<Value> {
+    let mut chained = config.clone();
+    let outbounds = chained.get_mut("outbounds")?.as_array_mut()?;
+    let first = outbounds.first_mut()?;
+    if first.get("protocol")?.as_str()? != "shadowsocks" {
+        return None;
+    }
+    if first
+        .pointer("/streamSettings/sockopt/dialerProxy")
+        .is_some()
+    {
+        return None;
+    }
+
+    let first = first.as_object_mut()?;
+    let stream = first.entry("streamSettings").or_insert_with(|| json!({}));
+    let stream = stream.as_object_mut()?;
+    stream.entry("network").or_insert_with(|| json!("tcp"));
+    stream.entry("security").or_insert_with(|| json!("none"));
+    let sockopt = stream.entry("sockopt").or_insert_with(|| json!({}));
+    let sockopt = sockopt.as_object_mut()?;
+    sockopt.insert("dialerProxy".into(), json!(CHAIN_TAG));
+
+    let mut chain = chain_outbound.clone();
+    chain["tag"] = json!(CHAIN_TAG);
+    if let Some(chain_sockopt) = chain.pointer_mut("/streamSettings/sockopt") {
+        if let Some(obj) = chain_sockopt.as_object_mut() {
+            // Цепочка не должна ссылаться на несуществующий тег.
+            obj.remove("dialerProxy");
+        }
+    }
+    outbounds.push(chain);
+    Some(chained)
+}
+
 /// Полный конфиг xray: HTTP-инбаунд 25346 + один outbound.
 pub fn config_for_parsed(parsed: &ParsedLink) -> Value {
     let outbound = build_outbound(
@@ -784,6 +826,36 @@ mod tests {
             out["streamSettings"]["tlsSettings"]["serverName"],
             "front.example.com"
         );
+    }
+
+    #[test]
+    fn chains_shadowsocks_through_vpn_transport() {
+        let p = parse_ss("ss://YWVzLTI1Ni1nY206cGFzcw==@1.2.3.4:8388#SS").unwrap();
+        let config = config_for_parsed(&p);
+        let chain = json!({
+            "tag": "vless-out",
+            "protocol": "vless",
+            "settings": { "vnext": [{ "address": "5.6.7.8", "port": 443 }] },
+            "streamSettings": { "network": "tcp", "security": "tls" }
+        });
+        let chained = chain_shadowsocks(&config, &chain).unwrap();
+        let outbounds = chained["outbounds"].as_array().unwrap();
+        assert_eq!(outbounds.len(), 2);
+        assert_eq!(outbounds[0]["protocol"], "shadowsocks");
+        assert_eq!(
+            outbounds[0]["streamSettings"]["sockopt"]["dialerProxy"],
+            CHAIN_TAG
+        );
+        assert_eq!(outbounds[1]["tag"], CHAIN_TAG);
+        assert_eq!(outbounds[1]["protocol"], "vless");
+        // Повторно цепочку не добавляем.
+        assert!(chain_shadowsocks(&chained, &chain).is_none());
+
+        let vless = parse_vless(
+            "vless://a1b2c3d4-1111-2222-3333-444455556666@example.com:443?security=tls#V",
+        )
+        .unwrap();
+        assert!(chain_shadowsocks(&config_for_parsed(&vless), &chain).is_none());
     }
 
     #[test]

@@ -69,9 +69,11 @@ pub async fn check_domain_full(st: &Arc<AppState>, domain: &str) -> CheckOutcome
         "challenge"
     };
 
-    let in_auto = crate::lists::read_domain_file(&st.dir, "extra-domains.txt")
-        .iter()
-        .any(|item| item == domain);
+    let in_auto = st
+        .domains
+        .lock()
+        .map(|domains| domains.extra.iter().any(|item| item == domain))
+        .unwrap_or(false);
     let best = if in_auto {
         crate::route_auto::store_decision(st, domain, &probes)
     } else {
@@ -112,26 +114,27 @@ fn valid_candidate(domain: &str) -> bool {
 }
 
 async fn add_unavailable(st: &Arc<AppState>, domain: &str) {
-    use std::sync::OnceLock;
-    static ADD_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    let _guard = ADD_LOCK
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
     // Явное исключение «Напрямую» не трогаем: пользователь выбрал его сам.
     if crate::route_auto::is_direct_domain(st, domain) {
         return;
     }
-    let mut extra = crate::api::read_domains(&st.dir, "extra-domains.txt");
-    if extra.iter().any(|d| d == domain) {
+    let mut added = false;
+    let sets = match st.mutate_domain_sets(|sets| {
+        if !sets.extra.iter().any(|d| d == domain) {
+            sets.extra.push(domain.to_string());
+            added = true;
+        }
+    }) {
+        Ok(sets) => sets,
+        Err(e) => {
+            wlog!("автопроверка: не удалось добавить {domain} — {e}");
+            return;
+        }
+    };
+    if !added {
         return;
     }
-    extra.push(domain.to_string());
-    if let Err(e) = crate::api::write_domains(&st.dir, "extra-domains.txt", &extra) {
-        wlog!("автопроверка: не удалось добавить {domain} — {e}");
-        return;
-    }
-    crate::zapret::sync_domains(st, &extra);
+    crate::zapret::sync_domains(st, &sets.extra);
     crate::route_auto::spawn_check_one(st.clone(), domain.to_string());
     wlog!("автопроверка: {domain} недоступен напрямую, добавлен в авто-список");
     let st = st.clone();

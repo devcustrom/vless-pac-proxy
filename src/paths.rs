@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-/// Portable-режим: если рядом с бинарником лежат данные (wg.conf/settings.json/
-/// wireproxy.conf), используем эту папку. Иначе — системный каталог приложения.
+/// Portable-режим: если рядом с бинарником лежат данные (wireproxy.db,
+/// wg.conf, settings.json или wireproxy.conf), используем эту папку.
 pub fn resolve_data_dir(explicit: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(p) = explicit {
         return Ok(normalize_path(p));
@@ -14,6 +14,7 @@ pub fn resolve_data_dir(explicit: Option<PathBuf>) -> Result<PathBuf> {
             if dir.join("wg.conf").exists()
                 || dir.join("settings.json").exists()
                 || dir.join("wireproxy.conf").exists()
+                || dir.join("wireproxy.db").exists()
             {
                 return Ok(normalize_path(dir.to_path_buf()));
             }

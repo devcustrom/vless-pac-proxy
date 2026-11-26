@@ -12,6 +12,7 @@ import { notify, post } from '@/lib/store'
 import Badge from '@/components/ui/Badge.vue'
 import Button from '@/components/ui/Button.vue'
 import SimpleTelegramCard from '@/components/SimpleTelegramCard.vue'
+import UpdateCard from '@/components/UpdateCard.vue'
 
 const props = defineProps({ s: { type: Object, required: true } })
 const emit = defineEmits(['advanced'])
@@ -167,5 +168,9 @@ function toggle() {
     </div>
 
     <SimpleTelegramCard :s="s" @advanced="emit('advanced')" />
+
+    <div data-testid="simple-update">
+      <UpdateCard />
+    </div>
   </div>
 </template>

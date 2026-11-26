@@ -23,11 +23,8 @@ fn local_domains(state: &AppState) -> Vec<String> {
 /// Включает/выключает системный прокси и запоминает выбор пользователя.
 pub fn apply(state: &AppState, enabled: bool) -> anyhow::Result<platform::ProxyState> {
     let result = platform::set_system_proxy(enabled, &local_domains(state))?;
-    if let Ok(mut settings) = state.settings.lock() {
-        settings.system_proxy_enabled = enabled;
-        if let Err(e) = settings.save(&state.dir) {
-            wlog!("системный прокси: не удалось сохранить настройку — {e:#}");
-        }
+    if let Err(e) = state.update_settings(|settings| settings.system_proxy_enabled = enabled) {
+        wlog!("системный прокси: не удалось сохранить настройку — {e:#}");
     }
     Ok(result)
 }

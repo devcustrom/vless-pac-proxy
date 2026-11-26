@@ -1,12 +1,13 @@
 # Плагины и расширение
 
 `wireproxy-control` — один бинарник, но внутренние функции разделены на плагины.
-Плагин — это модуль бэкенда + флаг в `settings.json` + карточка/вкладка в панели.
+Плагин — это модуль бэкенда + флаг в SQLite (`wireproxy.db`, `settings`) +
+карточка/вкладка в панели.
 Выключенный плагин не запускает свои слушатели и не влияет на трафик.
 
 ## Существующие плагины
 
-| Плагин | Что делает | Флаг в settings.json |
+| Плагин | Что делает | Флаг в настройках |
 | --- | --- | --- |
 | Локальные домены | HTTP :80 / HTTPS :443, SNI, WebSocket, свой CA | `localDomainsEnabled` (по умолчанию `false`) |
 | Telegram-прокси | MTProto → WS/WireGuard/VLESS/direct, tg-ws-proxy sidecar | `telegramEnabled` (по умолчанию `false`) |
@@ -84,7 +85,7 @@ API: `GET /api/telegram`, `POST /api/telegram` (`enable`, `disable`,
 `rotate-secret`), `POST /api/telegram/link` (полная `tg://`-ссылка, только с
 `X-WPC: 1`). Автообновление sidecar проверяет манифест раз в 6 часов,
 скачивает с проверкой sha256 и перезапускает прокси. Секрет хранится в
-`settings.json`, маскируется в статусе и вырезается из логов sidecar. Сборка
+`wireproxy.db`, маскируется в статусе и вырезается из логов sidecar. Сборка
 sidecar и ограничения — в [TELEGRAM.md](TELEGRAM.md).
 
 ## Как устроен плагин локальных доменов
@@ -123,8 +124,8 @@ crate::net::local_proxy::stop(&state);  // закрывает слушатели
    pub my_plugin_enabled: bool,
    ```
 
-   `Settings::save` уже пишет JSON атомарно; старые `settings.json`
-   подхватятся благодаря `default`.
+   `AppState::update_settings` сохраняет настройки в SQLite одной
+   транзакцией; старые `settings.json` импортируются один раз при миграции.
 3. **Состояние.** При необходимости добавьте поля в `AppState` и инициализацию
    в `AppState::new`.
 4. **API.** В `src/api/mod.rs` добавьте маршруты. Все POST требуют заголовок
@@ -172,7 +173,7 @@ crate::net::local_proxy::stop(&state);  // закрывает слушатели
 
 ## Несколько WireGuard-конфигов
 
-Файлы лежат в `wg-configs/*.conf`, активный — `wg.conf` (копия выбранного).
+Профили лежат в `wireproxy.db`, активный материализуется в `wg.conf`.
 API: `GET /api/wg/configs`, `POST /api/wg/configs` с действиями
 `add | use | remove | test`. Перед применением тест поднимает временный
 wireproxy на :26249/:26250 и проверяет реальный трафик. Тест и выбор — в

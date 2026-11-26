@@ -75,8 +75,32 @@ pub async fn select_fastest(state: &Arc<AppState>) -> Result<bool> {
         return Ok(false);
     }
 
-    let active_slug = configs::active_slug(&state.dir);
-    let items = configs::list(&state.dir)?;
+    let active_slug = configs::active_slug(&state.store);
+    let items = configs::list(&state.store, &state.dir)?;
+
+    // Ручной выбор пользователя важнее скорости: если он выбрал Outline или
+    // другой конфиг и тот проходит трафик, авто-подбор не должен молча
+    // переключать канал на «более быстрый». Мёртвый профиль по-прежнему
+    // заменяется, иначе автовосстановление сломается.
+    if let Some(user_slug) = configs::user_selected_active(&state.store) {
+        let name = items
+            .iter()
+            .find(|item| item.slug == user_slug)
+            .map(|item| item.name.clone())
+            .unwrap_or_else(|| user_slug.clone());
+        match configs::test(&state.store, &state.dir, &user_slug).await {
+            Ok((ms, ip)) => {
+                wlog!(
+                    "авто-конфиг Xray: «{name}» выбран пользователем — оставляю ({ms} мс, IP {ip})"
+                );
+                return Ok(false);
+            }
+            Err(e) => wlog!(
+                "авто-конфиг Xray: выбранный пользователем «{name}» не прошёл проверку — {e:#}; ищу замену"
+            ),
+        }
+    }
+
     let managed: Vec<_> = items
         .into_iter()
         .filter(|item| {
@@ -103,7 +127,7 @@ pub async fn select_fastest(state: &Arc<AppState>) -> Result<bool> {
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut active_pool_ok = false;
     for item in &managed {
-        match configs::test(&state.dir, &item.slug).await {
+        match configs::test(&state.store, &state.dir, &item.slug).await {
             Ok((ms, ip)) => {
                 wlog!("авто-конфиг Xray: «{}» — {ms} мс, IP {ip}", item.name);
                 if item.slug == configs::POOL_SLUG {
@@ -173,9 +197,9 @@ pub async fn select_fastest(state: &Arc<AppState>) -> Result<bool> {
                     wlog!("авто-конфиг Xray: оставляю активный «{}»", candidate.name);
                     return Ok(false);
                 }
-                configs::activate_auto(&state.dir, &slug)?;
+                configs::activate_auto(&state.store, &state.dir, &slug)?;
                 state.xr.restart();
-                configs::log_active(&state.dir, &slug);
+                configs::log_active(&state.store, &state.dir, &slug);
                 wlog!(
                     "авто-конфиг Xray: выбран «{}» — {} мс",
                     candidate.name,

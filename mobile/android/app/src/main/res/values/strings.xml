@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Wireproxy</string>
+    <string name="vpn_notification_channel">VPN-подключение</string>
+    <string name="telegram_notification_channel">Telegram-прокси</string>
+</resources>

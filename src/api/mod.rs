@@ -310,16 +310,13 @@ async fn hwid_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> R
         }
         _ => crate::settings::generate_hwid(),
     };
-    let mut candidate = st.settings_snapshot();
-    candidate.hwid = value.clone();
-    if let Err(e) = candidate.save(&st.dir) {
+    if let Err(e) = st.update_settings(|settings| settings.hwid = value.clone()) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
         )
             .into_response();
     }
-    *st.settings.lock().unwrap() = candidate;
     wlog!("HWID обновлён");
     Json(json!({ "ok": true, "hwid": value })).into_response()
 }
@@ -335,11 +332,10 @@ async fn plugins_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
                 )
                     .into_response();
             }
-            let result = {
-                let mut settings = st.settings.lock().unwrap();
-                settings.zapret_enabled = enabled;
-                settings.save(&st.dir).map_err(|e| e.to_string())
-            };
+            let result = st
+                .update_settings(|settings| settings.zapret_enabled = enabled)
+                .map(|_| ())
+                .map_err(|e| e.to_string());
             if let Err(e) = result {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -353,14 +349,16 @@ async fn plugins_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
     // Telegram-плагин можно переключать отдельно, не передавая localDomains.
     if body.get("localDomains").is_none() {
         if let Some(enabled) = body.get("telegram").and_then(|value| value.as_bool()) {
-            let save_result = {
-                let mut settings = st.settings.lock().unwrap();
-                settings.telegram_enabled = enabled;
-                if enabled && !crate::telegram::config::valid_secret(&settings.telegram_secret) {
-                    settings.telegram_secret = crate::telegram::config::generate_secret();
-                }
-                settings.save(&st.dir).map_err(|e| e.to_string())
-            };
+            let save_result = st
+                .update_settings(|settings| {
+                    settings.telegram_enabled = enabled;
+                    if enabled && !crate::telegram::config::valid_secret(&settings.telegram_secret)
+                    {
+                        settings.telegram_secret = crate::telegram::config::generate_secret();
+                    }
+                })
+                .map(|_| ())
+                .map_err(|e| e.to_string());
             if let Err(e) = save_result {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -404,17 +402,12 @@ async fn plugins_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
         },
         None => None,
     };
-    {
-        let mut candidate = st.settings_snapshot();
-        candidate.local_domains_enabled = enabled;
-        if let Err(e) = candidate.save(&st.dir) {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
-            )
-                .into_response();
-        }
-        *st.settings.lock().unwrap() = candidate;
+    if let Err(e) = st.update_settings(|settings| settings.local_domains_enabled = enabled) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response();
     }
     let mut chosen_domain = None;
     if enabled {
@@ -425,15 +418,12 @@ async fn plugins_set(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
             domain: chosen.clone(),
             port: st.panel_port,
         });
-        if let Err(e) = write_local_domains(&st.dir, &list) {
+        if let Err(e) = write_local_domains(&st, &list) {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": e.to_string() })),
             )
                 .into_response();
-        }
-        if let Ok(mut current) = st.local_domains.lock() {
-            *current = list;
         }
         // Если слушатели уже работают, preflight увидит их же порты занятыми
         // и сохранит другие значения, не перезапустив listener.
@@ -547,22 +537,26 @@ async fn telegram_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>)
         "enable" | "disable" => {
             let enabled = action == "enable";
             let result: Result<(), String> = {
-                let mut settings = st.settings.lock().unwrap();
-                if enabled && !crate::telegram::config::valid_secret(&settings.telegram_secret) {
-                    settings.telegram_secret = crate::telegram::config::generate_secret();
+                let mut candidate = st.settings_snapshot();
+                if enabled && !crate::telegram::config::valid_secret(&candidate.telegram_secret) {
+                    candidate.telegram_secret = crate::telegram::config::generate_secret();
                 }
-                settings.telegram_enabled = enabled;
+                candidate.telegram_enabled = enabled;
                 if enabled {
-                    match crate::telegram::config::TelegramConfig::from_settings(
-                        &settings,
+                    if let Err(e) = crate::telegram::config::TelegramConfig::from_settings(
+                        &candidate,
                         st.panel_port,
                     ) {
-                        Ok(_) => settings.save(&st.dir).map_err(|e| e.to_string()),
-                        Err(e) => Err(format!("{e:#}")),
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({ "error": format!("{e:#}") })),
+                        )
+                            .into_response();
                     }
-                } else {
-                    settings.save(&st.dir).map_err(|e| e.to_string())
                 }
+                st.update_settings(|settings| *settings = candidate)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
             };
             if let Err(e) = result {
                 return (
@@ -596,11 +590,12 @@ async fn telegram_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>)
             Json(crate::telegram::status::status_json(&st)).into_response()
         }
         "rotate-secret" => {
-            let result: Result<(), String> = {
-                let mut settings = st.settings.lock().unwrap();
-                settings.telegram_secret = crate::telegram::config::generate_secret();
-                settings.save(&st.dir).map_err(|e| e.to_string())
-            };
+            let result: Result<(), String> = st
+                .update_settings(|settings| {
+                    settings.telegram_secret = crate::telegram::config::generate_secret();
+                })
+                .map(|_| ())
+                .map_err(|e| e.to_string());
             if let Err(e) = result {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -682,16 +677,12 @@ async fn telegram_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>)
                 )
                     .into_response();
             }
-            if let Err(e) = settings.save(&st.dir) {
+            if let Err(e) = st.update_settings(|current| *current = settings.clone()) {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({ "error": e.to_string() })),
                 )
                     .into_response();
-            }
-            {
-                let mut current = st.settings.lock().unwrap();
-                *current = settings.clone();
             }
             if settings.telegram_enabled {
                 if let Err(e) = crate::telegram::supervisor::restart(&st).await {
@@ -827,18 +818,16 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
             } else {
                 None
             };
-            {
-                let mut settings = st.settings.lock().unwrap();
+            if let Err(e) = st.update_settings(|settings| {
                 settings.zapret_preset = names[0].clone();
                 settings.zapret_presets = names.clone();
                 settings.zapret_catalog_strategy.clear();
-                if let Err(e) = settings.save(&st.dir) {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": e.to_string() })),
-                    )
-                        .into_response();
-                }
+            }) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": e.to_string() })),
+                )
+                    .into_response();
             }
             let result = match merged {
                 Some(args) => crate::zapret::preset::ensure_user_lists(&st.dir)
@@ -934,16 +923,14 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
                 )
                     .into_response();
             }
-            {
-                let mut settings = st.settings.lock().unwrap();
+            if let Err(e) = st.update_settings(|settings| {
                 settings.zapret_preset = preset.to_string();
-                if let Err(e) = settings.save(&st.dir) {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": e.to_string() })),
-                    )
-                        .into_response();
-                }
+            }) {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": e.to_string() })),
+                )
+                    .into_response();
             }
             Json(crate::zapret::status_json(&st)).into_response()
         }
@@ -1281,7 +1268,7 @@ async fn zapret_post(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -
 }
 
 async fn wg_configs_get(State(st): State<Arc<AppState>>) -> Response {
-    match crate::engines::wg_configs::list(&st.dir) {
+    match crate::engines::wg_configs::list(&st.store, &st.dir) {
         Ok(configs) => Json(json!({ "configs": configs })).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1318,9 +1305,9 @@ async fn wg_configs_post(State(st): State<Arc<AppState>>, Json(body): Json<Value
                 )
                     .into_response();
             }
-            match crate::engines::wg_configs::add(&st.dir, name, content) {
+            match crate::engines::wg_configs::add(&st.store, &st.dir, name, content) {
                 Ok(slug) => {
-                    let active = crate::engines::wg_configs::list(&st.dir)
+                    let active = crate::engines::wg_configs::list(&st.store, &st.dir)
                         .ok()
                         .and_then(|list| list.into_iter().find(|item| item.active));
                     if active
@@ -1340,10 +1327,10 @@ async fn wg_configs_post(State(st): State<Arc<AppState>>, Json(body): Json<Value
                     .into_response(),
             }
         }
-        "use" => match crate::engines::wg_configs::activate(&st.dir, slug) {
+        "use" => match crate::engines::wg_configs::activate(&st.store, &st.dir, slug) {
             Ok(()) => {
                 st.wg.restart();
-                crate::engines::wg_configs::log_active(&st.dir, slug);
+                crate::engines::wg_configs::log_active(&st.store, &st.dir, slug);
                 Json(json!({ "ok": true })).into_response()
             }
             Err(e) => (
@@ -1352,7 +1339,7 @@ async fn wg_configs_post(State(st): State<Arc<AppState>>, Json(body): Json<Value
             )
                 .into_response(),
         },
-        "remove" => match crate::engines::wg_configs::remove(&st.dir, slug) {
+        "remove" => match crate::engines::wg_configs::remove(&st.store, &st.dir, slug) {
             Ok((removed_active, active)) => {
                 if removed_active {
                     if active.is_some() {
@@ -1370,7 +1357,7 @@ async fn wg_configs_post(State(st): State<Arc<AppState>>, Json(body): Json<Value
             )
                 .into_response(),
         },
-        "test" => match crate::engines::wg_configs::test(&st.dir, slug).await {
+        "test" => match crate::engines::wg_configs::test(&st.store, &st.dir, slug).await {
             Ok((ms, ip)) => Json(json!({ "ok": true, "ms": ms, "ip": ip })).into_response(),
             Err(e) => (
                 StatusCode::BAD_REQUEST,
@@ -1389,12 +1376,12 @@ async fn wg_configs_post(State(st): State<Arc<AppState>>, Json(body): Json<Value
 async fn wg_config(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
     let action = body.get("action").and_then(|v| v.as_str()).unwrap_or("set");
     if action == "clear" {
-        let active = crate::engines::wg_configs::list(&st.dir)
+        let active = crate::engines::wg_configs::list(&st.store, &st.dir)
             .ok()
             .and_then(|list| list.into_iter().find(|item| item.active))
             .map(|item| item.slug);
         if let Some(slug) = active {
-            let _ = crate::engines::wg_configs::remove(&st.dir, &slug);
+            let _ = crate::engines::wg_configs::remove(&st.store, &st.dir, &slug);
         }
         let _ = std::fs::remove_file(st.dir.join("wg.conf"));
         let _ = std::fs::remove_file(st.dir.join("wireproxy.conf"));
@@ -1403,9 +1390,9 @@ async fn wg_config(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> 
         return Json(json!({ "ok": true, "configured": false })).into_response();
     }
     let content = body.get("content").and_then(|v| v.as_str()).unwrap_or("");
-    match crate::engines::wg_configs::add(&st.dir, "main", content)
-        .and_then(|slug| crate::engines::wg_configs::activate(&st.dir, &slug).map(|_| slug))
-    {
+    match crate::engines::wg_configs::add(&st.store, &st.dir, "main", content).and_then(|slug| {
+        crate::engines::wg_configs::activate(&st.store, &st.dir, &slug).map(|_| slug)
+    }) {
         Ok(slug) => {
             st.wg.restart();
             let endpoint = crate::engines::wireproxy::endpoint(&st.dir).unwrap_or_default();
@@ -1823,9 +1810,10 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
             l.refreshing,
         )
     };
-    let extra = read_domains(&st.dir, "extra-domains.txt");
-    let direct_domains = read_domains(&st.dir, "direct-domains.txt");
-    let vpn_only = read_domains(&st.dir, "vpn-only-domains.txt");
+    let user_domains = st.domain_sets_snapshot();
+    let extra = user_domains.extra;
+    let direct_domains = user_domains.direct;
+    let vpn_only = user_domains.vpn_only;
     let (auto_routes, auto_checking) = st
         .auto_routes
         .lock()
@@ -1841,7 +1829,7 @@ async fn status(State(st): State<Arc<AppState>>) -> Json<Value> {
             (Value::Object(map), routes.checking.len())
         })
         .unwrap_or((Value::Object(serde_json::Map::new()), 0));
-    let subscriptions = read_subs(&st.dir);
+    let subscriptions = read_subs(&st.store);
     let (local_domains, local_http_err, local_https_err) = {
         let domains = st
             .local_domains
@@ -2032,89 +2020,58 @@ async fn extra(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
         )
             .into_response();
     };
-    let mut extra = read_domains(&st.dir, "extra-domains.txt");
-    let mut direct = read_domains(&st.dir, "direct-domains.txt");
-    let mut vpn_only = read_domains(&st.dir, "vpn-only-domains.txt");
-    if action == "direct-remove" {
-        let before = direct.len();
-        direct.retain(|item| *item != domain);
-        if direct.len() != before {
-            if let Err(e) = write_domains(&st.dir, "direct-domains.txt", &direct) {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": e.to_string() })),
-                )
-                    .into_response();
+    let current = st.domain_sets_snapshot();
+    let mut next = current.clone();
+    match action {
+        "direct-remove" => {
+            next.direct.retain(|item| *item != domain);
+        }
+        "vpn-only-add" => {
+            if !next.extra.contains(&domain) {
+                next.extra.push(domain.clone());
             }
-            spawn_refresh(&st);
-        }
-        return Json(json!({
-            "ok": true,
-            "direct": read_domains(&st.dir, "direct-domains.txt"),
-        }))
-        .into_response();
-    }
-    if action == "vpn-only-add" || action == "vpn-only-remove" {
-        if action == "vpn-only-add" {
-            if !extra.contains(&domain) {
-                extra.push(domain.clone());
+            next.direct.retain(|item| *item != domain);
+            if !next.vpn_only.contains(&domain) {
+                next.vpn_only.push(domain.clone());
             }
-            direct.retain(|item| *item != domain);
-            if !vpn_only.contains(&domain) {
-                vpn_only.push(domain.clone());
+        }
+        "vpn-only-remove" => {
+            next.vpn_only.retain(|item| *item != domain);
+        }
+        "add" | "remove" | "direct-add" | "route" => {
+            let (add, direct_add) = match action {
+                "add" => (true, false),
+                "remove" => (false, false),
+                "direct-add" => (false, true),
+                "route" => match body.get("enabled").and_then(Value::as_bool) {
+                    Some(true) => (true, false),
+                    Some(false) => (false, true),
+                    None => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({ "error": "для route нужен enabled" })),
+                        )
+                            .into_response();
+                    }
+                },
+                _ => unreachable!(),
+            };
+            if add {
+                if !next.extra.contains(&domain) {
+                    next.extra.push(domain.clone());
+                }
+                next.direct.retain(|item| *item != domain);
+            } else if direct_add {
+                next.extra.retain(|item| *item != domain);
+                next.vpn_only.retain(|item| *item != domain);
+                if !next.direct.contains(&domain) {
+                    next.direct.push(domain.clone());
+                }
+            } else {
+                next.extra.retain(|item| *item != domain);
+                next.vpn_only.retain(|item| *item != domain);
             }
-        } else {
-            vpn_only.retain(|item| *item != domain);
         }
-        if let Err(e) = write_domains(&st.dir, "extra-domains.txt", &extra) {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
-            )
-                .into_response();
-        }
-        if let Err(e) = write_domains(&st.dir, "direct-domains.txt", &direct) {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
-            )
-                .into_response();
-        }
-        if let Err(e) = write_domains(&st.dir, "vpn-only-domains.txt", &vpn_only) {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e.to_string() })),
-            )
-                .into_response();
-        }
-        crate::zapret::sync_domains(&st, &extra);
-        crate::route_auto::spawn_check_one(st.clone(), domain.clone());
-        spawn_refresh(&st);
-        return Json(json!({
-            "ok": true,
-            "extra": read_domains(&st.dir, "extra-domains.txt"),
-            "direct": read_domains(&st.dir, "direct-domains.txt"),
-            "vpnOnly": read_domains(&st.dir, "vpn-only-domains.txt"),
-        }))
-        .into_response();
-    }
-    // add — в авто-список; remove — только убрать из авто;
-    // direct-add — принудительно напрямую (и убрать из авто).
-    let (add, direct_add) = match action {
-        "add" => (true, false),
-        "remove" => (false, false),
-        "direct-add" => (false, true),
-        "route" => match body.get("enabled").and_then(Value::as_bool) {
-            Some(true) => (true, false),
-            Some(false) => (false, true),
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "для route нужен enabled" })),
-                )
-                    .into_response();
-            }
-        },
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -2124,56 +2081,32 @@ async fn extra(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
             )
                 .into_response();
         }
+    }
+
+    let sets = match st.mutate_domain_sets(|sets| *sets = next) {
+        Ok(sets) => sets,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
     };
-    if add {
-        if !extra.contains(&domain) {
-            extra.push(domain.clone());
-        }
-        direct.retain(|item| *item != domain);
-    } else if direct_add {
-        extra.retain(|item| *item != domain);
-        vpn_only.retain(|item| *item != domain);
-        if !direct.contains(&domain) {
-            direct.push(domain.clone());
-        }
-    } else {
-        extra.retain(|item| *item != domain);
-        vpn_only.retain(|item| *item != domain);
-    }
-    if let Err(e) = write_domains(&st.dir, "extra-domains.txt", &extra) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response();
-    }
-    if let Err(e) = write_domains(&st.dir, "direct-domains.txt", &direct) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response();
-    }
-    if let Err(e) = write_domains(&st.dir, "vpn-only-domains.txt", &vpn_only) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response();
-    }
-    crate::zapret::sync_domains(&st, &extra);
-    if add {
+    crate::zapret::sync_domains(&st, &sets.extra);
+    if action == "add" || action == "vpn-only-add" {
         crate::route_auto::spawn_check_one(st.clone(), domain.clone());
-    } else {
+    } else if action == "remove" || action == "direct-add" {
         crate::route_auto::remove_decision(&st, &domain);
     }
     spawn_refresh(&st);
     Json(json!({
         "ok": true,
-        "enabled": add,
-        "extra": read_domains(&st.dir, "extra-domains.txt"),
-        "direct": read_domains(&st.dir, "direct-domains.txt"),
-        "vpnOnly": read_domains(&st.dir, "vpn-only-domains.txt"),
+        "enabled": !matches!(action, "remove" | "direct-remove" | "direct-add" | "vpn-only-remove")
+            && !(action == "route" && body.get("enabled").and_then(Value::as_bool) == Some(false)),
+        "extra": sets.extra,
+        "direct": sets.direct,
+        "vpnOnly": sets.vpn_only,
     }))
     .into_response()
 }
@@ -2217,7 +2150,7 @@ fn restart_xray_if_enabled(st: &Arc<AppState>) {
 }
 
 async fn xray_configs_get(State(st): State<Arc<AppState>>) -> Response {
-    match crate::vless::configs::list(&st.dir) {
+    match crate::vless::configs::list(&st.store, &st.dir) {
         Ok(configs) => Json(json!({ "configs": configs })).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2248,9 +2181,10 @@ async fn xray_configs_post(State(st): State<Arc<AppState>>, Json(body): Json<Val
                 .unwrap_or("");
             let result = async {
                 let (parsed, dynamic) = resolve_xray_link(&st, link).await?;
-                let slug = crate::vless::configs::add_parsed(&st.dir, name, &parsed, dynamic)?;
+                let slug =
+                    crate::vless::configs::add_parsed(&st.store, &st.dir, name, &parsed, dynamic)?;
                 let active =
-                    crate::vless::configs::active_slug(&st.dir).as_deref() == Some(slug.as_str());
+                    crate::vless::configs::active_slug(&st.store).as_deref() == Some(slug.as_str());
                 Ok::<_, anyhow::Error>((slug, active))
             }
             .await;
@@ -2259,7 +2193,7 @@ async fn xray_configs_post(State(st): State<Arc<AppState>>, Json(body): Json<Val
                     if active {
                         clear_pool_active(&st);
                         restart_xray_if_enabled(&st);
-                        crate::vless::configs::log_active(&st.dir, &slug);
+                        crate::vless::configs::log_active(&st.store, &st.dir, &slug);
                     }
                     Json(json!({ "ok": true, "slug": slug, "active": active })).into_response()
                 }
@@ -2270,11 +2204,11 @@ async fn xray_configs_post(State(st): State<Arc<AppState>>, Json(body): Json<Val
                     .into_response(),
             }
         }
-        "use" => match crate::vless::configs::activate(&st.dir, slug) {
+        "use" => match crate::vless::configs::activate(&st.store, &st.dir, slug) {
             Ok(()) => {
                 clear_pool_active(&st);
                 restart_xray_if_enabled(&st);
-                crate::vless::configs::log_active(&st.dir, slug);
+                crate::vless::configs::log_active(&st.store, &st.dir, slug);
                 Json(json!({ "ok": true })).into_response()
             }
             Err(e) => (
@@ -2283,7 +2217,7 @@ async fn xray_configs_post(State(st): State<Arc<AppState>>, Json(body): Json<Val
             )
                 .into_response(),
         },
-        "remove" => match crate::vless::configs::remove(&st.dir, slug) {
+        "remove" => match crate::vless::configs::remove(&st.store, &st.dir, slug) {
             Ok((was_active, next)) => {
                 if slug == crate::vless::configs::POOL_SLUG {
                     clear_pool_active(&st);
@@ -2304,7 +2238,7 @@ async fn xray_configs_post(State(st): State<Arc<AppState>>, Json(body): Json<Val
             )
                 .into_response(),
         },
-        "test" => match crate::vless::configs::test(&st.dir, slug).await {
+        "test" => match crate::vless::configs::test(&st.store, &st.dir, slug).await {
             Ok((ms, ip)) => Json(json!({ "ok": true, "ms": ms, "ip": ip })).into_response(),
             Err(e) => (
                 StatusCode::BAD_REQUEST,
@@ -2332,8 +2266,9 @@ async fn vless(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
                 } else {
                     parsed.name.clone()
                 };
-                let slug = crate::vless::configs::add_parsed(&st.dir, &name, &parsed, dynamic)?;
-                crate::vless::configs::activate(&st.dir, &slug)?;
+                let slug =
+                    crate::vless::configs::add_parsed(&st.store, &st.dir, &name, &parsed, dynamic)?;
+                crate::vless::configs::activate(&st.store, &st.dir, &slug)?;
                 let info = crate::vless::link::link_info(&parsed);
                 Ok::<_, anyhow::Error>((info, slug))
             }
@@ -2342,7 +2277,7 @@ async fn vless(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
                 Ok((info, slug)) => {
                     clear_pool_active(&st);
                     restart_xray_if_enabled(&st);
-                    crate::vless::configs::log_active(&st.dir, &slug);
+                    crate::vless::configs::log_active(&st.store, &st.dir, &slug);
                     Json(json!({ "ok": true, "info": info })).into_response()
                 }
                 Err(e) => (
@@ -2353,8 +2288,8 @@ async fn vless(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
             }
         }
         "remove-link" => {
-            let result = if let Some(slug) = crate::vless::configs::active_slug(&st.dir) {
-                crate::vless::configs::remove(&st.dir, &slug).map(|_| ())
+            let result = if let Some(slug) = crate::vless::configs::active_slug(&st.store) {
+                crate::vless::configs::remove(&st.store, &st.dir, &slug).map(|_| ())
             } else {
                 for name in [
                     "xray-config.json",
@@ -2368,7 +2303,7 @@ async fn vless(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
             match result {
                 Ok(()) => {
                     clear_pool_active(&st);
-                    if crate::vless::configs::active_slug(&st.dir).is_some() {
+                    if crate::vless::configs::active_slug(&st.store).is_some() {
                         restart_xray_if_enabled(&st);
                     } else {
                         st.xr.stop();
@@ -2396,17 +2331,16 @@ async fn vless(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Resp
                 )
                     .into_response();
             }
-            let mut candidate = st.settings_snapshot();
-            candidate.vpn_default = value.to_string();
-            if let Err(e) = candidate.save(&st.dir) {
+            if let Err(e) = st.update_settings(|settings| {
+                settings.vpn_default = value.to_string();
+            }) {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({ "error": e.to_string() })),
                 )
                     .into_response();
             }
-            *st.settings.lock().unwrap() = candidate.clone();
-            Json(json!({ "ok": true, "vpnDefault": candidate.vpn_default })).into_response()
+            Json(json!({ "ok": true, "vpnDefault": value })).into_response()
         }
         "restart" => {
             st.xr.restart();
@@ -2465,12 +2399,8 @@ fn start_enabled_engines(state: &Arc<AppState>) {
 }
 
 async fn onboarding_done(State(st): State<Arc<AppState>>) -> Json<Value> {
-    let mut candidate = st.settings_snapshot();
-    candidate.onboarding_done = true;
-    if let Err(e) = candidate.save(&st.dir) {
+    if let Err(e) = st.update_settings(|settings| settings.onboarding_done = true) {
         wlog!("onboarding: сохранение настроек — {e:#}");
-    } else {
-        *st.settings.lock().unwrap() = candidate;
     }
     Json(json!({ "ok": true, "onboardingDone": true }))
 }
@@ -2483,16 +2413,13 @@ async fn ui_mode(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Re
         )
             .into_response();
     };
-    let mut settings = st.settings_snapshot();
-    settings.simple_ui = simple;
-    if let Err(e) = settings.save(&st.dir) {
+    if let Err(e) = st.update_settings(|settings| settings.simple_ui = simple) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
         )
             .into_response();
     }
-    *st.settings.lock().unwrap() = settings;
     Json(json!({ "ok": true, "simpleUi": simple })).into_response()
 }
 
@@ -2544,20 +2471,19 @@ async fn channels(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> R
         current.xray_enabled
     });
     if enabled.is_some() {
-        let mut candidate = st.settings_snapshot();
-        if channel == "wireguard" {
-            candidate.wireguard_enabled = target;
-        } else {
-            candidate.xray_enabled = target;
-        }
-        if let Err(e) = candidate.save(&st.dir) {
+        if let Err(e) = st.update_settings(|settings| {
+            if channel == "wireguard" {
+                settings.wireguard_enabled = target;
+            } else {
+                settings.xray_enabled = target;
+            }
+        }) {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": e.to_string() })),
             )
                 .into_response();
         }
-        *st.settings.lock().unwrap() = candidate;
     }
     let engine = if channel == "wireguard" {
         &st.wg
@@ -2608,39 +2534,44 @@ async fn auto(State(st): State<Arc<AppState>>, Json(body): Json<Value>) -> Respo
                 .into_response();
         }
     }
-    let mut s = st.settings.lock().unwrap();
     let mut enable_auto = false;
-    if let Some(v) = body.get("autoRotate").and_then(|v| v.as_bool()) {
-        s.auto_rotate = v;
-        enable_auto = v;
-    }
-    if let Some(v) = body.get("directFirst").and_then(|v| v.as_bool()) {
-        s.direct_first = v;
+    let mut direct_first_changed = false;
+    let snapshot = match st.update_settings(|s| {
+        if let Some(v) = body.get("autoRotate").and_then(|v| v.as_bool()) {
+            s.auto_rotate = v;
+            enable_auto = v;
+        }
+        if let Some(v) = body.get("directFirst").and_then(|v| v.as_bool()) {
+            s.direct_first = v;
+            direct_first_changed = true;
+        }
+        if let Some(v) = hours {
+            s.auto_pool_refresh_hours = v;
+        }
+        if let Some(v) = body.get("autoCheckSites").and_then(|v| v.as_bool()) {
+            s.auto_check_sites = v;
+        }
+        if let Some(v) = body.get("autoAddUnavailable").and_then(|v| v.as_bool()) {
+            s.auto_add_unavailable = v;
+        }
+        if let Some(v) = body.get("autoDirectPrivate").and_then(|v| v.as_bool()) {
+            s.auto_direct_private = v;
+        }
+    }) {
+        Ok(snapshot) => snapshot,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": e.to_string() })),
+            )
+                .into_response();
+        }
+    };
+    if direct_first_changed {
         if let Ok(mut cache) = st.direct_probe.lock() {
             cache.clear();
         }
     }
-    if let Some(v) = hours {
-        s.auto_pool_refresh_hours = v;
-    }
-    if let Some(v) = body.get("autoCheckSites").and_then(|v| v.as_bool()) {
-        s.auto_check_sites = v;
-    }
-    if let Some(v) = body.get("autoAddUnavailable").and_then(|v| v.as_bool()) {
-        s.auto_add_unavailable = v;
-    }
-    if let Some(v) = body.get("autoDirectPrivate").and_then(|v| v.as_bool()) {
-        s.auto_direct_private = v;
-    }
-    if let Err(e) = s.save(&st.dir) {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response();
-    }
-    let snapshot = s.clone();
-    drop(s);
     if enable_auto {
         crate::config_auto::spawn_once(st.clone());
     }
@@ -2724,11 +2655,8 @@ async fn local_domains_post(State(st): State<Arc<AppState>>, Json(body): Json<Va
                 .into_response();
         }
     }
-    match write_local_domains(&st.dir, &list) {
+    match write_local_domains(&st, &list) {
         Ok(()) => {
-            if let Ok(mut d) = st.local_domains.lock() {
-                *d = list.clone();
-            }
             reload_local_tls(&st).await;
             if crate::systemproxy::get_system_proxy()
                 .map(|state| state.enabled)
@@ -3068,7 +2996,7 @@ async fn subscriptions(State(st): State<Arc<AppState>>, Json(body): Json<Value>)
         .unwrap_or("")
         .trim()
         .to_string();
-    let mut list = crate::vless::pool::read_subscriptions(&st.dir);
+    let mut list = crate::vless::pool::read_subscriptions(&st.store);
     let mut imported = false;
     let mut imported_count = 0usize;
     match action {
@@ -3134,7 +3062,7 @@ async fn subscriptions(State(st): State<Arc<AppState>>, Json(body): Json<Value>)
                 .into_response();
         }
     }
-    if let Err(e) = crate::vless::pool::write_subscriptions(&st.dir, &list) {
+    if let Err(e) = crate::vless::pool::write_subscriptions(&st.store, &list) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
@@ -3152,7 +3080,7 @@ async fn subscriptions(State(st): State<Arc<AppState>>, Json(body): Json<Value>)
     Json(json!({
         "ok": true,
         "added": imported_count,
-        "subscriptions": crate::vless::pool::read_subscriptions(&st.dir)
+        "subscriptions": crate::vless::pool::read_subscriptions(&st.store)
     }))
     .into_response()
 }
@@ -3167,44 +3095,22 @@ pub fn write_domains(dir: &std::path::Path, name: &str, list: &[String]) -> std:
     crate::lists::write_domain_file(dir, name, list)
 }
 
-fn read_subs(dir: &std::path::Path) -> Vec<String> {
-    let Ok(path) = crate::paths::in_dir(dir, "subscriptions.txt") else {
-        return Vec::new();
-    };
-    std::fs::read_to_string(path)
-        .map(|t| {
-            t.lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                .collect()
-        })
-        .unwrap_or_default()
+fn read_subs(store: &crate::store::Store) -> Vec<String> {
+    store.subscription_urls().unwrap_or_default()
 }
 
 fn read_local_domains(st: &Arc<AppState>) -> Vec<crate::net::local_proxy::LocalDomain> {
-    let Ok(path) = crate::paths::in_dir(&st.dir, "local-domains.txt") else {
-        return Vec::new();
-    };
-    std::fs::read_to_string(path)
-        .map(|t| crate::net::local_proxy::parse_config(&t))
+    st.local_domains
+        .lock()
+        .map(|list| list.clone())
         .unwrap_or_default()
 }
 
 fn write_local_domains(
-    dir: &std::path::Path,
+    st: &Arc<AppState>,
     list: &[crate::net::local_proxy::LocalDomain],
-) -> std::io::Result<()> {
-    let path = crate::paths::in_dir(dir, "local-domains.txt")
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
-    let mut text = String::from(
-        "# Плагин локальных доменов: домен = порт (по одному в строке).\n\
-         # *.localhost браузеры резолвят в 127.0.0.1 без правки hosts.\n\
-         # Для «настоящих» имён запустите local-domains-hosts.bat от администратора.\n\n",
-    );
-    for d in list {
-        text.push_str(&format!("{} = {}\n", d.domain, d.port));
-    }
-    std::fs::write(path, text)
+) -> anyhow::Result<()> {
+    st.set_local_domains(list)
 }
 
 fn spawn_refresh(st: &Arc<AppState>) {

@@ -135,6 +135,20 @@ const activeOrder = computed(() => t.value.order || [])
 const directResult = computed(() => t.value.probe?.direct || {})
 const stats = computed(() => t.value.stats || {})
 const upstream = computed(() => t.value.upstream || {})
+const health = computed(() => t.value.health || {})
+const healthDcs = computed(() => (Array.isArray(health.value.dcs) ? health.value.dcs : []))
+const healthTcp = computed(() => (Array.isArray(health.value.tcp) ? health.value.tcp : []))
+const healthTcpOk = computed(() => healthTcp.value.filter((item) => item.ok).length)
+const healthTcpFailed = computed(() =>
+  healthTcp.value
+    .filter((item) => !item.ok)
+    .map((item) => `DC${item.dc}`)
+    .join(', '),
+)
+const healthAt = computed(() => {
+  const at = Number(health.value.at || 0)
+  return at > 0 ? new Date(at * 1000).toLocaleTimeString('ru-RU') : ''
+})
 
 function fmtBytes(value) {
   const n = Number(value || 0)
@@ -461,9 +475,34 @@ async function openLink() {
           <span v-if="!activeOrder.length" class="text-destructive">не настроен</span>
         </div>
 
+        <div class="rounded-lg border bg-background/40 p-2.5 text-xs">
+          <div class="flex items-center justify-between gap-2">
+            <span class="font-medium">Фоновая проверка DC</span>
+            <span v-if="healthAt" class="text-muted-foreground">{{ healthAt }}</span>
+          </div>
+          <div v-if="healthDcs.length" class="mt-1.5 flex flex-wrap gap-1.5">
+            <Badge
+              v-for="item in healthDcs"
+              :key="`${item.dc}-${item.media ? 'media' : 'normal'}`"
+              :variant="item.ok ? 'success' : 'destructive'"
+              :title="item.error || `${item.domain} → ${item.target}`"
+            >
+              DC{{ item.dc }}{{ item.media ? ' media' : '' }}:
+              {{ item.ok ? `${item.latencyMs} мс` : 'нет' }}
+            </Badge>
+          </div>
+          <p v-else class="mt-1 text-muted-foreground">
+            Данных пока нет — проверка запускается вместе с прокси.
+          </p>
+          <p v-if="healthTcp.length" class="mt-1 text-muted-foreground">
+            TCP напрямую: {{ healthTcpOk }}/{{ healthTcp.length }}
+            <span v-if="healthTcpFailed">· недоступны {{ healthTcpFailed }}</span>
+          </p>
+        </div>
+
         <div class="flex flex-wrap items-center gap-2">
           <Button size="sm" variant="ghost" :loading="probingDirect" :disabled="anyBusy" @click="probeDirect">
-            Проверить напрямую
+            Проверить TCP сейчас
           </Button>
           <span v-if="t.probe?.at" class="text-xs text-muted-foreground">
             {{ new Date(t.probe.at).toLocaleTimeString('ru-RU') }}

@@ -506,9 +506,7 @@ async fn wait_started(state: Arc<AppState>) {
         .unwrap_or(false);
     if running && !single_domain {
         let stamp = crate::zapret::domains_stamp(&state.settings_snapshot().zapret_domains);
-        let mut settings = state.settings.lock().unwrap();
-        settings.zapret_strategy_stamp = stamp;
-        if let Err(e) = settings.save(&state.dir) {
+        if let Err(e) = state.update_settings(|settings| settings.zapret_strategy_stamp = stamp) {
             wlog!("zapret: не удалось сохранить отпечаток стратегии — {e:#}");
         }
     }

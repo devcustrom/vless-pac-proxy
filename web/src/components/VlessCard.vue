@@ -74,7 +74,11 @@ async function addConfig(output) {
     const result = await addAction.mutateAsync(output)
     reset(form)
     addOpen.value = false
-    notify(result.active ? 'Xray-конфиг добавлен и активен' : 'Xray-конфиг добавлен')
+    notify(
+      result.active
+        ? 'Xray-конфиг добавлен и активен'
+        : 'Xray-конфиг добавлен. Нажмите «Использовать», чтобы переключиться',
+    )
   } catch {
     /* тост уже показан */
   }
@@ -294,7 +298,7 @@ async function testAll() {
     <Dialog
       :open="addOpen"
       title="Добавить Xray-конфиг"
-      description="Вставьте ссылку, JSON Outline или выберите файл."
+      description="Вставьте ссылку, JSON Outline или выберите файл. Новый конфиг не меняет активный, пока вы не нажмёте «Использовать»."
       @close="addOpen = false"
     >
       <Form :of="form" class="space-y-2" @submit="addConfig">

@@ -111,6 +111,7 @@ class _WsPool:
                     * (2 ** min(failures - 1, 12)),
                     self.REFILL_BACKOFF_MAX,
                 )
+                delay *= random.uniform(0.85, 1.15)
                 self._refill_after[key] = time.monotonic() + delay
                 log.info(
                     "WS pool refill failed for DC%d%s%s, retry in %.0fs",
@@ -195,6 +196,20 @@ class _WsPool:
                           domain, path, target_ip, fronted)
                 return ws
         return None
+
+    def on_health_recovered(self, dc: int, is_media: bool) -> None:
+        """Reset backoff immediately when the background monitor sees a route."""
+        redirects = (proxy_config.media_dc_redirects if is_media
+                     else proxy_config.dc_redirects)
+        target_ip = redirects.get(dc)
+        if not target_ip:
+            return
+        key = (dc, is_media, proxy_config.force_test_dc)
+        self._refill_failures.pop(key, None)
+        self._refill_after.pop(key, None)
+        self._schedule_refill(key, target_ip, ws_domains(dc, is_media))
+        log.info("WS pool backoff reset for recovered DC%d%s",
+                 dc, " media" if is_media else "")
 
     async def _quiet_close(self, ws):
         try:
@@ -332,6 +347,7 @@ class _CfWorkerPool:
                     * (2 ** min(failures - 1, 12)),
                     self.REFILL_BACKOFF_MAX,
                 )
+                delay *= random.uniform(0.85, 1.15)
                 self._refill_after[dc] = time.monotonic() + delay
                 log.info("CF worker pool refill failed for DC%d, retry in %.0fs",
                          dc, delay)

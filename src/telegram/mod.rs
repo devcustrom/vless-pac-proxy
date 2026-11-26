@@ -59,8 +59,7 @@ pub fn set_enabled(state: &Arc<AppState>, enabled: bool) -> Result<()> {
         if enabled {
             config::TelegramConfig::from_settings(&candidate, state.panel_port)?;
         }
-        candidate.save(&state.dir)?;
-        *state.settings.lock().unwrap() = candidate;
+        state.update_settings(|settings| *settings = candidate)?;
     }
     if enabled {
         supervisor::start(state)?;

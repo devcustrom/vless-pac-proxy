@@ -1,13 +1,12 @@
 //! Менеджер сохранённых Xray-конфигов: VLESS, VMess, Trojan, Shadowsocks и
 //! Outline. Повторяет модель WireGuard-конфигов: отдельные файлы, активный
 //! конфиг, live-проверка трафика и переключение без повторного ввода ссылки.
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::net::TcpStream;
 
@@ -46,141 +45,12 @@ pub struct XrayConfigInfo {
     pub dynamic: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default)]
 struct StoredInfo {
-    #[serde(default)]
     protocol: String,
-    #[serde(default)]
     address: String,
-    #[serde(default)]
     port: u16,
-    #[serde(default)]
     dynamic: bool,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct Meta {
-    #[serde(default)]
-    active: Option<String>,
-    /// true, если активный конфиг выбран пользователем (а не импортирован из
-    /// старого xray-config.json). Пул не должен незаметно его перезаписывать.
-    #[serde(default)]
-    user_selected: bool,
-    #[serde(default)]
-    names: HashMap<String, String>,
-    #[serde(default)]
-    items: HashMap<String, StoredInfo>,
-}
-
-fn configs_dir(dir: &Path) -> PathBuf {
-    dir.join("xray-configs")
-}
-
-fn meta_path(dir: &Path) -> PathBuf {
-    dir.join("xray-configs.json")
-}
-
-fn validate_slug(slug: &str) -> Result<()> {
-    if slug.is_empty()
-        || slug.len() > 120
-        || !slug
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-        || slug == "."
-        || slug == ".."
-    {
-        bail!("некорректное имя конфига");
-    }
-    Ok(())
-}
-
-fn config_path(dir: &Path, slug: &str) -> Result<PathBuf> {
-    validate_slug(slug)?;
-    Ok(configs_dir(dir).join(format!("{slug}.json")))
-}
-
-fn slugify(name: &str) -> String {
-    let mut out = String::new();
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-        } else if (ch.is_whitespace() || ch == '-' || ch == '_') && !out.ends_with('-') {
-            out.push('-');
-        }
-    }
-    let out = out.trim_matches('-').to_string();
-    if out.is_empty() {
-        format!("xray-{}", chrono::Utc::now().timestamp())
-    } else {
-        out
-    }
-}
-
-fn unique_slug(dir: &Path, name: &str) -> String {
-    let base = slugify(name);
-    let mut slug = base.clone();
-    let mut index = 2;
-    while config_path(dir, &slug)
-        .map(|path| path.exists())
-        .unwrap_or(false)
-    {
-        slug = format!("{base}-{index}");
-        index += 1;
-    }
-    slug
-}
-
-fn read_meta(dir: &Path) -> Meta {
-    std::fs::read_to_string(meta_path(dir))
-        .ok()
-        .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
-}
-
-fn write_meta(dir: &Path, meta: &Meta) -> Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let path = meta_path(dir);
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(meta)?)?;
-    let _ = std::fs::remove_file(&path);
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
-}
-
-fn list_slugs(dir: &Path) -> Vec<String> {
-    let Ok(entries) = std::fs::read_dir(configs_dir(dir)) else {
-        return Vec::new();
-    };
-    let mut out: Vec<String> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path.extension().map(|ext| ext != "json").unwrap_or(true) {
-                return None;
-            }
-            let slug = path.file_stem()?.to_str()?.to_string();
-            validate_slug(&slug).ok().map(|_| slug)
-        })
-        .collect();
-    out.sort();
-    out
-}
-
-fn read_config(dir: &Path, slug: &str) -> Result<Value> {
-    let path = config_path(dir, slug)?;
-    let text =
-        std::fs::read_to_string(&path).with_context(|| format!("конфиг {slug} не найден"))?;
-    serde_json::from_str(&text).with_context(|| format!("конфиг {slug} повреждён"))
-}
-
-fn write_config_file(dir: &Path, slug: &str, config: &Value) -> Result<()> {
-    std::fs::create_dir_all(configs_dir(dir))?;
-    let path = config_path(dir, slug)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(config)?)?;
-    let _ = std::fs::remove_file(&path);
-    std::fs::rename(&tmp, &path)?;
-    Ok(())
 }
 
 fn info_from_config(config: &Value) -> Option<StoredInfo> {
@@ -204,85 +74,148 @@ fn info_from_config(config: &Value) -> Option<StoredInfo> {
     })
 }
 
-fn write_active_config(dir: &Path, slug: &str) -> Result<()> {
-    let config = read_config(dir, slug)?;
+fn validate_slug(slug: &str) -> Result<()> {
+    if slug.is_empty()
+        || slug.len() > 120
+        || !slug
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        || slug == "."
+        || slug == ".."
+    {
+        bail!("некорректное имя конфига");
+    }
+    Ok(())
+}
+
+fn slugify(name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if (ch.is_whitespace() || ch == '-' || ch == '_') && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.is_empty() {
+        format!("xray-{}", chrono::Utc::now().timestamp())
+    } else {
+        out
+    }
+}
+
+fn unique_slug(store: &crate::store::Store, name: &str) -> String {
+    let base = slugify(name);
+    let existing: std::collections::HashSet<String> = store
+        .xray_profiles()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|profile| profile.slug)
+        .collect();
+    if !existing.contains(&base) {
+        return base;
+    }
+    let mut index = 2;
+    loop {
+        let candidate = format!("{base}-{index}");
+        if !existing.contains(&candidate) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+fn write_active_config(dir: &Path, config: &Value) -> Result<()> {
     let target = crate::paths::in_dir(dir, "xray-config.json")?;
     if target.exists() {
         let _ = std::fs::copy(&target, dir.join("xray-config.json.bak"));
     }
     let tmp = dir.join("xray-config.json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(&config)?)?;
+    std::fs::write(&tmp, serde_json::to_vec_pretty(config)?)?;
     std::fs::rename(&tmp, &target)?;
     Ok(())
 }
 
-/// Импортирует старый одиночный xray-config.json в менеджер, чтобы текущий
-/// канал не пропал из списка после обновления приложения.
-pub fn ensure_imported(dir: &Path) -> Result<()> {
-    std::fs::create_dir_all(configs_dir(dir))?;
-    let slugs = list_slugs(dir);
-    let mut meta = read_meta(dir);
-    if slugs.is_empty() {
-        let current = dir.join("xray-config.json");
-        let Ok(text) = std::fs::read_to_string(&current) else {
-            return Ok(());
-        };
-        let Ok(config) = serde_json::from_str::<Value>(&text) else {
-            return Ok(());
-        };
-        let Some(info) = info_from_config(&config) else {
-            return Ok(());
-        };
-        let slug = "current".to_string();
-        write_config_file(dir, &slug, &config)?;
-        meta.active = Some(slug.clone());
-        meta.user_selected = false;
-        meta.names
-            .entry(slug.clone())
-            .or_insert_with(|| "Текущий".to_string());
-        meta.items.insert(slug, info);
-        write_meta(dir, &meta)?;
-        return Ok(());
+/// Outbound, через который можно доставить трафик до Shadowsocks-сервера,
+/// если прямой маршрут блокируется. Приоритет: активный, затем выбранный
+/// пользователем, затем самый новый.
+fn chain_outbound(
+    store: &crate::store::Store,
+    current_slug: &str,
+    config: &Value,
+) -> Option<Value> {
+    let first = config.get("outbounds")?.as_array()?.first()?;
+    if first.get("protocol")?.as_str()? != "shadowsocks" {
+        return None;
     }
-
-    let active_ok = meta
-        .active
-        .as_deref()
-        .map(|slug| slugs.iter().any(|item| item == slug))
-        .unwrap_or(false);
-    if !active_ok {
-        meta.active = slugs.first().cloned();
-        meta.user_selected = false;
-        write_meta(dir, &meta)?;
+    if first
+        .pointer("/streamSettings/sockopt/dialerProxy")
+        .is_some()
+    {
+        return None;
     }
-    Ok(())
+    let mut profiles = store.xray_profiles().ok()?;
+    profiles.reverse();
+    profiles.sort_by_key(|profile| (!profile.active, !profile.user_selected));
+    profiles.into_iter().find_map(|profile| {
+        if profile.slug == current_slug {
+            return None;
+        }
+        let parsed = serde_json::from_str::<Value>(&profile.config_json).ok()?;
+        let outbound = parsed.get("outbounds")?.as_array()?.first()?.clone();
+        let protocol = outbound.get("protocol")?.as_str()?;
+        matches!(protocol, "vless" | "vmess" | "trojan").then_some(outbound)
+    })
 }
 
-pub fn list(dir: &Path) -> Result<Vec<XrayConfigInfo>> {
-    ensure_imported(dir)?;
-    let meta = read_meta(dir);
+fn write_active_from_store(store: &crate::store::Store, dir: &Path, slug: &str) -> Result<()> {
+    let text = store
+        .xray_profile(slug)?
+        .with_context(|| format!("конфиг {slug} не найден"))?;
+    let mut config: Value =
+        serde_json::from_str(&text).with_context(|| format!("конфиг {slug} повреждён"))?;
+    if let Some(chain) = chain_outbound(store, slug, &config) {
+        if let Some(chained) = link::chain_shadowsocks(&config, &chain) {
+            wlog!("Xray: «{slug}» пойдёт через VPN-транспорт");
+            config = chained;
+        }
+    }
+    write_active_config(dir, &config)
+}
+
+pub fn list(store: &crate::store::Store, _dir: &Path) -> Result<Vec<XrayConfigInfo>> {
     let mut out = Vec::new();
-    for slug in list_slugs(dir) {
-        let config = read_config(dir, &slug).ok();
+    for profile in store.xray_profiles()? {
+        let config = serde_json::from_str::<Value>(&profile.config_json).ok();
         let derived = config.as_ref().and_then(info_from_config);
-        let stored = meta.items.get(&slug);
-        let info = derived
-            .clone()
-            .or_else(|| stored.cloned())
-            .unwrap_or_default();
         out.push(XrayConfigInfo {
-            name: meta
-                .names
-                .get(&slug)
-                .cloned()
-                .unwrap_or_else(|| slug.clone()),
-            protocol: info.protocol,
-            address: info.address,
-            port: info.port,
-            active: meta.active.as_deref() == Some(slug.as_str()),
+            slug: profile.slug,
+            name: profile.name,
+            protocol: if profile.protocol.is_empty() {
+                derived
+                    .as_ref()
+                    .map(|item| item.protocol.clone())
+                    .unwrap_or_default()
+            } else {
+                profile.protocol
+            },
+            address: if profile.address.is_empty() {
+                derived
+                    .as_ref()
+                    .map(|item| item.address.clone())
+                    .unwrap_or_default()
+            } else {
+                profile.address
+            },
+            port: if profile.port == 0 {
+                derived.as_ref().map(|item| item.port).unwrap_or(0)
+            } else {
+                profile.port
+            },
+            active: profile.active,
             valid: derived.is_some(),
-            dynamic: stored.map(|item| item.dynamic).unwrap_or(false),
-            slug,
+            dynamic: profile.dynamic,
         });
     }
     out.sort_by(|a, b| {
@@ -294,12 +227,12 @@ pub fn list(dir: &Path) -> Result<Vec<XrayConfigInfo>> {
 }
 
 pub fn add_parsed(
+    store: &crate::store::Store,
     dir: &Path,
     name: &str,
     parsed: &link::ParsedLink,
     dynamic: bool,
 ) -> Result<String> {
-    ensure_imported(dir)?;
     let config = link::config_for_parsed(parsed);
     let info = info_from_config(&config).context("не удалось определить параметры конфига")?;
     let mut name = name.trim().to_string();
@@ -315,144 +248,115 @@ pub fn add_parsed(
     if name.chars().count() > 120 {
         bail!("имя конфига слишком длинное");
     }
-    let slug = unique_slug(dir, &name);
-    write_config_file(dir, &slug, &config)?;
-
-    let mut meta = read_meta(dir);
-    let first = meta.active.is_none();
-    meta.names.insert(slug.clone(), name);
-    meta.items
-        .insert(slug.clone(), StoredInfo { dynamic, ..info });
+    let slug = unique_slug(store, &name);
+    let config_json = serde_json::to_string(&config)?;
+    let first = store.insert_xray_profile(
+        &slug,
+        &name,
+        &config_json,
+        &info.protocol,
+        &info.address,
+        info.port,
+        dynamic,
+    )?;
     if first {
-        meta.active = Some(slug.clone());
-        meta.user_selected = true;
-    }
-    write_meta(dir, &meta)?;
-    if first {
-        write_active_config(dir, &slug)?;
+        store.activate_xray_profile(&slug, true)?;
+        write_active_config(dir, &config)?;
     }
     Ok(slug)
 }
 
-pub fn activate(dir: &Path, slug: &str) -> Result<()> {
-    activate_inner(dir, slug, true)
+pub fn activate(store: &crate::store::Store, dir: &Path, slug: &str) -> Result<()> {
+    activate_inner(store, dir, slug, true)
 }
 
 /// Активация автовыбором: не помечает конфиг как ручной выбор, чтобы
 /// авто-восстановление пула могло заменить его при падении канала.
-pub fn activate_auto(dir: &Path, slug: &str) -> Result<()> {
-    activate_inner(dir, slug, false)
+pub fn activate_auto(store: &crate::store::Store, dir: &Path, slug: &str) -> Result<()> {
+    activate_inner(store, dir, slug, false)
 }
 
-fn activate_inner(dir: &Path, slug: &str, user_selected: bool) -> Result<()> {
-    let config = read_config(dir, slug)?;
-    write_active_config(dir, slug)?;
-    let mut meta = read_meta(dir);
-    if let Some(info) = info_from_config(&config) {
-        let dynamic = meta
-            .items
-            .get(slug)
-            .map(|item| item.dynamic)
-            .unwrap_or(false);
-        meta.items
-            .insert(slug.to_string(), StoredInfo { dynamic, ..info });
-    }
-    meta.names
-        .entry(slug.to_string())
-        .or_insert_with(|| slug.to_string());
-    meta.active = Some(slug.to_string());
-    meta.user_selected = user_selected;
-    write_meta(dir, &meta)?;
+fn activate_inner(
+    store: &crate::store::Store,
+    dir: &Path,
+    slug: &str,
+    user_selected: bool,
+) -> Result<()> {
+    validate_slug(slug)?;
+    write_active_from_store(store, dir, slug)?;
+    store.activate_xray_profile(slug, user_selected)?;
     Ok(())
 }
 
-pub fn remove(dir: &Path, slug: &str) -> Result<(bool, Option<String>)> {
-    let path = config_path(dir, slug)?;
-    if !path.is_file() {
-        bail!("конфиг {slug} не найден");
-    }
-    std::fs::remove_file(&path)?;
-    let mut meta = read_meta(dir);
-    meta.names.remove(slug);
-    meta.items.remove(slug);
-    let was_active = meta.active.as_deref() == Some(slug);
-    if !was_active {
-        write_meta(dir, &meta)?;
-        return Ok((false, meta.active));
-    }
-
-    meta.active = None;
-    meta.user_selected = false;
-    let next = list_slugs(dir).first().cloned();
-    match next {
-        Some(next_slug) => {
-            meta.active = Some(next_slug.clone());
-            meta.user_selected = next_slug != POOL_SLUG;
-            write_meta(dir, &meta)?;
-            write_active_config(dir, &next_slug)?;
-            Ok((true, Some(next_slug)))
-        }
-        None => {
-            write_meta(dir, &meta)?;
-            for name in [
-                "xray-config.json",
-                "xray-config.json.bak",
-                "xray-config.json.tmp",
-            ] {
-                let _ = std::fs::remove_file(dir.join(name));
+pub fn remove(
+    store: &crate::store::Store,
+    dir: &Path,
+    slug: &str,
+) -> Result<(bool, Option<String>)> {
+    validate_slug(slug)?;
+    let (was_active, next) = store.delete_xray_profile(slug)?;
+    if was_active {
+        match next.as_deref() {
+            Some(next_slug) => write_active_from_store(store, dir, next_slug)?,
+            None => {
+                for name in [
+                    "xray-config.json",
+                    "xray-config.json.bak",
+                    "xray-config.json.tmp",
+                ] {
+                    let _ = std::fs::remove_file(dir.join(name));
+                }
             }
-            Ok((true, None))
         }
     }
+    Ok((was_active, next))
 }
 
 /// Пул применил свой конфиг: снимаем отметку пользовательского выбора, чтобы
 /// автоподбор снова мог управлять каналом.
-pub fn clear_active(dir: &Path) -> Result<()> {
-    let mut meta = read_meta(dir);
-    if meta.active.take().is_some() || meta.user_selected {
-        meta.user_selected = false;
-        write_meta(dir, &meta)?;
-    }
-    Ok(())
+pub fn clear_active(store: &crate::store::Store) -> Result<()> {
+    store.clear_active_xray()
 }
 
 /// Сохраняет конфиг, применённый пулом, в общий список как «Пул: активный».
-/// Так список не врёт о том, что сейчас реально работает.
-pub fn sync_pool_active(dir: &Path, parsed: &link::ParsedLink) -> Result<()> {
+pub fn sync_pool_active(
+    store: &crate::store::Store,
+    dir: &Path,
+    parsed: &link::ParsedLink,
+) -> Result<()> {
     let config = link::config_for_parsed(parsed);
     let info = info_from_config(&config).context("не удалось определить параметры конфига пула")?;
-    write_config_file(dir, POOL_SLUG, &config)?;
-    let mut meta = read_meta(dir);
-    meta.names
-        .insert(POOL_SLUG.to_string(), "Пул: активный".to_string());
-    meta.items.insert(
-        POOL_SLUG.to_string(),
-        StoredInfo {
-            dynamic: false,
-            ..info
-        },
-    );
-    meta.active = Some(POOL_SLUG.to_string());
-    meta.user_selected = false;
-    write_meta(dir, &meta)?;
+    let json = serde_json::to_string(&config)?;
+    store.insert_xray_profile(
+        POOL_SLUG,
+        "Пул: активный",
+        &json,
+        &info.protocol,
+        &info.address,
+        info.port,
+        false,
+    )?;
+    store.activate_xray_profile(POOL_SLUG, false)?;
+    write_active_from_store(store, dir, POOL_SLUG)?;
     Ok(())
 }
 
-pub fn active_slug(dir: &Path) -> Option<String> {
-    let meta = read_meta(dir);
-    let slug = meta.active?;
-    config_path(dir, &slug).ok()?.is_file().then_some(slug)
+pub fn active_slug(store: &crate::store::Store) -> Option<String> {
+    store
+        .active_xray_profile()
+        .ok()
+        .flatten()
+        .map(|profile| profile.slug)
 }
 
 /// Активный конфиг, который выбрал пользователь. Пул не должен его менять.
-pub fn user_selected_active(dir: &Path) -> Option<String> {
-    let meta = read_meta(dir);
-    if !meta.user_selected {
-        return None;
-    }
-    let slug = meta.active?;
-    config_path(dir, &slug).ok()?.is_file().then_some(slug)
+pub fn user_selected_active(store: &crate::store::Store) -> Option<String> {
+    store
+        .active_xray_profile()
+        .ok()
+        .flatten()
+        .filter(|profile| profile.user_selected)
+        .map(|profile| profile.slug)
 }
 
 fn free_port() -> Result<u16> {
@@ -491,13 +395,9 @@ async fn probe(port: u16) -> Option<(u64, String)> {
 }
 
 /// Поднимает временный xray на свободном порту и проверяет реальный трафик.
-pub async fn test(dir: &Path, slug: &str) -> Result<(u64, String)> {
-    if TESTING.swap(true, Ordering::SeqCst) {
-        bail!("проверка Xray-конфига уже идёт");
-    }
-    let _guard = TestGuard;
+async fn run_probe(dir: &Path, config: &Value) -> Result<(u64, String)> {
     let node = find_engine(EngineKind::Xray).context("xray не найден в каталоге данных")?;
-    let mut config = read_config(dir, slug)?;
+    let mut config = config.clone();
     let port = free_port()?;
     config["inbounds"] = json!([{
         "listen": "127.0.0.1",
@@ -505,7 +405,7 @@ pub async fn test(dir: &Path, slug: &str) -> Result<(u64, String)> {
         "protocol": "http",
         "settings": { "allowTransparent": false }
     }]);
-    let test_path = dir.join("xray-config-test.json");
+    let test_path = dir.join(format!("xray-config-test-{}.json", std::process::id()));
     std::fs::write(&test_path, serde_json::to_vec_pretty(&config)?)?;
 
     let mut cmd = tokio::process::Command::new(&node);
@@ -519,9 +419,13 @@ pub async fn test(dir: &Path, slug: &str) -> Result<(u64, String)> {
     #[cfg(windows)]
     cmd.creation_flags(0x08000000);
 
-    let mut child = cmd
-        .spawn()
-        .context("не удалось запустить xray для проверки")?;
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = std::fs::remove_file(&test_path);
+            return Err(error).context("не удалось запустить xray для проверки");
+        }
+    };
     let result = if wait_port(port, Duration::from_secs(8)).await {
         probe(port).await
     } else {
@@ -536,8 +440,28 @@ pub async fn test(dir: &Path, slug: &str) -> Result<(u64, String)> {
     }
 }
 
-pub fn log_active(dir: &Path, slug: &str) {
-    if let Ok(items) = list(dir) {
+pub async fn test(store: &crate::store::Store, dir: &Path, slug: &str) -> Result<(u64, String)> {
+    if TESTING.swap(true, Ordering::SeqCst) {
+        bail!("проверка Xray-конфига уже идёт");
+    }
+    let _guard = TestGuard;
+    let text = store
+        .xray_profile(slug)?
+        .with_context(|| format!("конфиг {slug} не найден"))?;
+    let config: Value =
+        serde_json::from_str(&text).with_context(|| format!("конфиг {slug} повреждён"))?;
+    if let Some(chain) = chain_outbound(store, slug, &config) {
+        if let Some(chained) = link::chain_shadowsocks(&config, &chain) {
+            return run_probe(dir, &chained)
+                .await
+                .context("через VPN-транспорт");
+        }
+    }
+    run_probe(dir, &config).await
+}
+
+pub fn log_active(store: &crate::store::Store, dir: &Path, slug: &str) {
+    if let Ok(items) = list(store, dir) {
         if let Some(item) = items.iter().find(|item| item.slug == slug) {
             wlog!(
                 "Xray: активен конфиг «{}» ({} {}:{})",
@@ -550,11 +474,24 @@ pub fn log_active(dir: &Path, slug: &str) {
     }
 }
 
+/// Writes the active Xray profile to `xray-config.json`. Used on startup.
+pub fn materialize_active(store: &crate::store::Store, dir: &Path) -> Result<()> {
+    if let Some(profile) = store.active_xray_profile()? {
+        if let Err(error) = write_active_from_store(store, dir, &profile.slug) {
+            crate::wlog!("Xray: активный профиль не материализован — {error:#}");
+            let _ = std::fs::remove_file(dir.join("xray-config.json"));
+        }
+    } else {
+        let _ = std::fs::remove_file(dir.join("xray-config.json"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn temp() -> PathBuf {
+    fn temp() -> std::path::PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
@@ -574,16 +511,17 @@ mod tests {
     #[test]
     fn manages_active_configs() {
         let dir = temp();
-        let first = add_parsed(&dir, "First", &parsed("1.2.3.4", 8388), false).unwrap();
-        let items = list(&dir).unwrap();
+        let store = crate::store::Store::open(&dir).unwrap();
+        let first = add_parsed(&store, &dir, "First", &parsed("1.2.3.4", 8388), false).unwrap();
+        let items = list(&store, &dir).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].slug, first);
         assert!(items[0].active);
         assert!(items[0].valid);
         assert!(dir.join("xray-config.json").is_file());
 
-        let second = add_parsed(&dir, "Second", &parsed("5.6.7.8", 8389), true).unwrap();
-        let items = list(&dir).unwrap();
+        let second = add_parsed(&store, &dir, "Second", &parsed("5.6.7.8", 8389), true).unwrap();
+        let items = list(&store, &dir).unwrap();
         assert_eq!(items.len(), 2);
         assert!(items.iter().find(|item| item.slug == first).unwrap().active);
         assert!(
@@ -594,11 +532,14 @@ mod tests {
                 .dynamic
         );
 
-        activate_auto(&dir, &second).unwrap();
-        assert!(user_selected_active(&dir).is_none());
-        activate(&dir, &second).unwrap();
-        assert_eq!(user_selected_active(&dir).as_deref(), Some(second.as_str()));
-        let items = list(&dir).unwrap();
+        activate_auto(&store, &dir, &second).unwrap();
+        assert!(user_selected_active(&store).is_none());
+        activate(&store, &dir, &second).unwrap();
+        assert_eq!(
+            user_selected_active(&store).as_deref(),
+            Some(second.as_str())
+        );
+        let items = list(&store, &dir).unwrap();
         assert!(
             items
                 .iter()
@@ -607,10 +548,10 @@ mod tests {
                 .active
         );
 
-        let (was_active, next) = remove(&dir, &second).unwrap();
+        let (was_active, next) = remove(&store, &dir, &second).unwrap();
         assert!(was_active);
         assert_eq!(next.as_deref(), Some(first.as_str()));
-        let (was_active, next) = remove(&dir, &first).unwrap();
+        let (was_active, next) = remove(&store, &dir, &first).unwrap();
         assert!(was_active);
         assert!(next.is_none());
         assert!(!dir.join("xray-config.json").exists());
@@ -618,31 +559,61 @@ mod tests {
     }
 
     #[test]
+    fn active_shadowsocks_uses_vpn_transport() {
+        let dir = temp();
+        let store = crate::store::Store::open(&dir).unwrap();
+        let vless = link::parse_any(
+            "vless://a1b2c3d4-1111-2222-3333-444455556666@1.2.3.4:443?security=tls#VLESS",
+        )
+        .unwrap();
+        add_parsed(&store, &dir, "VLESS", &vless, false).unwrap();
+        let outline = add_parsed(&store, &dir, "Outline", &parsed("5.6.7.8", 8388), true).unwrap();
+        activate(&store, &dir, &outline).unwrap();
+
+        let config: Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("xray-config.json")).unwrap())
+                .unwrap();
+        let outbounds = config["outbounds"].as_array().unwrap();
+        assert_eq!(outbounds.len(), 2);
+        assert_eq!(outbounds[0]["protocol"], "shadowsocks");
+        assert_eq!(
+            outbounds[0]["streamSettings"]["sockopt"]["dialerProxy"],
+            link::CHAIN_TAG
+        );
+        assert_eq!(outbounds[1]["tag"], link::CHAIN_TAG);
+        assert_eq!(outbounds[1]["protocol"], "vless");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn records_pool_active_without_manual_flag() {
         let dir = temp();
-        sync_pool_active(&dir, &parsed("7.7.7.7", 8390)).unwrap();
-        let items = list(&dir).unwrap();
+        let store = crate::store::Store::open(&dir).unwrap();
+        sync_pool_active(&store, &dir, &parsed("7.7.7.7", 8390)).unwrap();
+        let items = list(&store, &dir).unwrap();
         assert_eq!(items.len(), 1);
         assert!(items[0].active);
         assert_eq!(items[0].slug, POOL_SLUG);
-        assert!(user_selected_active(&dir).is_none());
+        assert!(user_selected_active(&store).is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
     fn imports_existing_single_config() {
         let dir = temp();
+        let store = crate::store::Store::open(&dir).unwrap();
         let value = link::config_for_parsed(&parsed("9.9.9.9", 8443));
         std::fs::write(
             dir.join("xray-config.json"),
             serde_json::to_vec_pretty(&value).unwrap(),
         )
         .unwrap();
-        let items = list(&dir).unwrap();
+        crate::storage::legacy::import_xray_profiles(&dir, &store).unwrap();
+        let items = list(&store, &dir).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].name, "Текущий");
         assert!(items[0].active);
-        assert!(user_selected_active(&dir).is_none());
+        assert!(user_selected_active(&store).is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -651,8 +622,9 @@ mod tests {
         assert!(validate_slug("../evil").is_err());
         assert!(validate_slug("a/b").is_err());
         let dir = temp();
+        let store = crate::store::Store::open(&dir).unwrap();
         let parsed = parsed("1.2.3.4", 8388);
-        assert!(add_parsed(&dir, "", &parsed, false).is_ok());
+        assert!(add_parsed(&store, &dir, "", &parsed, false).is_ok());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

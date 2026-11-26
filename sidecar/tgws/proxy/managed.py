@@ -11,6 +11,7 @@ from typing import Optional
 
 from . import __version__
 from . import upstream
+from . import health
 from .config import proxy_config
 from .stats import stats
 
@@ -37,6 +38,7 @@ def _payload(listening: bool, error: Optional[str]) -> dict:
         "managed": proxy_config.managed,
         "fakeTls": bool(proxy_config.fake_tls_domain),
         "upstream": upstream.snapshot(),
+        "health": health.snapshot(),
         "stats": {
             "connectionsTotal": stats.connections_total,
             "connectionsActive": stats.connections_active,
@@ -45,6 +47,11 @@ def _payload(listening: bool, error: Optional[str]) -> dict:
             "connectionsCf": stats.connections_cfproxy,
             "connectionsTcpFallback": stats.connections_tcp_fallback,
             "connectionsBad": stats.connections_bad,
+            "poolHits": stats.pool_hits,
+            "poolMisses": stats.pool_misses,
+            "cfPoolHits": stats.cf_pool_hits,
+            "cfPoolMisses": stats.cf_pool_misses,
+            "fronting": stats.connections_fronting,
             "bytesUp": stats.bytes_up,
             "bytesDown": stats.bytes_down,
             "wsErrors": stats.ws_errors,

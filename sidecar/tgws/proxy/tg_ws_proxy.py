@@ -30,7 +30,7 @@ from .config import (
 )
 from .bridge import MsgSplitter, CryptoCtx, do_fallback, bridge_ws_reencrypt, reset_tcp_backoff
 from .raw_websocket import set_sock_opts
-from . import managed, upstream
+from . import health, managed, upstream
 from .fake_tls import (
     proxy_to_masking_domain, verify_client_hello, parse_client_hello, build_server_hello,
     probe_appdata_len, set_profiled_appdata_len, FakeTlsStream, TLS_RECORD_HANDSHAKE,
@@ -457,9 +457,11 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
             pass
 
     status_task = None
+    health_task = None
     if proxy_config.status_file:
         managed.write_status(True)
         status_task = asyncio.create_task(managed.status_loop())
+    health_task = asyncio.create_task(health.health_loop(stop_event))
     parent_task = None
     if proxy_config.parent_pid > 0:
         parent_task = asyncio.create_task(managed.parent_watch(proxy_config.parent_pid))
@@ -621,6 +623,9 @@ async def _run(stop_event: Optional[asyncio.Event] = None):
         if status_task is not None:
             await _quiet_cancel(status_task)
             managed.write_status(False)
+        if health_task is not None:
+            await _quiet_cancel(health_task)
+        health.set_recovery_callback(None)
         if parent_task is not None:
             await _quiet_cancel(parent_task)
         _server_instance = _server_stop_event = None

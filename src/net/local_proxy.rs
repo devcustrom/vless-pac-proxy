@@ -175,10 +175,11 @@ pub async fn preflight_ports(state: &Arc<AppState>) {
             }
         }
         if http != settings.local_proxy_port || https != settings.local_https_port {
-            if let Ok(mut current) = state.settings.lock() {
+            if let Err(error) = state.update_settings(|current| {
                 current.local_proxy_port = http;
                 current.local_https_port = https;
-                let _ = current.save(&state.dir);
+            }) {
+                wlog!("локальные домены: не удалось сохранить macOS-порты — {error:#}");
             }
             wlog!("локальные домены: macOS-порты переключены на HTTP {http}, HTTPS {https}");
         }

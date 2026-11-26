@@ -1,0 +1,72 @@
+name: Android
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mobile/**"
+      - ".github/workflows/android.yml"
+  pull_request:
+    paths:
+      - "mobile/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+jobs:
+  rust-core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mobile/rust
+      - name: Format
+        working-directory: mobile/rust
+        run: cargo fmt --check
+      - name: Clippy
+        working-directory: mobile/rust
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Tests
+        working-directory: mobile/rust
+        run: cargo test
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Gradle wrapper permissions
+        run: chmod +x mobile/android/gradlew
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Android SDK packages
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: libXray AAR
+        run: |
+          set -euo pipefail
+          if [ ! -f mobile/android/app/libs/libXray.aar ]; then
+            curl -fsSL --retry 4 -o /tmp/libxray.zip \
+              https://github.com/XTLS/libXray/releases/download/v26.11.9/libxray-android.zip
+            unzip -j /tmp/libxray.zip libxray-android/libXray.aar \
+              -d mobile/android/app/libs/
+          fi
+      - name: Unit tests
+        working-directory: mobile/android
+        run: ./gradlew :app:testDebugUnitTest --console=plain
+      - name: Lint
+        working-directory: mobile/android
+        run: ./gradlew :app:lintDebug --console=plain
+      - name: Build APK
+        working-directory: mobile/android
+        run: ./gradlew :app:assembleDebug --console=plain
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wireproxy-android-debug
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk

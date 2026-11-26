@@ -688,13 +688,10 @@ pub fn select(state: &Arc<AppState>, lists: &[String], ipsets: &[String]) -> Res
             clean_ipsets.push(id.to_string());
         }
     }
-    let mut settings = state
-        .settings
-        .lock()
-        .map_err(|_| anyhow::anyhow!("настройки повреждены"))?;
-    settings.zapret_catalog_lists = clean_lists;
-    settings.zapret_catalog_ipsets = clean_ipsets;
-    settings.save(&state.dir)?;
+    state.update_settings(|settings| {
+        settings.zapret_catalog_lists = clean_lists;
+        settings.zapret_catalog_ipsets = clean_ipsets;
+    })?;
     Ok(())
 }
 
@@ -995,12 +992,9 @@ pub async fn apply(state: &Arc<AppState>, id: &str) -> Result<()> {
         download(state, &id).await?;
         let prepared = prepare(state, &id)?;
         crate::zapret::service::install_args_for(&state.dir, &prepared.bin, prepared.args)?;
-        let mut settings = state
-            .settings
-            .lock()
-            .map_err(|_| anyhow::anyhow!("настройки повреждены"))?;
-        settings.zapret_catalog_strategy = id.clone();
-        settings.save(&state.dir)?;
+        state.update_settings(|settings| {
+            settings.zapret_catalog_strategy = id.clone();
+        })?;
         crate::wlog!(
             "zapret: применяется стратегия каталога {} ({}, автор {})",
             prepared.manifest.name,

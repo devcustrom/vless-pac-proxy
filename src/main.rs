@@ -40,6 +40,7 @@ mod simple;
 mod single_instance;
 mod site_check;
 mod state;
+mod storage;
 mod store;
 mod systemproxy;
 mod telegram;
@@ -228,9 +229,9 @@ fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool, hidden: bool) -> an
         .enable_all()
         .build()?;
     // На macOS после установки приложение живёт только в menu bar. Панель
-    // автоматически открываем лишь при первом запуске (нет settings.json),
-    // дальше — по клику в трее. Windows-поведение не меняем.
-    let first_run = !dir.join("settings.json").exists();
+    // автоматически открываем лишь при первом запуске (нет БД/старых
+    // настроек), дальше — по клику в трее. Windows-поведение не меняем.
+    let first_run = !dir.join("settings.json").exists() && !dir.join("wireproxy.db").exists();
     let interactive = if cfg!(target_os = "macos") {
         !hidden && first_run
     } else {
@@ -238,7 +239,7 @@ fn run_manager(dir: PathBuf, panel_port: u16, no_tray: bool, hidden: bool) -> an
     };
     let st = {
         let _guard = rt.enter();
-        state::AppState::new(dir, panel_port, interactive)
+        state::AppState::new(dir, panel_port, interactive)?
     };
     if autostart::installed()
         && !cfg!(debug_assertions)

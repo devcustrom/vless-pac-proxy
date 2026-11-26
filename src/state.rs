@@ -86,6 +86,9 @@ pub struct AppState {
         Mutex<Option<std::sync::Arc<tokio::sync::RwLock<std::sync::Arc<rustls::ServerConfig>>>>>,
     pub local_proxy_stop: Mutex<Option<(u64, tokio::sync::watch::Sender<bool>)>>,
     pub settings: Mutex<Settings>,
+    /// User-owned domain lists, loaded from SQLite and kept in sync by the
+    /// API. Remote auto-lists stay in `Lists` because they are re-downloaded.
+    pub domains: Mutex<crate::store::DomainSets>,
     pub wg: Engine,
     pub xr: Engine,
     pub telegram: crate::telegram::TelegramRuntime,
@@ -97,14 +100,32 @@ pub struct AppState {
     pub auto_routes: Mutex<crate::route_auto::AutoRoutes>,
     pub lists: Mutex<Lists>,
     pub pool: Mutex<Pool>,
+    /// Serializes pool-state snapshots so concurrent refresh/apply cannot
+    /// overwrite a newer active link with an older snapshot.
+    pub pool_save: Mutex<()>,
     pub store: crate::store::Store,
     pub http_clients: Mutex<HashMap<String, reqwest::Client>>,
 }
 
 impl AppState {
-    pub fn new(dir: PathBuf, panel_port: u16, interactive: bool) -> std::sync::Arc<Self> {
+    pub fn new(
+        dir: PathBuf,
+        panel_port: u16,
+        interactive: bool,
+    ) -> anyhow::Result<std::sync::Arc<Self>> {
         crate::engines::set_data_dir(&dir);
-        let settings = Settings::load(&dir);
+        let store = crate::store::Store::open(&dir)
+            .map_err(|error| error.context("не удалось открыть wireproxy.db"))?;
+        crate::storage::legacy::import_domains(&dir, &store)
+            .map_err(|error| error.context("миграция legacy-доменов"))?;
+        crate::storage::legacy::import_wg_profiles(&dir, &store)
+            .map_err(|error| error.context("миграция WireGuard-профилей"))?;
+        crate::storage::legacy::import_xray_profiles(&dir, &store)
+            .map_err(|error| error.context("миграция Xray-профилей"))?;
+        crate::storage::legacy::import_pool_state(&dir, &store)
+            .map_err(|error| error.context("миграция состояния пула"))?;
+        let settings =
+            Settings::load(&store, &dir).map_err(|error| error.context("загрузка настроек"))?;
         let wg = Engine::new(crate::engines::EngineKind::Wireproxy, {
             let d = dir.clone();
             move || crate::engines::wireproxy::prepare(&d)
@@ -113,19 +134,11 @@ impl AppState {
             let d = dir.clone();
             move || crate::engines::xray::has_config(&d)
         });
-        let local_domains = crate::paths::in_dir(&dir, "local-domains.txt")
-            .ok()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .map(|t| crate::net::local_proxy::parse_config(&t))
-            .unwrap_or_default();
-        let store = match crate::store::Store::open(&dir) {
-            Ok(store) => store,
-            Err(e) => {
-                crate::wlog!("SQLite недоступен ({e:#}); история только в памяти");
-                crate::store::Store::memory()
-            }
-        };
+        let local_domains = store.local_domains().unwrap_or_default();
+        let domains = store.domain_sets().unwrap_or_default();
         crate::route_auto::import_legacy_json(&dir, &store);
+        crate::storage::materialize::reconcile(&store, &dir, &local_domains)
+            .map_err(|error| error.context("материализация конфигов движков"))?;
         let auto_routes = crate::route_auto::AutoRoutes::from_store(&store);
         let st = std::sync::Arc::new(Self {
             dir,
@@ -142,6 +155,7 @@ impl AppState {
             tls_config: Mutex::new(None),
             local_proxy_stop: Mutex::new(None),
             settings: Mutex::new(settings),
+            domains: Mutex::new(domains),
             wg,
             xr,
             telegram: crate::telegram::TelegramRuntime::default(),
@@ -153,15 +167,60 @@ impl AppState {
             auto_routes: Mutex::new(auto_routes),
             lists: Mutex::new(Lists::default()),
             pool: Mutex::new(Pool::default()),
+            pool_save: Mutex::new(()),
             store,
             http_clients: Mutex::new(HashMap::new()),
         });
         crate::vless::pool::load_pool_state(&st);
-        st
+        Ok(st)
     }
 
     pub fn settings_snapshot(&self) -> Settings {
         self.settings.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// Applies a settings change under the settings lock and persists the new
+    /// aggregate in one transaction. Callers must not keep the old snapshot
+    /// and save it later.
+    pub fn update_settings<F>(&self, change: F) -> anyhow::Result<Settings>
+    where
+        F: FnOnce(&mut Settings),
+    {
+        let mut guard = self
+            .settings
+            .lock()
+            .map_err(|_| anyhow::anyhow!("блокировка настроек повреждена"))?;
+        let mut next = guard.clone();
+        change(&mut next);
+        next.save_to_store(&self.store)?;
+        *guard = next.clone();
+        Ok(next)
+    }
+
+    pub fn domain_sets_snapshot(&self) -> crate::store::DomainSets {
+        self.domains.lock().map(|d| d.clone()).unwrap_or_default()
+    }
+
+    pub fn mutate_domain_sets<F>(&self, change: F) -> anyhow::Result<crate::store::DomainSets>
+    where
+        F: FnOnce(&mut crate::store::DomainSets),
+    {
+        let sets = self.store.mutate_domain_sets(change)?;
+        if let Ok(mut cached) = self.domains.lock() {
+            *cached = sets.clone();
+        }
+        Ok(sets)
+    }
+
+    pub fn set_local_domains(
+        &self,
+        list: &[crate::net::local_proxy::LocalDomain],
+    ) -> anyhow::Result<()> {
+        self.store.replace_local_domains(list)?;
+        if let Ok(mut cached) = self.local_domains.lock() {
+            *cached = list.to_vec();
+        }
+        Ok(())
     }
 
     pub fn health_snapshot(&self) -> (bool, bool) {
@@ -200,9 +259,11 @@ impl AppState {
                     .collect()
             })
             .unwrap_or_default();
-        let vpn_only = crate::lists::read_domain_file(&self.dir, "vpn-only-domains.txt")
-            .into_iter()
-            .collect();
+        let vpn_only = self
+            .domains
+            .lock()
+            .map(|domains| domains.vpn_only.iter().cloned().collect())
+            .unwrap_or_default();
         crate::routing::Routing {
             proxied,
             direct_override: direct,

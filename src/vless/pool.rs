@@ -748,7 +748,7 @@ pub async fn refresh(state: &Arc<AppState>) -> Result<()> {
 
 async fn refresh_inner(state: &Arc<AppState>) -> Result<()> {
     let _guard = claim_test_slot()?;
-    let subs = read_subscriptions(&state.dir);
+    let subs = read_subscriptions(&state.store);
     if subs.is_empty() {
         bail!("нет подписок: добавьте URL");
     }
@@ -802,37 +802,18 @@ fn host_of(url: &str) -> String {
         .unwrap_or_else(|| url.to_string())
 }
 
-pub fn read_subscriptions(dir: &std::path::Path) -> Vec<String> {
-    let Ok(path) = crate::paths::in_dir(dir, "subscriptions.txt") else {
-        return Vec::new();
-    };
-    std::fs::read_to_string(path)
-        .map(|t| {
-            t.lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                .collect()
-        })
-        .unwrap_or_default()
+pub fn read_subscriptions(store: &crate::store::Store) -> Vec<String> {
+    store.subscription_urls().unwrap_or_default()
 }
 
-pub fn write_subscriptions(dir: &std::path::Path, list: &[String]) -> std::io::Result<()> {
-    let path = crate::paths::in_dir(dir, "subscriptions.txt")
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
-    let mut text = String::from("# Подписки-источники конфигов (по одному URL в строке).\n\n");
-    let mut seen = HashSet::new();
-    for u in list {
-        if seen.insert(u) {
-            text.push_str(u);
-            text.push('\n');
-        }
-    }
-    std::fs::write(path, text)
+pub fn write_subscriptions(store: &crate::store::Store, list: &[String]) -> anyhow::Result<()> {
+    store.replace_subscription_urls(list)
 }
 
 // ---------------- пул: сохранение и применение ----------------
 
 pub fn save_pool_state(state: &Arc<AppState>) {
+    let _save_guard = state.pool_save.lock().unwrap();
     let (entries, updated, active) = {
         let pool = state.pool.lock().unwrap();
         (
@@ -846,18 +827,15 @@ pub fn save_pool_state(state: &Arc<AppState>) {
         active_link: active,
         pool: entries,
     };
-    if let Ok(path) = crate::paths::in_dir(&state.dir, "pool-state.json") {
-        if let Ok(text) = serde_json::to_string_pretty(&file) {
-            let _ = std::fs::write(path, text);
+    if let Ok(text) = serde_json::to_string(&file) {
+        if let Err(e) = state.store.save_pool_state_json(&text) {
+            crate::wlog!("пул: не удалось сохранить состояние в БД — {e:#}");
         }
     }
 }
 
 pub fn load_pool_state(state: &Arc<AppState>) {
-    let Ok(path) = crate::paths::in_dir(&state.dir, "pool-state.json") else {
-        return;
-    };
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Ok(Some(text)) = state.store.pool_state_json() else {
         return;
     };
     let Ok(file) = serde_json::from_str::<PoolStateFile>(&text) else {
@@ -901,10 +879,10 @@ pub fn apply_entry(state: &Arc<AppState>, index: usize) -> Result<link::LinkInfo
         };
         (entry.clone(), entry.link.clone())
     };
-    let _ = crate::vless::configs::clear_active(&state.dir);
+    let _ = crate::vless::configs::clear_active(&state.store);
     let info = link::save_link(&state.dir, &entry.link)?;
     if let Ok(parsed) = link::parse_any(&entry.link) {
-        let _ = crate::vless::configs::sync_pool_active(&state.dir, &parsed);
+        let _ = crate::vless::configs::sync_pool_active(&state.store, &state.dir, &parsed);
     }
     {
         let mut pool = state.pool.lock().unwrap();
@@ -980,7 +958,7 @@ pub async fn maybe_auto_recover(state: &Arc<AppState>, reason: &str) -> bool {
     }
     // Пользователь явно выбрал сохранённый Xray-конфиг — пул не должен
     // незаметно заменять его своим кандидатом.
-    if crate::vless::configs::user_selected_active(&state.dir).is_some() {
+    if crate::vless::configs::user_selected_active(&state.store).is_some() {
         return false;
     }
     let now = chrono::Utc::now();

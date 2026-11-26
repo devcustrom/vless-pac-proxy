@@ -426,18 +426,17 @@ pub async fn probe(state: &Arc<AppState>) -> ProbeResult {
 }
 
 /// Проверяет TCP-доступность дата-центров Telegram напрямую (без TLS/WS).
-/// Полная WS-проверка выполняется самим sidecar при первом подключении.
+/// WS-доступность в фоне проверяет sidecar; здесь — только raw TCP fallback.
 pub async fn probe_direct(state: &Arc<AppState>) -> ProbeResult {
     let targets = [
         ("1", "149.154.175.50"),
         ("2", "149.154.167.51"),
         ("3", "149.154.175.100"),
-        ("4", "149.154.167.220"),
+        ("4", "149.154.167.91"),
         ("5", "149.154.171.5"),
         ("203", "91.105.192.100"),
     ];
-    let mut direct = std::collections::BTreeMap::new();
-    for (dc, ip) in targets {
+    let probes = targets.into_iter().map(|(dc, ip)| async move {
         let ok = tokio::time::timeout(
             Duration::from_secs(4),
             tokio::net::TcpStream::connect((ip, 443)),
@@ -445,8 +444,12 @@ pub async fn probe_direct(state: &Arc<AppState>) -> ProbeResult {
         .await
         .map(|r| r.is_ok())
         .unwrap_or(false);
-        direct.insert(dc.to_string(), ok);
-    }
+        (dc.to_string(), ok)
+    });
+    let direct: std::collections::BTreeMap<String, bool> = futures_util::future::join_all(probes)
+        .await
+        .into_iter()
+        .collect();
     let probe = ProbeResult {
         at: Some(chrono::Utc::now().to_rfc3339()),
         running: state

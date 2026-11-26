@@ -1,9 +1,26 @@
 # ПРИВАТНЫЕ ФАЙЛЫ (ключи и конфиги с секретами) — никогда не коммитить
+*.keystore
+*.jks
+keystore.properties
 wg.conf
+wg-configs/
+wg-configs.json
+wg-test*.conf
 xray-config.json
 xray-config.json.bak
+xray-configs/
+xray-configs.json
+xray-config-test*.json
+xray-pool-one.json
+xray-pool-test.json
 pool-state.json
 settings.json
+subscriptions.txt
+extra-domains.txt
+direct-domains.txt
+vpn-only-domains.txt
+local-domains.txt
+legacy-*/
 tgws-config.json
 tgws-status.json
 tgws-version.json
@@ -32,13 +49,13 @@ local-domains-trust.command
 trust-local-ca.bat
 
 # Бинарники и архивы (скачиваются/собираются установщиками)
-wireproxy.exe
-wireproxy
-xray.exe
-xray
-tgws-proxy.exe
-tgws-proxy
-WireproxyTray
+/wireproxy.exe
+/wireproxy
+/xray.exe
+/xray
+/tgws-proxy.exe
+/tgws-proxy
+/WireproxyTray
 *.tar.gz
 *.zip
 

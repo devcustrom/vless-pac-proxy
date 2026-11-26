@@ -178,18 +178,11 @@ pub fn prune_decisions(st: &AppState) {
 }
 
 pub fn auto_domains(st: &AppState) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut items = Vec::new();
-    for domain in crate::lists::read_domain_file(&st.dir, "extra-domains.txt") {
-        if seen.insert(domain.clone()) {
-            items.push(domain);
-        }
-    }
-    items
+    st.domain_sets_snapshot().extra
 }
 
 fn direct_domains(st: &AppState) -> Vec<String> {
-    crate::lists::read_domain_file(&st.dir, "direct-domains.txt")
+    st.domain_sets_snapshot().direct
 }
 
 /// Явное исключение «Напрямую» действует и на поддомены.
@@ -499,52 +492,53 @@ fn retire_legacy_lists(dir: &std::path::Path) {
     }
 }
 
-fn merge_forced_lists(dir: &std::path::Path) -> Result<Option<Vec<String>>> {
+fn merge_forced_lists(
+    store: &crate::store::Store,
+    dir: &std::path::Path,
+) -> Result<Option<crate::store::DomainSets>> {
     let vless = crate::lists::read_domain_file(dir, "vless-domains.txt");
     let wg = crate::lists::read_domain_file(dir, "wg-domains.txt");
     if vless.is_empty() && wg.is_empty() {
         retire_legacy_lists(dir);
         return Ok(None);
     }
-    let mut extra = Vec::new();
-    let mut seen = HashSet::new();
-    for domain in crate::lists::read_domain_file(dir, "extra-domains.txt") {
-        if seen.insert(domain.clone()) {
-            extra.push(domain);
+    let sets = store.mutate_domain_sets(|sets| {
+        let direct = sets.direct.clone();
+        for domain in vless.into_iter().chain(wg) {
+            if matches_suffix(&direct, &domain) || sets.extra.iter().any(|item| item == &domain) {
+                continue;
+            }
+            sets.extra.push(domain);
         }
-    }
-    let direct = crate::lists::read_domain_file(dir, "direct-domains.txt");
-    for domain in vless.into_iter().chain(wg) {
-        if matches_suffix(&direct, &domain) || !seen.insert(domain.clone()) {
-            continue;
-        }
-        extra.push(domain);
-    }
-    crate::lists::write_domain_file(dir, "extra-domains.txt", &extra)?;
+    })?;
     retire_legacy_lists(dir);
-    Ok(Some(extra))
+    Ok(Some(sets))
 }
 
 /// Сливает старые списки «только WireGuard/VLESS» в общий авто-список.
 pub fn migrate_lists(st: &Arc<AppState>) {
-    let extra = match merge_forced_lists(&st.dir) {
-        Ok(Some(extra)) => extra,
+    let sets = match merge_forced_lists(&st.store, &st.dir) {
+        Ok(Some(sets)) => sets,
         Ok(None) => return,
         Err(e) => {
             wlog!("миграция списков: {e:#}");
             return;
         }
     };
+    if let Ok(mut cached) = st.domains.lock() {
+        *cached = sets.clone();
+    }
     prune_decisions(st);
-    crate::zapret::sync_domains(st, &extra);
+    crate::zapret::sync_domains(st, &sets.extra);
     wlog!("миграция списков: старые списки объединены в авто-список");
 }
 
 /// Убирает из авто-списка домены, покрытые исключениями, и чинит закрепления.
 pub fn reconcile_lists(st: &Arc<AppState>) {
-    let direct = direct_domains(st);
-    let mut extra = auto_domains(st);
-    let mut pins = crate::lists::read_domain_file(&st.dir, "vpn-only-domains.txt");
+    let current = st.domain_sets_snapshot();
+    let direct = current.direct.clone();
+    let mut extra = current.extra.clone();
+    let mut pins = current.vpn_only.clone();
     let before_extra = extra.len();
     let before_pins = pins.len();
     extra.retain(|domain| !matches_suffix(&direct, domain));
@@ -557,15 +551,18 @@ pub fn reconcile_lists(st: &Arc<AppState>) {
     if extra.len() == before_extra && pins.len() == before_pins {
         return;
     }
-    if let Err(e) = crate::lists::write_domain_file(&st.dir, "extra-domains.txt", &extra) {
-        wlog!("маршруты: не удалось очистить авто-список от исключений — {e:#}");
-        return;
-    }
-    if let Err(e) = crate::lists::write_domain_file(&st.dir, "vpn-only-domains.txt", &pins) {
-        wlog!("маршруты: не удалось обновить закрепления VPN — {e:#}");
-    }
+    let sets = match st.mutate_domain_sets(|sets| {
+        sets.extra = extra;
+        sets.vpn_only = pins;
+    }) {
+        Ok(sets) => sets,
+        Err(e) => {
+            wlog!("маршруты: не удалось обновить списки в БД — {e:#}");
+            return;
+        }
+    };
     prune_decisions(st);
-    crate::zapret::sync_domains(st, &extra);
+    crate::zapret::sync_domains(st, &sets.extra);
     wlog!("маршруты: списки и закрепления приведены в порядок");
 }
 
@@ -672,8 +669,17 @@ mod tests {
             .unwrap();
         crate::lists::write_domain_file(&base, "direct-domains.txt", &list(&["lan.test"])).unwrap();
 
-        let extra = merge_forced_lists(&base).unwrap().unwrap();
-        assert_eq!(extra, vec!["example.com", "vless.test", "wg.test"]);
+        let store = crate::store::Store::open(&base).unwrap();
+        // Старые файлы импортируются до вызова merge; в тесте заносим их в БД.
+        store
+            .replace_domain_sets(&crate::store::DomainSets {
+                extra: list(&["example.com"]),
+                direct: list(&["lan.test"]),
+                vpn_only: Vec::new(),
+            })
+            .unwrap();
+        let sets = merge_forced_lists(&store, &base).unwrap().unwrap();
+        assert_eq!(sets.extra, vec!["example.com", "vless.test", "wg.test"]);
         assert!(!base.join("vless-domains.txt").exists());
         assert!(!base.join("wg-domains.txt").exists());
         assert!(base.join("vless-domains.txt.migrated").exists());

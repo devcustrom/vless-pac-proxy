@@ -10,7 +10,9 @@
     локальные HTTP CONNECT-прокси;
   - `proxy/tg_ws_proxy.py` — managed-config, status-файл, редактирование
     секрета в логах, отключение авто-загрузки CF-списка в managed-режиме;
-  - `proxy/raw_websocket.py`, `proxy/bridge.py` — использование opener’а.
+  - `proxy/raw_websocket.py`, `proxy/bridge.py` — использование opener’а;
+  - `proxy/health.py` — фоновые проверки WS/TCP-доступности DC и сброс
+    backoff пула при восстановлении маршрута.
 - Tray/GUI/i18n upstream не включены.
 
 ## Сборка

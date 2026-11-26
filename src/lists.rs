@@ -237,11 +237,12 @@ pub async fn refresh(state: &Arc<AppState>) -> Result<()> {
         }
     }
 
-    let extra = read_domain_file(&state.dir, "extra-domains.txt");
+    let user = state.domain_sets_snapshot();
+    let extra = user.extra;
     for d in &extra {
         proxied.insert(d.clone());
     }
-    let direct_extra = read_domain_file(&state.dir, "direct-domains.txt");
+    let direct_extra = user.direct;
     for d in &direct_extra {
         direct.insert(d.clone());
     }

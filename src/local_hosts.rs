@@ -145,21 +145,18 @@ pub fn write_script(dir: &Path, domains: &[String]) -> Result<PathBuf> {
     }
 }
 
-/// Готовит скрипт по текущему `local-domains.txt` и печатает инструкцию.
+/// Готовит скрипт по текущему списку локальных доменов из SQLite.
 pub fn sync_hosts(dir: &Path) -> Result<()> {
-    let names: Vec<String> = crate::paths::in_dir(dir, "local-domains.txt")
-        .ok()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|text| {
-            crate::net::local_proxy::parse_config(&text)
-                .into_iter()
-                .map(|d| d.domain)
-                .collect()
-        })
-        .unwrap_or_default();
+    let store = crate::store::Store::open(dir)?;
+    crate::storage::legacy::import_domains(dir, &store)?;
+    let names: Vec<String> = store
+        .local_domains()?
+        .into_iter()
+        .map(|domain| domain.domain)
+        .collect();
     let script = write_script(dir, &names)?;
     println!(
-        "Скрипт синхронизации hosts: {}\nЗапустите его (запросит UAC/пароль), чтобы имена из local-domains.txt резолвились в 127.0.0.1.",
+        "Скрипт синхронизации hosts: {}\nЗапустите его (запросит UAC/пароль), чтобы имена из списка локальных доменов резолвились в 127.0.0.1.",
         script.display()
     );
     Ok(())
