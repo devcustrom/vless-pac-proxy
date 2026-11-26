@@ -24,14 +24,7 @@ mod paths {
     }
 }
 
-pub mod vless {
-    /// Same loopback port as desktop; mobile uses it only for the local Xray
-    /// HTTP/SOCKS bridge.
-    pub const XRAY_HTTP_PORT: u16 = 25346;
-
-    #[path = "../../../../src/vless/link.rs"]
-    pub mod link;
-}
+pub mod vless;
 
 pub mod mobile_config;
 pub mod subscription;
